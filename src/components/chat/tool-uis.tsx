@@ -6,8 +6,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   BatteryChargingIcon,
   CheckCircle2Icon,
-  CameraIcon,
-  EyeIcon,
   CalendarPlusIcon,
   ListTodoIcon,
   MapIcon,
@@ -17,6 +15,8 @@ import {
   ClockIcon,
   AlertCircleIcon,
   Loader2Icon,
+  CameraIcon,
+  ScanEyeIcon,
 } from "lucide-react";
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -47,13 +47,6 @@ function ToolCard({
       {children && <CardContent>{children}</CardContent>}
     </Card>
   );
-}
-
-function ScoreBadge({ score }: { score: number }) {
-  const variant =
-    score <= 2 ? "success" : score === 3 ? "warning" : "danger";
-  const label = ["", "非常干净", "较干净", "一般", "较脏", "非常脏"][score] ?? `${score}/5`;
-  return <Badge variant={variant}>{label}</Badge>;
 }
 
 function StatusDot({ online }: { online: boolean }) {
@@ -225,86 +218,6 @@ export const GetRoomsToolUI = makeAssistantToolUI<
   },
 });
 
-export const TakePhotoToolUI = makeAssistantToolUI<
-  { camera_id?: string },
-  { success: boolean; camera_id?: string; message?: string; error?: string }
->({
-  toolName: "takePhoto",
-  render({ result, status: execStatus }) {
-    const loading = execStatus.type === "running";
-    return (
-      <ToolCard icon={CameraIcon} title="拍摄截图" loading={loading}>
-        {!loading && result && (
-          <div className="flex items-center gap-2">
-            <StatusDot online={result.success} />
-            <p className={`text-xs ${result.success ? "text-muted-foreground" : "text-red-400"}`}>
-              {result.success ? result.message : result.error}
-            </p>
-          </div>
-        )}
-      </ToolCard>
-    );
-  },
-});
-
-export const AnalyzeImageToolUI = makeAssistantToolUI<
-  { camera_id?: string },
-  {
-    success: boolean;
-    report?: {
-      score: number;
-      has_trash: boolean;
-      dirty_zones: string[];
-      recommendation: string;
-      clean_mode: string;
-    };
-    summary?: string;
-    error?: string;
-  }
->({
-  toolName: "analyzeImage",
-  render({ result, status: execStatus }) {
-    const loading = execStatus.type === "running";
-    if (loading) return <ToolCard icon={EyeIcon} title="AI 卫生分析中..." loading />;
-
-    if (!result?.success) {
-      return (
-        <ToolCard icon={EyeIcon} title="卫生分析">
-          <p className="text-xs text-red-400">{result?.error}</p>
-        </ToolCard>
-      );
-    }
-
-    const r = result.report;
-    if (!r) return null;
-
-    return (
-      <ToolCard icon={EyeIcon} title="卫生分析报告">
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <ScoreBadge score={r.score} />
-            {r.has_trash && (
-              <Badge variant="danger">发现垃圾</Badge>
-            )}
-          </div>
-          {r.dirty_zones.length > 0 && (
-            <div className="space-y-1">
-              {r.dirty_zones.map((zone, i) => (
-                <p key={i} className="text-xs text-muted-foreground">
-                  · {zone}
-                </p>
-              ))}
-            </div>
-          )}
-          <p className="text-xs text-zinc-400 border-t border-border pt-2">
-            {r.recommendation}
-          </p>
-        </div>
-      </ToolCard>
-    );
-  },
-});
-
 export const AddTaskToolUI = makeAssistantToolUI<
   { name: string; cron: string; task_type: string; rooms?: string[] },
   { success: boolean; task_id?: number; message?: string; error?: string }
@@ -399,6 +312,88 @@ export const CleaningHistoryToolUI = makeAssistantToolUI<
               </div>
             ))}
           </div>
+        )}
+      </ToolCard>
+    );
+  },
+});
+
+export const TakeRobotPhotoToolUI = makeAssistantToolUI<
+  Record<string, never>,
+  { success: boolean; image_base64?: string; timestamp?: number; error?: string; hint?: string }
+>({
+  toolName: "takeRobotPhoto",
+  render({ result, status: execStatus }) {
+    const loading = execStatus.type === "running";
+    if (loading) return <ToolCard icon={CameraIcon} title="拍照中..." loading />;
+    if (!result?.success) {
+      return (
+        <ToolCard icon={CameraIcon} title="拍照失败">
+          <p className="text-xs text-red-400">{result?.error}</p>
+          {result?.hint && <p className="text-[11px] text-muted-foreground mt-1">{result.hint}</p>}
+        </ToolCard>
+      );
+    }
+    return (
+      <ToolCard icon={CameraIcon} title="机器车视角">
+        {result.image_base64 && (
+          <img
+            src={`data:image/jpeg;base64,${result.image_base64}`}
+            alt="机器车摄像头截图"
+            className="w-full rounded-md object-cover"
+          />
+        )}
+        {result.timestamp && (
+          <p className="text-[10px] text-muted-foreground mt-1">
+            {new Date(result.timestamp).toLocaleTimeString("zh-CN")}
+          </p>
+        )}
+      </ToolCard>
+    );
+  },
+});
+
+export const MoveCameraMountToolUI = makeAssistantToolUI<
+  { pan?: number; tilt?: number },
+  { success: boolean; pan?: number; tilt?: number; error?: string }
+>({
+  toolName: "moveCameraMount",
+  render({ args, result, status: execStatus }) {
+    const loading = execStatus.type === "running";
+    return (
+      <ToolCard icon={ScanEyeIcon} title="调整云台" loading={loading}>
+        <div className="flex gap-2 text-xs flex-wrap">
+          {args.pan !== undefined && (
+            <Badge variant="outline">水平 {args.pan}°</Badge>
+          )}
+          {args.tilt !== undefined && (
+            <Badge variant="outline">俯仰 {args.tilt}°</Badge>
+          )}
+        </div>
+        {!loading && result && !result.success && (
+          <p className="text-xs text-red-400 mt-1">{result.error}</p>
+        )}
+      </ToolCard>
+    );
+  },
+});
+
+export const CenterCameraMountToolUI = makeAssistantToolUI<
+  Record<string, never>,
+  { success: boolean; status?: { pan: number; tilt: number }; error?: string }
+>({
+  toolName: "centerCameraMount",
+  render({ result, status: execStatus }) {
+    const loading = execStatus.type === "running";
+    return (
+      <ToolCard icon={ScanEyeIcon} title="云台归中" loading={loading}>
+        {!loading && result?.success && result.status && (
+          <p className="text-xs text-muted-foreground">
+            Pan {result.status.pan}° · Tilt {result.status.tilt}°
+          </p>
+        )}
+        {!loading && result && !result.success && (
+          <p className="text-xs text-red-400">{result.error}</p>
         )}
       </ToolCard>
     );

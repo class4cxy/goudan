@@ -161,7 +161,6 @@ DEEPSEEK_API_KEY=sk-...              # DeepSeek 主推理模型
 DASHSCOPE_API_KEY=sk-...             # 通义千问 VL（视觉分析）
 
 # 硬件
-CAMERA_RTSP_URL=rtsp://...           # 摄像头 RTSP 地址
 ROBOROCK_USERNAME=your@email.com     # 石头扫地机账号
 ROBOROCK_REGION=cn
 

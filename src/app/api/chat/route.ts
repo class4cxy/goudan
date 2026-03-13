@@ -3,7 +3,6 @@ import type { UIMessage } from "ai";
 import { AGENT_MODEL, ALL_TOOLS } from "@/core/cognition/tools";
 import { buildSystemPrompt } from "@/core/cognition/tools/prompts";
 import { queries } from "@/lib/db";
-import type { Thread } from "@/lib/db";
 import { ConversationBuffer } from "@/core/cognition/memory/conversation-buffer";
 
 export const runtime = "nodejs";
@@ -97,15 +96,7 @@ export async function POST(req: Request) {
         });
       }
 
-      // Auto-set title from first user message (only when not yet set)
-      const thread = queries.getThread.get(threadId) as Thread | undefined;
-      if (!thread?.title) {
-        const firstUserMsg = messages.find((m) => m.role === "user");
-        if (firstUserMsg) {
-          const text = firstText(firstUserMsg);
-          if (text) queries.setThreadTitle.run(text.slice(0, 60), threadId);
-        }
-      }
+      // 标题由客户端在回复结束后主动调用 POST /api/threads/[id]/title 生成
     },
   });
 
