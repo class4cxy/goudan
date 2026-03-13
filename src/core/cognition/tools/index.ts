@@ -14,6 +14,7 @@ import { takePhoto, checkCameraSetup } from "@/core/cognition/tools/camera";
 import { analyzeImage, getInspectionHistory } from "@/core/cognition/tools/vision";
 import { addScheduledTaskTool, listScheduledTasksTool } from "@/core/cognition/tools/scheduler-tool";
 import { navigateTo } from "@/core/cognition/tools/motor";
+import { getPowerStatus } from "@/core/cognition/tools/power";
 import type { ScheduledTask } from "@/lib/db";
 
 export const ALL_TOOLS = {
@@ -32,6 +33,7 @@ export const ALL_TOOLS = {
   addScheduledTask: addScheduledTaskTool,
   listScheduledTasks: listScheduledTasksTool,
   navigateTo,
+  getPowerStatus,
 };
 
 /** 将 tools 注入 brain/task，由 scheduler 调用 */

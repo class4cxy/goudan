@@ -127,8 +127,8 @@ def _make_power_callbacks():
                     "type": "sense.power.low_battery",
                     "payload": {
                         **reading.to_dict(),
-                        "threshold_v": float(os.environ.get("POWER_LOW_BATTERY_V", "6.8")),
-                        "message": f"电量不足！当前电压 {reading.voltage_v:.2f}V",
+                        "threshold_pct": float(os.environ.get("POWER_LOW_BATTERY_PCT", "20")),
+                        "message": f"电量不足！当前电量 {reading.battery_pct:.0f}%（{reading.voltage_v:.2f}V）",
                     },
                 }),
                 loop,
@@ -140,7 +140,7 @@ _power_on_reading, _power_on_low = _make_power_callbacks()
 power_sensor = PowerSensor(
     config=PowerSensorConfig(
         poll_interval_s=float(os.environ.get("POWER_POLL_INTERVAL", "5")),
-        low_battery_v=float(os.environ.get("POWER_LOW_BATTERY_V", "6.8")),
+        low_battery_pct=float(os.environ.get("POWER_LOW_BATTERY_PCT", "20")),
     ),
     on_reading=_power_on_reading,
     on_low_battery=_power_on_low,
@@ -886,6 +886,27 @@ async def slam_load_map(map_name: str):
     if not ok:
         raise HTTPException(status_code=404, detail=f"地图 '{map_name}' 不存在或格式不匹配")
     return {"ok": True, "map_name": map_name}
+
+
+# ── 电源状态接口 ───────────────────────────────────────────────────
+
+@app.get("/power/status", summary="电源传感器实时状态")
+async def power_status():
+    """
+    查询 INA219 电源传感器当前状态。
+
+    返回字段：
+      - is_simulation: 是否为模拟模式（True = INA219 未连接）
+      - is_running:    后台轮询线程是否存活
+      - latest:        最近一次采样数据，包含：
+          - voltage_v:    总线电压（V）
+          - current_ma:   电流（mA，正=放电，负=充电）
+          - power_mw:     功率（mW）
+          - battery_pct:  剩余电量（%，由电压线性估算）
+          - is_charging:  是否正在充电
+      - is_low_battery: 当前是否处于低电量状态（< 20%）
+    """
+    return power_sensor.status
 
 
 # ── WebSocket — Spine 双向通道 ─────────────────────────────────────

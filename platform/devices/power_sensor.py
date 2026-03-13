@@ -39,11 +39,8 @@ class PowerReading:
     current_ma: float    # 电流（mA，正=放电，负=充电）
     power_mw: float      # 功率（mW）
     shunt_mv: float      # 分流电阻两端电压（mV，调试用）
-
-    @property
-    def is_low_battery(self) -> bool:
-        """由 PowerSensorConfig.low_battery_v 判断，此处仅占位。"""
-        return False
+    battery_pct: float   # 电量百分比（0–100，由电压线性估算）
+    is_charging: bool    # 是否正在充电（电流 < -50mA 视为充电）
 
     def to_dict(self) -> dict:
         return {
@@ -52,6 +49,8 @@ class PowerReading:
             "current_ma":   round(self.current_ma, 1),
             "power_mw":     round(self.power_mw, 1),
             "shunt_mv":     round(self.shunt_mv, 2),
+            "battery_pct":  round(self.battery_pct, 1),
+            "is_charging":  self.is_charging,
         }
 
 
@@ -62,9 +61,10 @@ class PowerSensorConfig:
     shunt_ohms: float        = 0.1    # 板载分流电阻阻值（R100 = 0.1Ω）
     i2c_address: int         = 0x40   # INA219 I2C 地址（默认 0x40）
     max_expected_amps: float = 2.0    # 预期最大电流（A），影响测量精度
-    poll_interval_s: float   = 2.0    # 采样间隔（秒）
-    low_battery_v: float     = 6.8    # 低电量报警阈值（V），按实际电池调整
-                                      # 参考：2S LiPo≈6.8V，3S LiPo≈10.5V，5V USB≈4.5V
+    poll_interval_s: float   = 5.0    # 采样间隔（秒）
+    battery_full_v: float    = 8.4    # 电池满电电压（V）：2S LiPo = 8.4V（4.2V×2）
+    battery_empty_v: float   = 6.6    # 电池安全下限电压（V）：2S LiPo = 6.6V（3.3V×2）
+    low_battery_pct: float   = 20.0   # 低电量报警阈值（%），低于此值触发告警
 
 DEFAULT_POWER_CONFIG = PowerSensorConfig()
 
@@ -100,9 +100,9 @@ class PowerSensor:
         self._lock = threading.Lock()
         self._latest: PowerReading | None = None
 
-        # 低电量节流：避免回调过于频繁
+        # 低电量节流：避免回调过于频繁（充电中不触发）
         self._low_battery_last_alert: float = 0.0
-        self._low_battery_interval_s: float = 30.0
+        self._low_battery_interval_s: float = 60.0
 
     # ─── 公共接口 ─────────────────────────────────────────────────
 
@@ -147,17 +147,32 @@ class PowerSensor:
     def status(self) -> dict:
         reading = self.latest_reading
         return {
-            "is_simulation":   self._is_simulation,
-            "is_running":      self._thread is not None and self._thread.is_alive(),
-            "i2c_address":     f"0x{self._cfg.i2c_address:02X}",
-            "poll_interval_s": self._cfg.poll_interval_s,
-            "low_battery_v":   self._cfg.low_battery_v,
-            "latest":          reading.to_dict() if reading else None,
-            "is_low_battery":  (
-                reading.voltage_v < self._cfg.low_battery_v
+            "is_simulation":    self._is_simulation,
+            "is_running":       self._thread is not None and self._thread.is_alive(),
+            "i2c_address":      f"0x{self._cfg.i2c_address:02X}",
+            "poll_interval_s":  self._cfg.poll_interval_s,
+            "battery_full_v":   self._cfg.battery_full_v,
+            "battery_empty_v":  self._cfg.battery_empty_v,
+            "low_battery_pct":  self._cfg.low_battery_pct,
+            "latest":           reading.to_dict() if reading else None,
+            "is_low_battery":   (
+                not reading.is_charging and reading.battery_pct < self._cfg.low_battery_pct
                 if reading else False
             ),
         }
+
+    # ─── 辅助计算 ─────────────────────────────────────────────────
+
+    def _calc_battery_pct(self, voltage_v: float) -> float:
+        """
+        由总线电压线性估算剩余电量百分比（0–100）。
+        在 battery_empty_v ~ battery_full_v 之间线性映射，两端钳位。
+        """
+        span = self._cfg.battery_full_v - self._cfg.battery_empty_v
+        if span <= 0:
+            return 100.0
+        pct = (voltage_v - self._cfg.battery_empty_v) / span * 100.0
+        return max(0.0, min(100.0, pct))
 
     # ─── INA219 初始化 ────────────────────────────────────────────
 
@@ -194,12 +209,16 @@ class PowerSensor:
 
         while not self._stop_event.is_set():
             try:
+                voltage_v  = self._ina.voltage()
+                current_ma = self._ina.current()
                 reading = PowerReading(
                     timestamp_ms = int(time.time() * 1000),
-                    voltage_v    = self._ina.voltage(),
-                    current_ma   = self._ina.current(),
+                    voltage_v    = voltage_v,
+                    current_ma   = current_ma,
                     power_mw     = self._ina.power(),
                     shunt_mv     = self._ina.shunt_voltage(),
+                    battery_pct  = self._calc_battery_pct(voltage_v),
+                    is_charging  = current_ma < -50.0,
                 )
             except DeviceRangeError as e:
                 logger.warning(f"[PowerSensor] 超量程：{e}（电流可能超过 {self._cfg.max_expected_amps}A）")
@@ -213,9 +232,11 @@ class PowerSensor:
             with self._lock:
                 self._latest = reading
 
+            charge_tag = "充电中" if reading.is_charging else "放电中"
             logger.debug(
                 f"[PowerSensor] {reading.voltage_v:.2f}V  "
-                f"{reading.current_ma:.0f}mA  {reading.power_mw:.0f}mW"
+                f"{reading.battery_pct:.0f}%  "
+                f"{reading.current_ma:.0f}mA  {reading.power_mw:.0f}mW  {charge_tag}"
             )
 
             # 回调上层
@@ -225,14 +246,14 @@ class PowerSensor:
                 except Exception as e:
                     logger.warning(f"[PowerSensor] on_reading 回调异常：{e}")
 
-            # 低电量报警（节流：最多每 30s 触发一次）
-            if reading.voltage_v < self._cfg.low_battery_v:
+            # 低电量报警（充电中不触发；节流：最多每 60s 触发一次）
+            if not reading.is_charging and reading.battery_pct < self._cfg.low_battery_pct:
                 now = time.time()
                 if now - self._low_battery_last_alert >= self._low_battery_interval_s:
                     self._low_battery_last_alert = now
                     logger.warning(
-                        f"[PowerSensor] ⚠️  低电量！{reading.voltage_v:.2f}V < "
-                        f"{self._cfg.low_battery_v}V"
+                        f"[PowerSensor] ⚠️  低电量！{reading.battery_pct:.0f}% < "
+                        f"{self._cfg.low_battery_pct:.0f}%（{reading.voltage_v:.2f}V）"
                     )
                     if self._on_low_battery:
                         try:
