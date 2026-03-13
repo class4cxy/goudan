@@ -35,6 +35,14 @@ const INBOUND_MAP: Record<string, EventMapping> = {
     priority: 'MEDIUM',
     summary: (p) => `说话结束，时长 ${p.duration_ms ?? '?'}ms，等待丘脑转写`,
   },
+  // 低电量告警：充电中不触发，由 PowerSensor 节流（最多每 60s 一次）
+  'sense.power.low_battery': {
+    type: 'sense.system.battery',
+    priority: 'HIGH',
+    summary: (p) =>
+      `⚠️ 低电量告警：${p.battery_pct ?? '?'}%（${p.voltage_v ?? '?'}V）` +
+      `，请尽快回充电桩`,
+  },
 }
 
 // Spine action 事件 → Bridge 直接转发（类型透传）

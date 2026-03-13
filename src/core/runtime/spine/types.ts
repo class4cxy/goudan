@@ -23,7 +23,7 @@ export type SpineEventType =
   | 'sense.video.fall'            // 摔倒检测
   | 'sense.video.anomaly'         // 视觉异常（碎玻璃、火焰、烟雾等）
   | 'sense.video.room_snapshot'   // 巡检时拍下的房间快照（含 VLM 分析结果）
-  | 'sense.system.battery'        // 电池电量变化
+  | 'sense.system.battery'        // 机器车电池电量变化（INA219 低电量告警）
   | 'sense.system.location'       // 机器人位置变化
   | 'sense.system.obstacle'       // 行进中遇到障碍
   | 'sense.audio.environment'     // 环境声音分类（门铃/哭声/报警/狗叫等，YAMNet）
@@ -152,6 +152,17 @@ export interface ActionNotifyPayload {
 export interface ActionCapturePayload {
   reason: string
   save_path?: string
+}
+
+export interface SystemBatteryPayload {
+  voltage_v: number        // 总线电压（V）
+  current_ma: number       // 电流（mA，正=放电，负=充电）
+  power_mw: number         // 功率（mW）
+  battery_pct: number      // 剩余电量（%）
+  is_charging: boolean     // 是否正在充电
+  is_low: boolean          // 是否低电量（< 阈值）
+  threshold_pct: number    // 告警阈值（%）
+  message: string          // 人类可读描述
 }
 
 export interface ActionPatrolPayload {

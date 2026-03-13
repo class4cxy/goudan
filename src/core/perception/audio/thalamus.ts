@@ -3,7 +3,7 @@
  * ================================
  * 职责：
  *   - 订阅 sense.audio.speech_end（Bridge VAD 切片后的 PCM 块）
- *   - STT：调用 Whisper API 将音频转为文字
+ *   - STT：调用 Qwen ASR API 将音频转为文字
  *   - 唤醒词检测：命中则发布 sense.audio.keyword（交给 ConversationManager）
  *   - 非唤醒音频：发布 sense.audio.transcript（交给对话管理器 / 旁听分析器）
  *   - 情绪分析：基于规则并行判断，发布 sense.audio.emotion
@@ -11,14 +11,10 @@
  * 这是"原始音频流 → 离散语义事件"的转换边界，不含对话状态逻辑。
  */
 
-import OpenAI from 'openai'
 import { Spine } from '../../runtime/spine'
 import type { SpineEvent, AudioSpeechEndPayload } from '../../runtime/spine'
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: process.env.OPENAI_BASE_URL,
-})
+const QWEN_ASR_MODEL = 'qwen-audio-turbo'
 
 const MIN_DURATION_MS = 400  // 短于此时长的片段丢弃（环境噪声）
 
@@ -124,18 +120,57 @@ function detectWakeWord(text: string): string | null {
 // ─── STT ─────────────────────────────────────────────────────────────────────
 
 async function transcribe(audio_b64: string, sampleRate: number): Promise<string> {
+  const speechApiUrl = process.env.SPEECH_API_URL
+  const speechApiKey = process.env.SPEECH_API_KEY
+
+  if (!speechApiUrl || !speechApiKey) {
+    throw new Error('语音转文字API配置不完整，请检查 SPEECH_API_URL / SPEECH_API_KEY')
+  }
+
   const pcmBuffer = Buffer.from(audio_b64, 'base64')
   const wavBuffer = pcmToWav(pcmBuffer, sampleRate)
+  const wavBase64 = wavBuffer.toString('base64')
+  const dataUri = `data:audio/wav;base64,${wavBase64}`
 
-  const file = new File([new Uint8Array(wavBuffer)], 'audio.wav', { type: 'audio/wav' })
-
-  const response = await openai.audio.transcriptions.create({
-    model: 'whisper-1',
-    file,
-    language: 'zh',
+  const res = await fetch(speechApiUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${speechApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: QWEN_ASR_MODEL,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_audio',
+              input_audio: { data: dataUri },
+            },
+          ],
+        },
+      ],
+      stream: false,
+    }),
+    signal: AbortSignal.timeout(60_000),
   })
 
-  return response.text
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`Qwen ASR 调用失败：status=${res.status}, body=${body.slice(0, 200)}`)
+  }
+
+  const data = (await res.json().catch(() => null)) as {
+    choices?: Array<{ message?: { content?: unknown } }>
+  } | null
+
+  const text =
+    typeof data?.choices?.[0]?.message?.content === 'string'
+      ? data.choices[0].message.content
+      : ''
+
+  return text
 }
 
 /** 将原始 PCM（16bit mono）封装为标准 WAV，供 Whisper API 识别。 */
