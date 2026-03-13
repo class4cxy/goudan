@@ -21,8 +21,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from audio_sensor import AudioSensor
-from audio_effector import AudioEffector
+# from audio_sensor import AudioSensor    # TODO: 音频硬件安装后取消注释
+# from audio_effector import AudioEffector  # TODO: 音频硬件安装后取消注释
 from lidar_sensor import LidarSensor
 from slam import SlamEngine, SlamConfig
 from devices import (
@@ -84,8 +84,8 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
-audio_sensor = AudioSensor(ws_manager)
-audio_effector = AudioEffector(audio_sensor)
+# audio_sensor   = AudioSensor(ws_manager)    # TODO: 音频硬件安装后解除注释
+# audio_effector = AudioEffector(audio_sensor) # TODO: 音频硬件安装后解除注释
 chassis = Chassis(DEFAULT_CONFIG)
 camera  = CameraMount(DEFAULT_CAMERA_CONFIG)
 
@@ -198,13 +198,15 @@ async def lifespan(app: FastAPI):
 
 
 async def _startup():
-    # 启动音频组件（独立 task，失败不影响主服务）
-    asyncio.create_task(audio_sensor.start(), name="audio_sensor")
-    asyncio.create_task(audio_effector.start(), name="audio_effector")
-    logger.info("🎙 音频组件已启动")
+    # TODO: 音频硬件安装后解除以下注释
+    # asyncio.create_task(audio_sensor.start(), name="audio_sensor")
+    # asyncio.create_task(audio_effector.start(), name="audio_effector")
+    # logger.info("🎙 音频组件已启动")
 
     # 启动激光雷达（串口读取在独立线程，失败自动降级模拟模式）
-    await asyncio.to_thread(lidar_sensor.start)
+    # 必须在进入 to_thread 前捕获事件循环，子线程中无法调用 asyncio.get_event_loop()
+    _loop = asyncio.get_running_loop()
+    await asyncio.to_thread(lidar_sensor.start, _loop)
 
     # 启动电源传感器（I2C 轮询线程，失败自动降级模拟模式）
     await asyncio.to_thread(power_sensor.start)
@@ -931,17 +933,18 @@ async def _handle_action(message: dict) -> None:
     msg_type = message.get("type", "")
     payload = message.get("payload", {})
 
-    if msg_type == "action.speak":
-        text = payload.get("text", "")
-        interrupt = payload.get("interrupt_current", False)
-        if text:
-            await audio_effector.enqueue(text, interrupt=interrupt)
-
-    elif msg_type == "action.mute":
-        audio_sensor.mute()
-
-    elif msg_type == "action.unmute":
-        audio_sensor.unmute()
+    # TODO: 音频硬件安装后解除以下注释
+    # if msg_type == "action.speak":
+    #     text = payload.get("text", "")
+    #     interrupt = payload.get("interrupt_current", False)
+    #     if text:
+    #         await audio_effector.enqueue(text, interrupt=interrupt)
+    # elif msg_type == "action.mute":
+    #     audio_sensor.mute()
+    # elif msg_type == "action.unmute":
+    #     audio_sensor.unmute()
+    if msg_type == "action.speak" or msg_type == "action.mute" or msg_type == "action.unmute":
+        logger.warning(f"[WS] 音频模块已禁用，忽略指令：{msg_type}")
 
     elif msg_type == "action.motor":
         command = payload.get("command", "stop")
