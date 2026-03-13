@@ -1,0 +1,25 @@
+# 环境变量（含密钥）
+.env
+
+# Roborock token 缓存（含登录态，不能泄露）
+platform/.roborock_token.json
+
+# 数据库
+data/
+
+# 临时截图
+/tmp/home-agent-snapshots/
+
+# Python
+platform/.venv/
+__pycache__/
+*.pyc
+
+# Node.js
+node_modules/
+dist/
+
+.next
+
+# 系统文件
+.DS_Store

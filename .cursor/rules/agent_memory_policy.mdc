@@ -1,0 +1,41 @@
+---
+alwaysApply: true
+---
+# Agent Memory Policy
+
+These rules ensure that the project's "Agent Memory" system (`.agent.memory.md` files) remains up-to-date and reliable.
+
+## 1. Context Loading Rule
+*   **When reading code**: Whenever you read a directory or a set of files to understand a feature, you **MUST** check for the existence of a `.agent.memory.md` file in that directory.
+*   **Missing Context**: If the current directory does not have a `.agent.memory.md`, you **MUST** recursively check parent directories until you reach the project root.
+*   **Fallback**: If no `.agent.memory.md` is found even at the root level, assume standard project conventions apply with no special overrides.
+*   **Exclusions**: Directories starting with a dot `.` (e.g., `.git`, `.next`, `.cursor`) are exempt from this policy. They do not require `.agent.memory.md` files, and you should not expect to find business context there.
+*   **Priority**: Information in `.agent.memory.md` (especially "Legacy Issues" and "Special Decisions") takes precedence over general assumptions.
+
+## 2. Creation Rule
+*   **New Directories**: When creating a new meaningful directory (e.g., a new module, component group, or service integration), you **MUST** evaluate if it needs a `.agent.memory.md`.
+*   **Criteria**: Create one if the directory:
+    *   Has a specific architectural role.
+    *   Contains complex logic not self-evident from file names.
+    *   Has specific constraints or technical debt that needs recording.
+*   **Reference**: Refer to existing `.agent.memory.md` files in the codebase (e.g., in `migrations/` or `public/`) as one-shot examples for tone, detail level, and formatting.
+*   **Format**: The file MUST start with the warning: `**必须遵守：如果本文件夹内容发生变化，务必评估并更新本文档。**`. Then use the standard 5-section format. **Each section MUST start with a blockquote description of its purpose.**
+
+    1.  **文件夹摘要 (Directory Summary)**
+        > 描述本文件夹在工程中的位置、定位与作用。
+    2.  **文件夹内容结构 (Structure)**
+        > 描述主要文件/子目录的功能、关键类或函数。
+    3.  **遗留问题 (Legacy Issues)**
+        > 记录暂时性妥协、技术债或未完成的优化。
+    4.  **特殊决策 (Special Decisions)**
+        > 记录非标准实现的原因、用户指定的特殊要求（含来源）。
+    5.  **注意事项 (Common Pitfalls & Conventions)**
+        > 记录隐式约定、相似功能函数的区分与选择指南。
+
+## 3. Maintenance Rule (The "Write-Audit" Loop)
+*   **Code Changes**: When modifying or adding code, you **MUST** evaluate if the change impacts the information in the current directory's `.agent.memory.md`.
+    *   *Did you add a hack?* -> Record it in "Legacy Issues".
+    *   *Did you implement a user-requested UI override?* -> Record it in "Special Decisions" with the user's ID.
+    *   *Did you change the directory structure?* -> Update "Folder Content Structure".
+    *   *Did you add a helper similar to an existing one?* -> Clarify when to use which in "Common Pitfalls & Conventions".
+*   **Pre-Commit Check**: Before finalizing any task or suggesting a commit, you **MUST** review your changes against the local `.agent.memory.md` and update it if necessary.
