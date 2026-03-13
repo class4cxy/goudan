@@ -104,46 +104,41 @@ slam_engine  = SlamEngine(SlamConfig())
 lidar_sensor = LidarSensor(ws_manager, slam_engine)
 
 # 电源传感器（INA219，低电量时 WebSocket 广播报警）
-def _make_power_callbacks():
-    import asyncio as _asyncio
-    import time as _time
+# loop 在 _startup() 中赋值，回调在子线程里通过 run_coroutine_threadsafe 提交
+_main_loop: asyncio.AbstractEventLoop | None = None
 
-    def _on_reading(reading: PowerReading) -> None:
-        loop = _asyncio.get_event_loop()
-        if loop.is_running():
-            _asyncio.run_coroutine_threadsafe(
-                ws_manager.broadcast({
-                    "type": "sense.power.reading",
-                    "payload": reading.to_dict(),
-                }),
-                loop,
-            )
+def _on_reading(reading: PowerReading) -> None:
+    loop = _main_loop
+    if loop and loop.is_running():
+        asyncio.run_coroutine_threadsafe(
+            ws_manager.broadcast({
+                "type": "sense.power.reading",
+                "payload": reading.to_dict(),
+            }),
+            loop,
+        )
 
-    def _on_low_battery(reading: PowerReading) -> None:
-        loop = _asyncio.get_event_loop()
-        if loop.is_running():
-            _asyncio.run_coroutine_threadsafe(
-                ws_manager.broadcast({
-                    "type": "sense.power.low_battery",
-                    "payload": {
-                        **reading.to_dict(),
-                        "threshold_pct": float(os.environ.get("POWER_LOW_BATTERY_PCT", "20")),
-                        "message": f"电量不足！当前电量 {reading.battery_pct:.0f}%（{reading.voltage_v:.2f}V）",
-                    },
-                }),
-                loop,
-            )
-
-    return _on_reading, _on_low_battery
-
-_power_on_reading, _power_on_low = _make_power_callbacks()
+def _on_low_battery(reading: PowerReading) -> None:
+    loop = _main_loop
+    if loop and loop.is_running():
+        asyncio.run_coroutine_threadsafe(
+            ws_manager.broadcast({
+                "type": "sense.power.low_battery",
+                "payload": {
+                    **reading.to_dict(),
+                    "threshold_pct": float(os.environ.get("POWER_LOW_BATTERY_PCT", "20")),
+                    "message": f"电量不足！当前电量 {reading.battery_pct:.0f}%（{reading.voltage_v:.2f}V）",
+                },
+            }),
+            loop,
+        )
 power_sensor = PowerSensor(
     config=PowerSensorConfig(
         poll_interval_s=float(os.environ.get("POWER_POLL_INTERVAL", "5")),
         low_battery_pct=float(os.environ.get("POWER_LOW_BATTERY_PCT", "20")),
     ),
-    on_reading=_power_on_reading,
-    on_low_battery=_power_on_low,
+    on_reading=_on_reading,
+    on_low_battery=_on_low_battery,
 )
 
 
@@ -203,10 +198,15 @@ async def _startup():
     # asyncio.create_task(audio_effector.start(), name="audio_effector")
     # logger.info("🎙 音频组件已启动")
 
-    # 启动激光雷达（串口读取在独立线程，失败自动降级模拟模式）
-    # 必须在进入 to_thread 前捕获事件循环，子线程中无法调用 asyncio.get_event_loop()
+    # 必须在进入 to_thread 前捕获事件循环，子线程中无法调用 asyncio.get_event_loop()（Python 3.10+）
     _loop = asyncio.get_running_loop()
+
+    # 启动激光雷达（串口读取在独立线程，失败自动降级模拟模式）
     await asyncio.to_thread(lidar_sensor.start, _loop)
+
+    # 电源传感器回调在轮询线程中触发，提前注入 loop
+    global _main_loop
+    _main_loop = _loop
 
     # 启动电源传感器（I2C 轮询线程，失败自动降级模拟模式）
     await asyncio.to_thread(power_sensor.start)

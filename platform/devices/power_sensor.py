@@ -80,7 +80,7 @@ class PowerSensor:
     Args:
         config:          PowerSensorConfig 配置
         on_reading:      每次采样后调用，参数为 PowerReading（在轮询线程中同步调用）
-        on_low_battery:  电压低于 low_battery_v 时调用（同一线程，调用方需自行节流）
+        on_low_battery:  电量低于 low_battery_pct% 时调用（同一线程，调用方需自行节流）
     """
 
     def __init__(
@@ -123,7 +123,7 @@ class PowerSensor:
         logger.info(
             f"[PowerSensor] 已启动：地址=0x{self._cfg.i2c_address:02X}，"
             f"间隔={self._cfg.poll_interval_s}s，"
-            f"低电量阈值={self._cfg.low_battery_v}V"
+            f"低电量阈值={self._cfg.low_battery_pct}%"
         )
 
     def stop(self) -> None:
