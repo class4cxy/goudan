@@ -1,4 +1,4 @@
-# Bridge — 硬件抽象层
+# Platform — 硬件抽象层
 
 Python FastAPI 服务，运行在树莓派 5 上（端口 8001）。负责硬件驱动与 Node.js 之间的双向通信，屏蔽所有底层 GPIO / 音频 / 摄像头细节。
 
@@ -7,7 +7,7 @@ Python FastAPI 服务，运行在树莓派 5 上（端口 8001）。负责硬件
 ## 启动
 
 ```bash
-cd bridge
+cd platform
 pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 ```

@@ -56,7 +56,7 @@ def test_i2c_scan():
 def _try_direct_init():
     try:
         from ina219 import INA219
-        ina = INA219(shunt_ohms=0.1, address=0x40)
+        ina = INA219(shunt_ohms=0.1, address=0x40, busnum=1)
         ina.configure()
         v = ina.voltage()
         print(f"  ✅ INA219 直接初始化成功，当前电压：{v:.3f}V")
@@ -74,7 +74,7 @@ def test_single_read():
     print(DIVIDER)
     try:
         from ina219 import INA219, DeviceRangeError
-        ina = INA219(shunt_ohms=0.1, max_expected_amps=2.0, address=0x40)
+        ina = INA219(shunt_ohms=0.1, max_expected_amps=2.0, address=0x40, busnum=1)
         ina.configure()
 
         print("  参数           数值          说明")
