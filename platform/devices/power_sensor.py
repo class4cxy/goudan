@@ -177,6 +177,7 @@ class PowerSensor:
                 shunt_ohms=self._cfg.shunt_ohms,
                 max_expected_amps=self._cfg.max_expected_amps,
                 address=self._cfg.i2c_address,
+                busnum=1,
             )
             self._ina.configure()
             logger.info(f"[PowerSensor] INA219 就绪（地址 0x{self._cfg.i2c_address:02X}）")
