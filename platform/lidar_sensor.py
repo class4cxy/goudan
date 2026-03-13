@@ -57,9 +57,13 @@ class LidarSensor:
         """暴露底层 Lidar 设备供 REST 接口使用。"""
         return self._device
 
-    def start(self) -> None:
-        """启动串口读取线程（非阻塞）。在 asyncio 线程中通过 to_thread 调用。"""
-        self._loop = asyncio.get_event_loop()
+    def start(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        """启动串口读取线程（非阻塞）。在 asyncio 线程中通过 to_thread 调用。
+
+        loop 必须从调用方的 asyncio 上下文中传入，不能在 ThreadPoolExecutor 内部
+        调用 asyncio.get_event_loop()（Python 3.10+ 在子线程中无当前事件循环）。
+        """
+        self._loop = loop
         self._device.start()
         if self._device.is_simulation:
             logger.warning("⚠️  激光雷达未连接，以模拟模式运行")

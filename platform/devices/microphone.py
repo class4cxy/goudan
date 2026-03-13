@@ -168,8 +168,8 @@ class Microphone:
         try:
             import sounddevice as sd
             import webrtcvad
-        except ImportError as e:
-            logger.error(f"[Microphone] 缺少依赖：{e}，请安装 sounddevice 和 webrtcvad")
+        except (ImportError, OSError) as e:
+            logger.error(f"[Microphone] 缺少依赖或系统库：{e}，请安装 sounddevice/webrtcvad 及 libportaudio2")
             return
 
         self._vad = webrtcvad.Vad(self._vad_aggressiveness)
