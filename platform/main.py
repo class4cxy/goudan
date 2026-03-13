@@ -384,6 +384,26 @@ async def health():
     }
 
 
+# ── 树莓派机器人自身状态 ────────────────────────────────────────────
+@app.get("/robot/status")
+async def robot_status():
+    """返回树莓派机器人本体状态（电源、各模块在线情况）。"""
+    power = power_sensor.latest_reading
+    return {
+        "power": {
+            "voltage_v":   round(power.voltage_v, 2)   if power else None,
+            "current_ma":  round(power.current_ma, 1)  if power else None,
+            "power_mw":    round(power.power_mw, 1)    if power else None,
+            "battery_pct": round(power.battery_pct, 1) if power else None,
+            "is_charging": power.is_charging            if power else None,
+        },
+        "modules": {
+            "lidar":   not lidar_sensor.device.is_simulation,
+            "chassis": not chassis.is_simulation,
+        },
+    }
+
+
 # ── 获取机器人状态 ─────────────────────────────────────────────────
 @app.get("/status")
 async def get_status():
