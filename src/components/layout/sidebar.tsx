@@ -16,29 +16,44 @@ import { cn } from "@/lib/utils";
 
 // ── Robot Status ──────────────────────────────────────────────────
 
-interface RobotStatus {
-  battery?: number;
+interface RoborockStatus {
   state?: string;
-  error?: string;
+  battery?: number;
+  error_code?: number;
+  in_cleaning?: boolean;
+  in_returning?: boolean;
 }
 
-interface BridgeData {
+interface RobotStatus {
+  power: {
+    voltage_v: number | null;
+    battery_pct: number | null;
+    is_charging: boolean | null;
+  };
+  modules: {
+    lidar: boolean;
+    chassis: boolean;
+  };
+}
+
+interface StatusData {
   bridge_ok: boolean;
-  status: RobotStatus | null;
+  roborock: RoborockStatus | null;
+  robot: RobotStatus | null;
 }
 
 function useRobotStatus() {
-  const [data, setData] = useState<BridgeData | null>(null);
+  const [data, setData] = useState<StatusData | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch("/api/status");
-      const json = (await res.json()) as BridgeData;
+      const json = (await res.json()) as StatusData;
       setData(json);
     } catch {
-      setData({ bridge_ok: false, status: null });
+      setData({ bridge_ok: false, roborock: null, robot: null });
     } finally {
       setLoading(false);
     }
@@ -188,15 +203,12 @@ export function Sidebar({
 }: SidebarProps) {
   const { data, loading, refresh } = useRobotStatus();
   const bridgeOk = data?.bridge_ok ?? false;
-  const status = data?.status;
+  const roborock = data?.roborock;
+  const robot    = data?.robot;
 
-  const stateLabel: Record<string, string> = {
-    charging: "充电中",
-    idle: "待机中",
-    cleaning: "清扫中",
-    paused: "已暂停",
-    returning: "返回中",
-    error: "故障",
+  const roborockStateLabel: Record<string, string> = {
+    charging: "充电中", idle: "待机中", cleaning: "清扫中",
+    paused: "已暂停", returning: "返回中", error: "故障",
   };
 
   return (
@@ -220,64 +232,102 @@ export function Sidebar({
         refresh={threadRefresh}
       />
 
-      {/* Robot Status */}
-      <div className="border-t border-border p-3 space-y-2 shrink-0">
+      {/* Status Panel */}
+      <div className="border-t border-border p-3 space-y-3 shrink-0">
+        {/* Header */}
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-medium uppercase text-muted-foreground tracking-wider">
-            机器人状态
+            设备状态
           </span>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-5 w-5"
-            onClick={refresh}
-            disabled={loading}
-          >
+          <Button variant="ghost" size="icon" className="h-5 w-5" onClick={refresh} disabled={loading}>
             <RefreshCwIcon className={cn("h-3 w-3", loading && "animate-spin")} />
           </Button>
         </div>
 
-        {/* Bridge indicator */}
+        {/* Bridge 连接指示 */}
         <div className="flex items-center gap-1.5 text-xs">
-          {bridgeOk ? (
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
-          ) : (
-            <WifiOffIcon className="h-3 w-3 text-red-400 shrink-0" />
-          )}
+          {bridgeOk
+            ? <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
+            : <WifiOffIcon className="h-3 w-3 text-red-400 shrink-0" />}
           <span className={bridgeOk ? "text-muted-foreground" : "text-red-400"}>
-            {bridgeOk ? "Bridge 已连接" : "Bridge 未连接"}
+            {bridgeOk ? "平台已连接" : "平台未连接"}
           </span>
         </div>
 
-        {status ? (
-          <div className="space-y-2 rounded-lg border border-border p-2">
-            {status.battery !== undefined && (
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="flex items-center gap-1 text-muted-foreground">
-                    <BatteryChargingIcon className="h-3 w-3" /> 电量
-                  </span>
-                  <span className="font-mono font-medium">{status.battery}%</span>
+        {/* 石头扫地机 */}
+        <div className="space-y-1">
+          <p className="text-[10px] text-muted-foreground">石头扫地机</p>
+          {roborock ? (
+            <div className="space-y-1.5 rounded-lg border border-border p-2">
+              {roborock.battery !== undefined && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="flex items-center gap-1 text-muted-foreground">
+                      <BatteryChargingIcon className="h-3 w-3" /> 电量
+                    </span>
+                    <span className="font-mono font-medium">{roborock.battery}%</span>
+                  </div>
+                  <BatteryBar level={roborock.battery} />
                 </div>
-                <BatteryBar level={status.battery} />
-              </div>
-            )}
-            {status.state && (
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">状态</span>
-                <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                  {stateLabel[status.state] ?? status.state}
+              )}
+              {roborock.state && (
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">状态</span>
+                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                    {roborockStateLabel[roborock.state] ?? roborock.state}
+                  </Badge>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-border p-2">
+              <p className="text-[11px] text-muted-foreground text-center">
+                {loading ? "获取中..." : "未连接"}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* 树莓派机器人 */}
+        <div className="space-y-1">
+          <p className="text-[10px] text-muted-foreground">树莓派机器人</p>
+          {robot ? (
+            <div className="space-y-1.5 rounded-lg border border-border p-2">
+              {robot.power.battery_pct !== null && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="flex items-center gap-1 text-muted-foreground">
+                      <BatteryChargingIcon className="h-3 w-3" />
+                      {robot.power.is_charging ? "充电中" : "电量"}
+                    </span>
+                    <span className="font-mono font-medium">{robot.power.battery_pct}%</span>
+                  </div>
+                  <BatteryBar level={robot.power.battery_pct} />
+                </div>
+              )}
+              {robot.power.voltage_v !== null && (
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">电压</span>
+                  <span className="font-mono">{robot.power.voltage_v} V</span>
+                </div>
+              )}
+              <div className="flex gap-1 flex-wrap pt-0.5">
+                <Badge variant={robot.modules.lidar   ? "default" : "secondary"} className="text-[10px] px-1.5 py-0">
+                  激光雷达{robot.modules.lidar ? "" : "（模拟）"}
+                </Badge>
+                <Badge variant={robot.modules.chassis ? "default" : "secondary"} className="text-[10px] px-1.5 py-0">
+                  底盘{robot.modules.chassis ? "" : "（模拟）"}
                 </Badge>
               </div>
-            )}
-          </div>
-        ) : (
-          <div className="rounded-lg border border-border p-2">
-            <p className="text-[11px] text-muted-foreground text-center">
-              {loading ? "获取中..." : "无法获取状态"}
-            </p>
-          </div>
-        )}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-border p-2">
+              <p className="text-[11px] text-muted-foreground text-center">
+                {loading ? "获取中..." : "未连接"}
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </aside>
   );
