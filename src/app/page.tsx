@@ -22,6 +22,11 @@ export default function HomePage() {
     setActiveThreadId(id);
   }, []);
 
+  // AI 回复完成后触发一次侧边栏刷新（更新会话标题）
+  const handleAssistantReply = useCallback(() => {
+    setThreadRefresh((n) => n + 1);
+  }, []);
+
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar
@@ -31,7 +36,7 @@ export default function HomePage() {
         threadRefresh={threadRefresh}
       />
       <main className="flex flex-1 flex-col overflow-hidden">
-        <Providers threadId={activeThreadId}>
+        <Providers threadId={activeThreadId} onAssistantReply={handleAssistantReply}>
           <ChatThread />
         </Providers>
       </main>

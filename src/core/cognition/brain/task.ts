@@ -18,11 +18,9 @@ export async function executeScheduledTask(
   tools: Record<string, unknown>,
 ): Promise<string> {
   const taskDesc =
-    task.task_type === "inspect_and_clean"
-      ? "执行巡检+清扫任务"
-      : task.task_type === "clean_rooms"
-        ? `清扫房间：${JSON.stringify(task.config.rooms)}`
-        : "全屋清扫";
+    task.task_type === "clean_rooms"
+      ? `清扫房间：${JSON.stringify(task.config.rooms)}`
+      : "全屋清扫";
 
   const { text } = await generateText({
     model: AGENT_MODEL,

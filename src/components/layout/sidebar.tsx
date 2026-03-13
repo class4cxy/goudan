@@ -108,12 +108,6 @@ function useThreads(refreshSignal: number) {
     load();
   }, [refreshSignal, load]);
 
-  // Poll every 4 s so titles appear after first response without extra plumbing
-  useEffect(() => {
-    const interval = setInterval(load, 4_000);
-    return () => clearInterval(interval);
-  }, [load]);
-
   return threads;
 }
 

@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Home Agent · Aria",
-  description: "智能家居管家 — 石头扫地机器人 & 小米摄像头",
+  description: "智能家居管家",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

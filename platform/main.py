@@ -681,7 +681,7 @@ async def camera_capture_base64():
     b64 = await asyncio.to_thread(cam.capture_base64)
     if b64 is None:
         raise HTTPException(503, "摄像头不可用或拍照失败，请检查摄像头连接")
-    return {"data": b64, "timestamp": int(asyncio.get_event_loop().time() * 1000)}
+    return {"data": b64, "timestamp": int(asyncio.get_running_loop().time() * 1000)}
 
 
 @app.get("/camera/capture/save", summary="拍照并保存到文件")

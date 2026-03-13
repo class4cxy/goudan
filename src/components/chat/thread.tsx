@@ -18,11 +18,12 @@ import {
   ResumeToolUI,
   ReturnHomeToolUI,
   GetRoomsToolUI,
-  TakePhotoToolUI,
-  AnalyzeImageToolUI,
   AddTaskToolUI,
   ListTasksToolUI,
   CleaningHistoryToolUI,
+  TakeRobotPhotoToolUI,
+  MoveCameraMountToolUI,
+  CenterCameraMountToolUI,
 } from "@/components/chat/tool-uis";
 
 // ── Generic tool fallback ─────────────────────────────────────────
@@ -155,8 +156,9 @@ export function ChatThread() {
       <ResumeToolUI />
       <ReturnHomeToolUI />
       <GetRoomsToolUI />
-      <TakePhotoToolUI />
-      <AnalyzeImageToolUI />
+      <TakeRobotPhotoToolUI />
+      <MoveCameraMountToolUI />
+      <CenterCameraMountToolUI />
       <AddTaskToolUI />
       <ListTasksToolUI />
       <CleaningHistoryToolUI />
