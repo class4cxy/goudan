@@ -62,6 +62,10 @@ class PlatformConnectorClass {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private started = false
 
+  get isConnected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN
+  }
+
   start(): void {
     if (this.started) return
     this.started = true
@@ -133,4 +137,11 @@ class PlatformConnectorClass {
   }
 }
 
-export const PlatformConnector = new PlatformConnectorClass()
+declare global {
+  // eslint-disable-next-line no-var
+  var __platformConnector: PlatformConnectorClass | undefined
+}
+
+export const PlatformConnector =
+  globalThis.__platformConnector ??
+  (globalThis.__platformConnector = new PlatformConnectorClass())

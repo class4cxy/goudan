@@ -19,7 +19,9 @@ import {
   ScanEyeIcon,
   NavigationIcon,
   SquareIcon,
+  RefreshCwIcon,
 } from "lucide-react";
+import { useState, useCallback, useEffect } from "react";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -375,6 +377,146 @@ export const MoveCameraMountToolUI = makeAssistantToolUI<
         {!loading && result && !result.success && (
           <p className="text-xs text-red-400 mt-1">{result.error}</p>
         )}
+      </ToolCard>
+    );
+  },
+});
+
+/**
+ * GetMapImageToolUI
+ * -----------------
+ * 工具只传元数据（scan_count / pose / fetch_ts），图片完全由前端自主拉取渲染。
+ * 这样图片二进制数据永远不进入对话上下文，不占用 LLM token。
+ *
+ * 渲染流程：
+ *   result 到达 → useEffect 触发 → fetch(/api/slam/map) → blob URL → <img>
+ */
+export const GetMapImageToolUI = makeAssistantToolUI<
+  Record<string, never>,
+  {
+    success: boolean;
+    scan_count?: number;
+    exploring?: boolean;
+    fetch_ts?: number;
+    pose?: { x_mm: number; y_mm: number; theta_deg: number };
+    error?: string;
+  }
+>({
+  toolName: "getMapImage",
+  render({ result, status: execStatus }) {
+    const loading = execStatus.type === "running";
+
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const [blobUrl, setBlobUrl] = useState<string | null>(null);
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const [fetchState, setFetchState] = useState<"idle" | "loading" | "ok" | "error">("idle");
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const [fetchTs, setFetchTs] = useState<number>(result?.fetch_ts ?? Date.now());
+
+    // 当工具结果到达后，由前端自主拉取地图图片
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    useEffect(() => {
+      if (!result?.success) return;
+      let cancelled = false;
+
+      const prev = blobUrl;
+      setFetchState("loading");
+
+      fetch(`/api/slam/map?t=${fetchTs}`)
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          if (cancelled) return;
+          const url = URL.createObjectURL(blob);
+          setBlobUrl(url);
+          setFetchState("ok");
+          // 释放上一张图的 blob URL，避免内存泄漏
+          if (prev) URL.revokeObjectURL(prev);
+        })
+        .catch(() => {
+          if (!cancelled) setFetchState("error");
+        });
+
+      return () => { cancelled = true; };
+    // fetchTs 变化时重新拉取（刷新按钮触发）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [result?.success, fetchTs]);
+
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const refresh = useCallback(() => setFetchTs(Date.now()), []);
+
+    if (loading) return <ToolCard icon={MapIcon} title="查询地图状态..." loading />;
+
+    if (!result?.success) {
+      return (
+        <ToolCard icon={MapIcon} title="地图">
+          <p className="text-xs text-red-400">{result?.error}</p>
+        </ToolCard>
+      );
+    }
+
+    return (
+      <ToolCard icon={MapIcon} title="当前地图">
+        {/* ── 图片区域 ── */}
+        <div className="relative w-full rounded-md overflow-hidden bg-muted min-h-[140px] flex items-center justify-center">
+          {fetchState === "loading" && (
+            <div className="flex flex-col items-center gap-2 text-muted-foreground">
+              <Loader2Icon className="w-6 h-6 animate-spin" />
+              <span className="text-xs">正在加载地图...</span>
+            </div>
+          )}
+
+          {fetchState === "error" && (
+            <div className="flex flex-col items-center gap-2 p-4">
+              <AlertCircleIcon className="w-5 h-5 text-red-400" />
+              <p className="text-xs text-red-400 text-center">
+                地图加载失败
+                <br />
+                <span className="text-muted-foreground text-[10px]">请确认 Platform 正在运行</span>
+              </p>
+              <button
+                onClick={refresh}
+                className="flex items-center gap-1 text-xs text-primary hover:underline mt-1"
+              >
+                <RefreshCwIcon className="w-3 h-3" /> 重试
+              </button>
+            </div>
+          )}
+
+          {fetchState === "ok" && blobUrl && (
+            <img
+              src={blobUrl}
+              alt="SLAM 地图"
+              className="w-full rounded-md"
+              style={{ imageRendering: "pixelated" }}
+            />
+          )}
+        </div>
+
+        {/* ── 状态徽章 ── */}
+        <div className="flex flex-wrap items-center gap-2 mt-2 text-xs">
+          <Badge variant={result.exploring ? "default" : "secondary"}>
+            {result.exploring ? "🔍 建图中" : "已停止"}
+          </Badge>
+          {result.scan_count !== undefined && (
+            <Badge variant="outline">已扫 {result.scan_count} 圈</Badge>
+          )}
+          {result.pose && (
+            <Badge variant="outline" className="font-mono text-[10px]">
+              x:{(result.pose.x_mm / 1000).toFixed(1)}m&nbsp;
+              y:{(result.pose.y_mm / 1000).toFixed(1)}m&nbsp;
+              {Math.round(result.pose.theta_deg)}°
+            </Badge>
+          )}
+          {fetchState === "ok" && (
+            <button
+              onClick={refresh}
+              className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-primary ml-auto"
+            >
+              <RefreshCwIcon className="w-3 h-3" /> 刷新地图
+            </button>
+          )}
+        </div>
       </ToolCard>
     );
   },

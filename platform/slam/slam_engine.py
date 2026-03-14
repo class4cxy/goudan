@@ -79,7 +79,7 @@ class SlamConfig:
 
     # breezyslam 算法参数
     map_quality: int       = 50      # 地图更新强度 0–255，越大越快但越噪
-    hole_width_mm: float   = 600.0   # 最小可通行孔宽（mm），影响路径规划
+    hole_width_mm: float   = 320.0   # 最小可通行孔宽（mm）；机器车宽约 300mm，加 20mm 余量
     sigma_xy_mm: float     = 100.0   # 位置不确定度（mm），值越大探索越激进
     sigma_theta_deg: float = 20.0    # 角度不确定度（度）
 
