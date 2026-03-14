@@ -21,7 +21,7 @@
 
 import { randomUUID } from 'crypto'
 import { Spine } from '../../runtime/spine'
-import type { SpineEvent, AudioTranscriptPayload, AudioEmotionPayload, AudioKeywordPayload } from '../../runtime/spine'
+import type { SpineEvent, AudioTranscriptPayload, AudioEmotionPayload, AudioKeywordPayload, AudioSpeakEndPayload } from '../../runtime/spine'
 import { ConversationContext } from './context'
 import { generateVoiceResponse } from '@/core/cognition/brain/conversation'
 import { resetIdleTimer } from './active/idle-initiator'
@@ -51,8 +51,16 @@ export type ConvState = 'IDLE' | 'LISTENING' | 'THINKING' | 'SPEAKING'
 // ─── 常量 ─────────────────────────────────────────────────────────────────────
 
 const MAX_QUEUE_SIZE = 5
-/** 说完后等待用户跟进的时长 */
-const RESPONSE_WAIT_MS = 4000
+/**
+ * TTS 播完后等待用户跟进的倾听时长（重新进入 LISTENING 后的超时）。
+ * 正常路径：Platform 发 sense.audio.speak_end → 立即进 LISTENING → 此计时器开始。
+ */
+const LISTEN_AFTER_SPEAK_MS = 10_000
+/**
+ * 兜底超时：若 sense.audio.speak_end 迟迟未到（网络抖动/Platform 异常），
+ * 30 秒后强制回 IDLE，防止卡死在 SPEAKING 状态。
+ */
+const RESPONSE_WAIT_FALLBACK_MS = 30_000
 /** LISTENING 状态无输入超时 */
 const LISTEN_TIMEOUT_MS = 10_000
 
@@ -93,7 +101,16 @@ class ConversationManagerClass {
       this.pendingEmotion = e.payload.emotion
     })
 
-    console.log('[ConvManager] 已启动，监听 keyword / transcript / emotion')
+    // TTS 全部句子播完 → 立即回 LISTENING，等用户继续说
+    Spine.subscribe<AudioSpeakEndPayload>(['sense.audio.speak_end'], () => {
+      if (this.state === 'SPEAKING') {
+        console.log('[ConvManager] TTS 播完，→ LISTENING（等待用户继续）')
+        this._clearResponseTimer()
+        this._startListeningAfterSpeak()
+      }
+    })
+
+    console.log('[ConvManager] 已启动，监听 keyword / transcript / emotion / speak_end')
   }
 
   // ─── 公共 API ─────────────────────────────────────────────────────────────
@@ -310,13 +327,29 @@ class ConversationManagerClass {
     })
   }
 
-  private _startResponseWait(): void {
-    this.responseTimer = setTimeout(() => {
-      if (this.state === 'SPEAKING') {
+  /** TTS 播完后进入的倾听窗口：用户可直接说话，无需再说唤醒词。 */
+  private _startListeningAfterSpeak(): void {
+    this.state = 'LISTENING'
+    console.log('[ConvManager] → LISTENING（TTS 后倾听）')
+    this.listenTimer = setTimeout(() => {
+      if (this.state === 'LISTENING') {
         console.log('[ConvManager] 等待用户跟进超时，回到 IDLE')
         this._toIdle()
       }
-    }, RESPONSE_WAIT_MS)
+    }, LISTEN_AFTER_SPEAK_MS)
+  }
+
+  /**
+   * 兜底超时：若 Platform 未能及时发 speak_end，30 秒后强制回 IDLE。
+   * 正常情况下会被 speak_end 提前取消。
+   */
+  private _startResponseWait(): void {
+    this.responseTimer = setTimeout(() => {
+      if (this.state === 'SPEAKING') {
+        console.log('[ConvManager] 兜底超时（speak_end 未到），回到 IDLE')
+        this._toIdle()
+      }
+    }, RESPONSE_WAIT_FALLBACK_MS)
   }
 
   private _toIdle(): void {

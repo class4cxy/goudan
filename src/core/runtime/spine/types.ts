@@ -16,6 +16,7 @@ export type SpineEventType =
   // 感官层 → Thalamus 过滤后上报
   | 'sense.audio.speech_start'    // VAD 检测到有人开始说话
   | 'sense.audio.speech_end'      // 说话停止（可以转写了）
+  | 'sense.audio.speak_end'       // TTS 所有句子播放完毕（Platform 回调，触发下一轮倾听）
   | 'sense.audio.transcript'      // 语音转文字完成
   | 'sense.audio.emotion'         // 情绪信号（平静/激动/哭泣/争吵）
   | 'sense.audio.keyword'         // 关键词触发（呼叫机器人名字等）
@@ -85,6 +86,10 @@ export interface AudioSpeechEndPayload {
   audio_b64: string             // base64 编码的原始 PCM 数据
   sample_rate: number           // 采样率，固定 16000Hz
   duration_ms: number           // 语音时长（含尾部静音）
+}
+
+export interface AudioSpeakEndPayload {
+  // TTS 全部句子播完，Platform 发回此事件触发 ConvManager 重新进入 LISTENING
 }
 
 export interface AudioTranscriptPayload {

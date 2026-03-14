@@ -89,7 +89,7 @@ class ConnectionManager:
 
 ws_manager = ConnectionManager()
 audio_sensor   = AudioSensor(ws_manager)
-audio_effector = AudioEffector(audio_sensor)
+audio_effector = AudioEffector(audio_sensor, ws_manager)
 chassis = Chassis(DEFAULT_CONFIG)
 camera  = CameraMount(DEFAULT_CAMERA_CONFIG)
 
