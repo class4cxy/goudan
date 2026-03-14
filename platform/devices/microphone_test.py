@@ -369,7 +369,7 @@ def main():
     print("=" * 60)
     print("  麦克风测试工具 — USB 免驱声卡")
     print("=" * 60)
-    print(f"  VAD 灵敏度：{args.aggressiveness}  设备：{device!r or '自动检测'}")
+    print(f"  VAD 灵敏度：{args.aggressiveness}  设备：{device!r if device is not None else '自动检测'}")
 
     if args.list:
         list_devices()
