@@ -112,6 +112,16 @@ class LidarConfig:
     baud_rate: int = BAUD_RATE          # 波特率（LD06 固定 230400）
     timeout: float = 1.0               # 读取超时（秒）
     broadcast_every_n_scans: int = 1   # 每 N 圈回调一次（降低 WebSocket 压力）
+    mount_angle_deg: float = 0.0       # 安装偏移角（度）：
+                                       #   0   = LD06 线缆接口朝向机器人正前方（默认）
+                                       #   180 = 线缆接口朝向机器人正后方（装反了）
+                                       #   90  = 线缆接口朝向机器人右侧
+                                       # 修改后重启 Platform 生效，无需改硬件。
+    mount_angle_deg: float = 0.0       # 雷达安装偏转角（度）：
+                                        #   0   → 线缆朝前（默认）
+                                        #   180 → 线缆朝后（装反了）
+                                        #   90  → 线缆朝右
+                                        #  -90  → 线缆朝左
 
 DEFAULT_LIDAR_CONFIG = LidarConfig()
 
@@ -306,7 +316,8 @@ class Lidar:
             offset = 6 + i * 3
             dist   = struct.unpack_from("<H", pkt, offset)[0]
             conf   = pkt[offset + 2]
-            angle  = (start_deg + i * step) % 360.0
+            # 应用安装偏移：将硬件角度旋转到机器人坐标系（0° = 正前方）
+            angle  = (start_deg + i * step + self._config.mount_angle_deg) % 360.0
             self._scan_buffer.append(LidarPoint(angle=angle, distance=dist, confidence=conf))
 
         self._scan_rpm_sum   += rpm
