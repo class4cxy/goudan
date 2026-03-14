@@ -96,6 +96,45 @@ export const stopExploring = tool({
   },
 })
 
+// ── getMapImage ───────────────────────────────────────────────────
+
+export const getMapImage = tool({
+  description:
+    '获取当前 SLAM 建图的实时地图图片。建图进行中或已完成后调用，' +
+    '前端组件会自动拉取并渲染地图图片。' +
+    '用户问"地图怎么样了"、"让我看看地图"时调用。',
+  inputSchema: z.object({}),
+  execute: async () => {
+    try {
+      const res = await fetch(`${PLATFORM_URL}/slam/status`, {
+        signal: AbortSignal.timeout(4000),
+      })
+      if (!res.ok) throw new Error(`platform 不可达 (${res.status})`)
+      const status = (await res.json()) as {
+        scan_count: number
+        is_mapping: boolean
+        pose: { x_mm: number; y_mm: number; theta_deg: number }
+      }
+
+      if (status.scan_count === 0) {
+        return { success: false, error: '地图为空，请先启动建图（startExploring）' }
+      }
+
+      // 只返回元数据，图片由前端 Tool UI 自主拉取渲染（不占用对话上下文）
+      return {
+        success: true,
+        scan_count: status.scan_count,
+        pose: status.pose,
+        exploring: Explorer.isRunning,
+        /** 前端用此时间戳作为拉取图片的 cache-buster */
+        fetch_ts: Date.now(),
+      }
+    } catch (err) {
+      return { success: false, error: String(err) }
+    }
+  },
+})
+
 // ── getMapStatus ──────────────────────────────────────────────────
 
 export const getMapStatus = tool({

@@ -14,7 +14,7 @@ import { takeRobotPhoto, moveCameraMount, centerCameraMount } from "@/core/cogni
 import { addScheduledTaskTool, listScheduledTasksTool } from "@/core/cognition/tools/scheduler-tool";
 import { navigateTo } from "@/core/cognition/tools/motor";
 import { getPowerStatus } from "@/core/cognition/tools/power";
-import { startExploring, stopExploring, getMapStatus } from "@/core/cognition/tools/slam";
+import { startExploring, stopExploring, getMapStatus, getMapImage } from "@/core/cognition/tools/slam";
 import type { ScheduledTask } from "@/lib/db";
 
 export const ALL_TOOLS = {
@@ -36,6 +36,7 @@ export const ALL_TOOLS = {
   startExploring,
   stopExploring,
   getMapStatus,
+  getMapImage,
 };
 
 /** 将 tools 注入 brain/task，由 scheduler 调用 */
