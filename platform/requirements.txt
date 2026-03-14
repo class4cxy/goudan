@@ -15,6 +15,9 @@ soundfile>=0.12.1
 # 摄像头采集 (Camera)
 opencv-python-headless>=4.8.0
 
+# 静态文件服务 (FastAPI StaticFiles，用于快照图片访问)
+aiofiles>=23.0.0
+
 # 激光雷达 (Lidar / LD06，CP2102 USB-TTL 串口)
 pyserial>=3.5
 
