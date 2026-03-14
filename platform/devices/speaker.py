@@ -133,8 +133,9 @@ class Speaker:
         try:
             import sounddevice as sd
             import soundfile as sf
+            import numpy as np
         except ImportError:
-            logger.error("[Speaker] 缺少依赖：sounddevice / soundfile")
+            logger.error("[Speaker] 缺少依赖：sounddevice / soundfile / numpy")
             return
 
         loop = asyncio.get_event_loop()
@@ -142,6 +143,28 @@ class Speaker:
         def _blocking_play():
             with io.BytesIO(mp3_data) as buf:
                 data, sample_rate = sf.read(buf, dtype="float32")
+
+            # 获取输出设备原生采样率，edge-tts 输出 24000Hz 而 USB 声卡通常只支持 44100/48000Hz
+            device_info = sd.query_devices(kind="output")
+            native_rate = int(device_info["default_samplerate"])
+
+            if sample_rate != native_rate:
+                n_orig = len(data)
+                n_target = int(n_orig * native_rate / sample_rate)
+                x_orig = np.arange(n_orig)
+                x_target = np.linspace(0, n_orig - 1, n_target)
+
+                if data.ndim == 1:
+                    data = np.interp(x_target, x_orig, data).astype(np.float32)
+                else:
+                    data = np.column_stack([
+                        np.interp(x_target, x_orig, data[:, i]).astype(np.float32)
+                        for i in range(data.shape[1])
+                    ])
+
+                logger.debug(f"[Speaker] 重采样：{sample_rate}Hz → {native_rate}Hz")
+                sample_rate = native_rate
+
             sd.play(data, samplerate=sample_rate)
             sd.wait()
 
