@@ -272,6 +272,16 @@ class Microphone:
         if len(pcm_bytes) != FRAME_SIZE * 2:
             return
 
+        # ── 诊断：每 100 帧（约 3s）打印一次 RMS 电平和 mute 状态 ──────
+        self._diag_frame_count = getattr(self, "_diag_frame_count", 0) + 1
+        if self._diag_frame_count % 100 == 1:
+            samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+            rms = float(np.sqrt(np.mean(samples ** 2)))
+            logger.info(
+                f"[Microphone] 诊断 — RMS={rms:.1f}  muted={self._is_muted}  "
+                f"speaking={self._is_speaking}  VAD灵敏度={self._vad_aggressiveness}"
+            )
+
         try:
             is_speech = self._vad.is_speech(pcm_bytes, SAMPLE_RATE)
         except Exception:
