@@ -42,6 +42,11 @@ class LidarSensor:
             config=LidarConfig(
                 port=os.environ.get("LIDAR_PORT", "/dev/ttyUSB0"),
                 broadcast_every_n_scans=1,   # 每圈都触发回调（由应用层自己控制广播频率）
+                # LIDAR_MOUNT_ANGLE：雷达安装偏移角（度）
+                #   0   = 线缆接口朝前（默认）
+                #   180 = 线缆接口朝后（装反时设置）
+                #   90  = 线缆接口朝右
+                mount_angle_deg=float(os.environ.get("LIDAR_MOUNT_ANGLE", "0")),
             ),
             on_scan=self._on_scan,
         )
