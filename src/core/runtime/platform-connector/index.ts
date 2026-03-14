@@ -35,6 +35,12 @@ const INBOUND_MAP: Record<string, EventMapping> = {
     priority: 'MEDIUM',
     summary: (p) => `说话结束，时长 ${p.duration_ms ?? '?'}ms，等待丘脑转写`,
   },
+  // TTS 全部句子播放完毕，通知 ConvManager 重新进入 LISTENING
+  'sense.audio.speak_end': {
+    type: 'sense.audio.speak_end',
+    priority: 'LOW',
+    summary: () => 'TTS 播放完毕',
+  },
   // 低电量告警：充电中不触发，由 PowerSensor 节流（最多每 60s 一次）
   'sense.power.low_battery': {
     type: 'sense.system.battery',
