@@ -66,7 +66,10 @@ class ConnectionManager:
         logger.info(f"[WS] 新连接，当前连接数：{len(self.active)}")
 
     def disconnect(self, ws: WebSocket) -> None:
-        self.active.remove(ws)
+        try:
+            self.active.remove(ws)
+        except ValueError:
+            pass
         logger.info(f"[WS] 连接断开，当前连接数：{len(self.active)}")
 
     async def broadcast(self, message: dict) -> None:

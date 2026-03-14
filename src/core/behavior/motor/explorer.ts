@@ -15,7 +15,7 @@
 
 import { PlatformConnector } from '../../runtime/platform-connector'
 
-const PLATFORM_URL = process.env.PLATFORM_URL ?? 'http://localhost:8001'
+const PLATFORM_URL = process.env.ROBOROCK_BRIDGE_URL ?? 'http://localhost:8001'
 
 // ── 配置参数 ─────────────────────────────────────────────────────
 const POLL_INTERVAL_MS   = 400   // 障碍检测频率
