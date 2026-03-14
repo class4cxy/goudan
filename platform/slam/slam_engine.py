@@ -35,7 +35,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# 地图文件保存目录（相对于 bridge/）
+# 地图文件保存目录（相对于 platform/）
 DEFAULT_MAPS_DIR = Path(__file__).parent.parent / "maps"
 
 

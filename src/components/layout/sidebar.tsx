@@ -37,7 +37,7 @@ interface RobotStatus {
 }
 
 interface StatusData {
-  bridge_ok: boolean;
+  platform_ok: boolean;
   roborock: RoborockStatus | null;
   robot: RobotStatus | null;
 }
@@ -53,7 +53,7 @@ function useRobotStatus() {
       const json = (await res.json()) as StatusData;
       setData(json);
     } catch {
-      setData({ bridge_ok: false, roborock: null, robot: null });
+      setData({ platform_ok: false, roborock: null, robot: null });
     } finally {
       setLoading(false);
     }
@@ -196,7 +196,7 @@ export function Sidebar({
   threadRefresh,
 }: SidebarProps) {
   const { data, loading, refresh } = useRobotStatus();
-  const bridgeOk = data?.bridge_ok ?? false;
+  const platformOk = data?.platform_ok ?? false;
   const roborock = data?.roborock;
   const robot    = data?.robot;
 
@@ -238,13 +238,13 @@ export function Sidebar({
           </Button>
         </div>
 
-        {/* Bridge 连接指示 */}
+        {/* Platform 连接指示 */}
         <div className="flex items-center gap-1.5 text-xs">
-          {bridgeOk
+          {platformOk
             ? <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
             : <WifiOffIcon className="h-3 w-3 text-red-400 shrink-0" />}
-          <span className={bridgeOk ? "text-muted-foreground" : "text-red-400"}>
-            {bridgeOk ? "平台已连接" : "平台未连接"}
+          <span className={platformOk ? "text-muted-foreground" : "text-red-400"}>
+            {platformOk ? "平台已连接" : "平台未连接"}
           </span>
         </div>
 

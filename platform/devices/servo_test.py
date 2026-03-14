@@ -282,7 +282,7 @@ def calibrate_tilt():
     print(f"  安全范围：{min_angle:.1f}° – {max_angle:.1f}°（共 {total:.1f}°）")
     print(f"  中心点  ：{center:.1f}°")
     print()
-    print("  将以下配置更新到 bridge/devices/servo.py 的 DEFAULT_CAMERA_CONFIG：")
+    print("  将以下配置更新到 platform/devices/servo.py 的 DEFAULT_CAMERA_CONFIG：")
     print()
     print(f"    tilt=ServoConfig(")
     print(f"        pin=13,")

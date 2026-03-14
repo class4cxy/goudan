@@ -23,24 +23,28 @@
 
 import { PlatformConnector } from '../../runtime/platform-connector'
 
-const PLATFORM_URL = process.env.ROBOROCK_BRIDGE_URL ?? 'http://localhost:8001'
+const PLATFORM_URL = process.env.PLATFORM_URL ?? 'http://localhost:8001'
 
-// ── 距离阈值 ─────────────────────────────────────────────────────
-/**
- * 正前扇区（±30°）前进阈值（mm）：超过此值就脉冲前进。
- * 600mm：比旧版 1000mm 更宽松，普通走廊里也能正常行驶。
- */
-const CLEAR_MM           = 600
-/**
- * 紧急阈值（mm）：任意前方扇区（含对角）低于此值才触发紧急。
- * 对角扇区障碍物只在 <350mm 时才紧急，不再触发轻推。
- */
-const STOP_MM            = 350
-/**
- * 转向完成阈值（mm）：_turnUntilClear 中正前 ±30° 超过此值即退出。
- * 只检查正前，不要求对角也清晰，避免在普通房间找不到"全清"方向。
- */
-const TURN_EXIT_MM       = 400
+// ── 距离阈值（按实际车体几何推算）──────────────────────────────────
+//
+//   车体：长 250mm / 宽 190mm / 高 170mm
+//   雷达在车体中心顶部：前保险杠距雷达 ≈ 125mm，半车宽 95mm
+//
+//   正前（±30°）紧急阈值：
+//     保险杠到雷达 125mm + 刹车余量 95mm = 220mm
+//   对角（30°~50°）紧急阈值（横向分量 < 半车宽时才危险）：
+//     d × sin(40°) < 95mm  →  d < 148mm，取 130mm
+//     → 239mm 对角障碍横向 = 154mm > 95mm，不触发 ✓
+//     →  93mm 对角障碍横向 =  60mm < 95mm，触发紧急 ✓
+//
+/** 正前 ±30° 停车阈值 */
+const FRONT_STOP_MM      = 220
+/** 对角 30°~50° 停车阈值（仅横向危险时触发，不会被远处斜向障碍误报） */
+const DIAG_STOP_MM       = 130
+/** 正前 ±30° 前进阈值：超过才脉冲前进（车短，500mm 足够） */
+const CLEAR_MM           = 500
+/** 转向完成阈值：_turnUntilClear 中正前 > 此值即退出 */
+const TURN_EXIT_MM       = 300
 
 // ── 运动参数 ─────────────────────────────────────────────────────
 const FORWARD_SPEED      = 30
@@ -62,7 +66,21 @@ const TURN_STEP_DURATION = 0.5
 const MAX_TURN_STEPS     = 8
 
 // ── 扇区角度 ─────────────────────────────────────────────────────
-/** 对角扇区半角（°）：捕获斜向障碍（如柜子腿），仅用于紧急检测 */
+//
+//   旧版用 ±30° 作为"正前"扇区，在走廊中侧壁（200mm × sin(30°) = 400mm 处）
+//   会落入该扇区触发"前方被堵"，导致机器人无法直线穿越走廊。
+//
+//   新版：
+//     DRIVE_HALF_DEG = 15°  → 窄扇区，只看"几乎正前"，走廊侧壁不影响前进判断
+//     FRONT_HALF_DEG = 50°  → 宽扇区（15°~50°），捕获斜向障碍，触发 DIAG_STOP
+//
+//   几何验证（走廊宽 400mm = ±200mm 侧壁）：
+//     侧壁进入 ±15° 扇区时：距离 = 200/sin(15°) ≈ 773mm，离得很远，不触发
+//     侧壁进入 ±30° 扇区时：距离 = 200/sin(30°) = 400mm，会误触发（旧 bug）
+//
+/** 正前驾驶扇区半角（°）：决定"能否前进" */
+const DRIVE_HALF_DEG     = 10
+/** 对角扇区边界（°）：15°~50°，紧急侧碰检测 */
 const FRONT_HALF_DEG     = 50
 /** 侧方扇区范围（°）：评估左/右整体空旷度，用于选择转向方向 */
 const SIDE_START_DEG     = 60
@@ -76,10 +94,17 @@ interface LidarPoint {
 
 // ── Explorer 单例 ─────────────────────────────────────────────────
 
+/** 大角度逃脱旋转时长（秒）：约 120°，用于振荡时跳出障碍物簇 */
+const ESCAPE_ROTATE_DURATION = 1.8
+
 class ExplorerClass {
-  private _running       = false
+  private _running            = false
   /** 连续卡死轮数（每次 _turnUntilClear 超过 MAX_TURN_STEPS 视为一次卡死） */
-  private _stuckCount    = 0
+  private _stuckCount         = 0
+  /** 上一次紧急避障的触发侧（left/right/null） */
+  private _lastEmergencySide: 'left' | 'right' | null = null
+  /** 交替触发计数：L→R→L 视为振荡 */
+  private _oscillationCount   = 0
 
   get isRunning() { return this._running }
 
@@ -137,19 +162,51 @@ class ExplorerClass {
       }
 
       // 五扇区
-      const front      = this._minDist(points, -30,             30)
-      const frontLeft  = this._minDist(points, -FRONT_HALF_DEG, -30)
-      const frontRight = this._minDist(points,  30,  FRONT_HALF_DEG)
-      const sideLeft   = this._minDist(points, -SIDE_END_DEG,  -SIDE_START_DEG)
-      const sideRight  = this._minDist(points,  SIDE_START_DEG,  SIDE_END_DEG)
+      // front：±15° 窄扇区，仅看正前，走廊侧壁不影响前进判断
+      // frontLeft/Right：15°~50°，紧急侧碰检测
+      const front      = this._minDist(points, -DRIVE_HALF_DEG,  DRIVE_HALF_DEG)
+      const frontLeft  = this._minDist(points, -FRONT_HALF_DEG, -DRIVE_HALF_DEG)
+      const frontRight = this._minDist(points,  DRIVE_HALF_DEG,  FRONT_HALF_DEG)
+      const sideLeft   = this._minDist(points, -SIDE_END_DEG,   -SIDE_START_DEG)
+      const sideRight  = this._minDist(points,  SIDE_START_DEG,   SIDE_END_DEG)
 
-      const frontAll = Math.min(front, frontLeft, frontRight)
+      // 正前和对角使用不同阈值（避免对角远处障碍误触发紧急）
+      const diagMin    = Math.min(frontLeft, frontRight)
+      const isEmergency = front < FRONT_STOP_MM || diagMin < DIAG_STOP_MM
 
-      if (frontAll < STOP_MM) {
+      if (isEmergency) {
         // ── 紧急避障 ─────────────────────────────────────────────
         console.log(
           `[Explorer] 紧急避障：正前=${front}mm 前左=${frontLeft}mm 前右=${frontRight}mm`
         )
+
+        // 振荡检测：判断本次是左侧还是右侧触发
+        const side: 'left' | 'right' = frontLeft < frontRight ? 'left' : 'right'
+        if (this._lastEmergencySide !== null && this._lastEmergencySide !== side) {
+          // 和上次相反 → 可能在振荡
+          this._oscillationCount++
+        } else {
+          this._oscillationCount = 0
+        }
+        this._lastEmergencySide = side
+
+        if (this._oscillationCount >= 2) {
+          // ── 振荡确认：大角度旋转 + 长距离后退跳出障碍物簇 ─────
+          console.warn(`[Explorer] 振荡检测（${this._oscillationCount} 次交替），执行大角度逃脱`)
+          this._oscillationCount = 0
+          this._lastEmergencySide = null
+          this._motor('stop')
+          await this._sleep(150)
+          // 先大角度旋转（约 120°）彻底改变方向
+          const escapeDir = side === 'left' ? 'turn_right' : 'turn_left'
+          this._motor(escapeDir, TURN_SPEED, ESCAPE_ROTATE_DURATION)
+          await this._sleep(ESCAPE_ROTATE_DURATION * 1000 + 150)
+          // 再长距离后退，离开障碍物簇
+          this._motor('backward', FORWARD_SPEED, BIG_REVERSE_DURATION)
+          await this._sleep(BIG_REVERSE_DURATION * 1000 + 150)
+          continue
+        }
+
         this._motor('stop')
         await this._sleep(150)
         this._motor('backward', FORWARD_SPEED, REVERSE_DURATION)
@@ -170,7 +227,7 @@ class ExplorerClass {
           const reverseDur = this._stuckCount >= 2 ? BIG_REVERSE_DURATION : REVERSE_DURATION
           this._motor('backward', FORWARD_SPEED, reverseDur)
           await this._sleep(reverseDur * 1000 + 150)
-          if (this._stuckCount >= 2) this._stuckCount = 0   // 重置，给机器人重新尝试的机会
+          if (this._stuckCount >= 2) this._stuckCount = 0
         }
 
       } else if (front < CLEAR_MM) {
@@ -183,8 +240,10 @@ class ExplorerClass {
         await this._sleep(TURN_STEP_DURATION * 1000 + 100)
 
       } else {
-        // ── 正前开阔：脉冲前进，重置卡死计数 ────────────────────
-        this._stuckCount = 0
+        // ── 正前开阔：脉冲前进，重置所有计数 ────────────────────
+        this._stuckCount       = 0
+        this._oscillationCount = 0
+        this._lastEmergencySide = null
         this._motor('forward', FORWARD_SPEED, BURST_DURATION)
         await this._sleep(BURST_DURATION * 1000 + 50)
       }
@@ -224,7 +283,7 @@ class ExplorerClass {
       const points = await this._fetchLidar()
       if (!points) continue
 
-      const front = this._minDist(points, -30, 30)
+      const front = this._minDist(points, -DRIVE_HALF_DEG, DRIVE_HALF_DEG)
       console.log(
         `[Explorer] 转向中（步 ${steps + 1}/${MAX_TURN_STEPS}，换向 ${switches} 次）：正前=${front}mm`
       )

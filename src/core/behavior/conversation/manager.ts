@@ -257,19 +257,51 @@ class ConversationManagerClass {
   }
 
   private _speakActive(req: ConvRequest): void {
+    if (!req.content) {
+      console.warn(`[ConvManager] _speakActive called with empty content, source=${req.source}, skipping`)
+      this._toIdle()
+      return
+    }
+
     this.state = 'SPEAKING'
     console.log(`[ConvManager] → SPEAKING（主动），source=${req.source}`)
-    this.context.addAssistant(req.content!)
+    this.context.addAssistant(req.content)
 
     Spine.publish({
       type: 'action.speak',
       priority: 'MEDIUM',
       source: 'conversation.manager',
-      payload: { text: req.content!, interrupt_current: false },
-      summary: `主动发言（${req.source}）："${req.content!.slice(0, 40)}"`,
+      payload: { text: req.content, interrupt_current: false },
+      summary: `主动发言（${req.source}）："${req.content.slice(0, 40)}"`,
     })
 
     this._startResponseWait()
+  }
+
+  private _speakActiveLLM(req: ConvRequest): void {
+    this.state = 'THINKING'
+    console.log(`[ConvManager] → THINKING（主动 LLM），source=${req.source}`)
+
+    let sentenceCount = 0
+    generateVoiceResponse(this.context, (sentence, isFirst) => {
+      this.state = 'SPEAKING'
+      sentenceCount++
+      Spine.publish({
+        type: 'action.speak',
+        priority: 'MEDIUM',
+        source: 'conversation.manager',
+        payload: { text: sentence, interrupt_current: false },
+        summary: `主动发言 LLM 第 ${sentenceCount} 句（${req.source}）："${sentence.slice(0, 40)}"`,
+      })
+    }, req.triggerNote).then((fullText) => {
+      if (fullText) this.context.addAssistant(fullText)
+      if (this.state === 'SPEAKING') {
+        this._startResponseWait()
+      }
+    }).catch((err) => {
+      console.error('[ConvManager] 主动 LLM 出错：', err)
+      this._toIdle()
+    })
   }
 
   private _startResponseWait(): void {
@@ -304,8 +336,10 @@ class ConversationManagerClass {
 
     if (next.mode === 'passive') {
       this._startListening(next.content)
-    } else {
+    } else if (next.content) {
       this._speakActive(next)
+    } else {
+      this._speakActiveLLM(next)
     }
   }
 

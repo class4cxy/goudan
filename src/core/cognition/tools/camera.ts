@@ -10,7 +10,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 
-const BRIDGE_URL = process.env.ROBOROCK_BRIDGE_URL ?? "http://localhost:8001";
+const PLATFORM_URL = process.env.PLATFORM_URL ?? "http://localhost:8001";
 
 export const takeRobotPhoto = tool({
   description:
@@ -19,7 +19,7 @@ export const takeRobotPhoto = tool({
   inputSchema: z.object({}),
   execute: async () => {
     try {
-      const res = await fetch(`${BRIDGE_URL}/camera/capture/save`, {
+      const res = await fetch(`${PLATFORM_URL}/camera/capture/save`, {
         signal: AbortSignal.timeout(10_000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -59,7 +59,7 @@ export const moveCameraMount = tool({
   }),
   execute: async ({ pan, tilt }) => {
     try {
-      const res = await fetch(`${BRIDGE_URL}/camera/look_at`, {
+      const res = await fetch(`${PLATFORM_URL}/camera/look_at`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pan, tilt }),
@@ -80,7 +80,7 @@ export const centerCameraMount = tool({
   inputSchema: z.object({}),
   execute: async () => {
     try {
-      const res = await fetch(`${BRIDGE_URL}/camera/center`, {
+      const res = await fetch(`${PLATFORM_URL}/camera/center`, {
         method: "POST",
         signal: AbortSignal.timeout(5_000),
       });

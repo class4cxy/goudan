@@ -22,8 +22,8 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-# from audio_sensor import AudioSensor    # TODO: 音频硬件安装后取消注释
-# from audio_effector import AudioEffector  # TODO: 音频硬件安装后取消注释
+from audio_sensor import AudioSensor
+from audio_effector import AudioEffector
 from lidar_sensor import LidarSensor
 from slam import SlamEngine, SlamConfig
 from devices import (
@@ -88,8 +88,8 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
-# audio_sensor   = AudioSensor(ws_manager)    # TODO: 音频硬件安装后解除注释
-# audio_effector = AudioEffector(audio_sensor) # TODO: 音频硬件安装后解除注释
+audio_sensor   = AudioSensor(ws_manager)
+audio_effector = AudioEffector(audio_sensor)
 chassis = Chassis(DEFAULT_CONFIG)
 camera  = CameraMount(DEFAULT_CAMERA_CONFIG)
 
@@ -197,10 +197,9 @@ async def lifespan(app: FastAPI):
 
 
 async def _startup():
-    # TODO: 音频硬件安装后解除以下注释
-    # asyncio.create_task(audio_sensor.start(), name="audio_sensor")
-    # asyncio.create_task(audio_effector.start(), name="audio_effector")
-    # logger.info("🎙 音频组件已启动")
+    asyncio.create_task(audio_sensor.start(), name="audio_sensor")
+    asyncio.create_task(audio_effector.start(), name="audio_effector")
+    logger.info("🎙 音频组件已启动")
 
     # 必须在进入 to_thread 前捕获事件循环，子线程中无法调用 asyncio.get_event_loop()（Python 3.10+）
     _loop = asyncio.get_running_loop()
@@ -393,6 +392,78 @@ async def health():
     }
 
 
+# ── 音频模块接口 ───────────────────────────────────────────────────
+
+@app.get("/audio/status", summary="音频模块状态")
+async def audio_status():
+    """
+    查询麦克风 + 扬声器当前状态。
+
+    返回字段：
+      - microphone.muted:     麦克风是否处于静音（防回声）状态
+      - microphone.speaking:  VAD 是否正在检测到语音
+    """
+    return {
+        "microphone": {
+            "muted":    audio_sensor._mic.is_muted,
+            "speaking": audio_sensor._mic._is_speaking,
+        },
+    }
+
+
+@app.post("/audio/verify", summary="音频硬件验证（麦克风 + 扬声器）")
+async def audio_verify():
+    """
+    一键验证音频硬件。
+
+    步骤：
+      1. 枚举 sounddevice 设备列表，检测 USB 音频输入设备
+      2. 通过扬声器播放一段测试语音：「音频硬件验证通过，麦克风和扬声器工作正常。」
+      3. 返回检测结果
+
+    返回字段：
+      - mic_device:   检测到的麦克风设备名（None = 未检测到 USB 声卡，使用 ALSA 默认）
+      - all_devices:  所有可用输入设备列表（含序号、名称、声道数、采样率）
+      - tts_queued:   测试音是否已成功入队播放
+    """
+    # 1. 枚举音频输入设备
+    all_input_devices: list[dict] = []
+    mic_device: str | None = None
+    try:
+        import sounddevice as sd
+        from devices.microphone import find_usb_audio_device
+        mic_device = find_usb_audio_device()
+        for i, dev in enumerate(sd.query_devices()):
+            if dev["max_input_channels"] > 0:
+                all_input_devices.append({
+                    "index":       i,
+                    "name":        dev["name"],
+                    "channels":    dev["max_input_channels"],
+                    "sample_rate": int(dev["default_samplerate"]),
+                    "is_usb_auto": dev["name"] == mic_device,
+                })
+    except Exception as e:
+        logger.warning(f"[audio/verify] 设备枚举失败：{e}")
+
+    # 2. 通过扬声器播放验证音
+    tts_queued = False
+    try:
+        verify_text = "音频硬件验证通过，麦克风和扬声器工作正常。"
+        await audio_effector.enqueue(verify_text, interrupt=False)
+        tts_queued = True
+        logger.info("[audio/verify] 验证音已入队播放")
+    except Exception as e:
+        logger.error(f"[audio/verify] TTS 入队失败：{e}")
+
+    return {
+        "ok":          tts_queued,
+        "mic_device":  mic_device,
+        "all_devices": all_input_devices,
+        "tts_queued":  tts_queued,
+        "hint":        None if mic_device else "未自动检测到 USB 声卡，将使用 ALSA 默认设备，若无声音请检查 lsusb / arecord -l",
+    }
+
+
 # ── 树莓派机器人自身状态 ────────────────────────────────────────────
 @app.get("/robot/status")
 async def robot_status():
@@ -407,8 +478,10 @@ async def robot_status():
             "is_charging": power.is_charging            if power else None,
         },
         "modules": {
-            "lidar":   not lidar_sensor.device.is_simulation,
-            "chassis": not chassis.is_simulation,
+            "lidar":       not lidar_sensor.device.is_simulation,
+            "chassis":     not chassis.is_simulation,
+            "microphone":  True,
+            "speaker":     True,
         },
     }
 
@@ -879,7 +952,7 @@ async def slam_map():
 @app.post("/slam/save", summary="保存当前地图到磁盘")
 async def slam_save(name: str = ""):
     """
-    将当前地图保存到 bridge/maps/ 目录。
+    将当前地图保存到 platform/maps/ 目录。
 
     保存文件：
       {name}.pgm  — 灰度地图图像（ROS 兼容格式）
@@ -898,7 +971,7 @@ async def slam_save(name: str = ""):
 @app.get("/slam/maps", summary="列出所有已保存的地图")
 async def slam_list_maps():
     """
-    列出 bridge/maps/ 目录下所有已保存地图的元数据。
+    列出 platform/maps/ 目录下所有已保存地图的元数据。
 
     每条记录包含：name, created_at, map_size_pixels, scan_count, final_pose 等。
     """
@@ -909,7 +982,7 @@ async def slam_list_maps():
 @app.post("/slam/load/{map_name}", summary="加载已保存的地图")
 async def slam_load_map(map_name: str):
     """
-    从 bridge/maps/ 加载指定名称的地图（恢复 map_bytes，不恢复位姿）。
+    从 platform/maps/ 加载指定名称的地图（恢复 map_bytes，不恢复位姿）。
 
     加载后可用于定位（后续 AMCL 导航），或继续在此基础上建图。
     """
@@ -962,18 +1035,15 @@ async def _handle_action(message: dict) -> None:
     msg_type = message.get("type", "")
     payload = message.get("payload", {})
 
-    # TODO: 音频硬件安装后解除以下注释
-    # if msg_type == "action.speak":
-    #     text = payload.get("text", "")
-    #     interrupt = payload.get("interrupt_current", False)
-    #     if text:
-    #         await audio_effector.enqueue(text, interrupt=interrupt)
-    # elif msg_type == "action.mute":
-    #     audio_sensor.mute()
-    # elif msg_type == "action.unmute":
-    #     audio_sensor.unmute()
-    if msg_type == "action.speak" or msg_type == "action.mute" or msg_type == "action.unmute":
-        logger.warning(f"[WS] 音频模块已禁用，忽略指令：{msg_type}")
+    if msg_type == "action.speak":
+        text = payload.get("text", "")
+        interrupt = payload.get("interrupt_current", False)
+        if text:
+            await audio_effector.enqueue(text, interrupt=interrupt)
+    elif msg_type == "action.mute":
+        audio_sensor.mute()
+    elif msg_type == "action.unmute":
+        audio_sensor.unmute()
 
     elif msg_type == "action.motor":
         command = payload.get("command", "stop")

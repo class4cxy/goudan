@@ -2,14 +2,14 @@ import { tool } from "ai";
 import { z } from "zod";
 import { queries } from "@/lib/db";
 
-const BRIDGE_URL = process.env.PLATFORM_URL ?? "http://localhost:8001";
+const PLATFORM_URL = process.env.PLATFORM_URL ?? "http://localhost:8001";
 
 async function callBridge<T = unknown>(
   method: "GET" | "POST",
   path: string,
   body?: unknown
 ): Promise<T> {
-  const res = await fetch(`${BRIDGE_URL}${path}`, {
+  const res = await fetch(`${PLATFORM_URL}${path}`, {
     method,
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
