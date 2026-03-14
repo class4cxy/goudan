@@ -10,7 +10,7 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import { Explorer } from '@/core/behavior/motor/explorer'
 
-const PLATFORM_URL = process.env.ROBOROCK_BRIDGE_URL ?? 'http://localhost:8001'
+const PLATFORM_URL = process.env.PLATFORM_URL ?? 'http://localhost:8001'
 
 // ── startExploring ────────────────────────────────────────────────
 

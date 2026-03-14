@@ -72,7 +72,7 @@ user_data = await api.code_login(code)
 当前 Bridge 实现的是 **pass_login**。若你希望改为「仅用 Token 文件、不落盘密码」，可以：
 
 - 在 Bridge 里增加：**若存在 `ROBOROCK_CACHE_PATH` 且文件有效，则从文件加载 login_data，否则再走 pass_login**；  
-- 或单独写一个 `bridge/login_once.py`，跑通 `request_code` → `code_login`，把 `user_data` 按库支持的格式写入 `ROBOROCK_CACHE_PATH`，再由 Bridge 读取。
+- 或单独写一个 `platform/login_once.py`，跑通 `request_code` → `code_login`，把 `user_data` 按库支持的格式写入 `ROBOROCK_CACHE_PATH`，再由 Platform 读取。
 
 具体字段名和序列化方式需对照你安装的 python-roborock 版本（4.x 的 `UserData` / 返回值结构）做适配。
 

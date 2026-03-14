@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-const BRIDGE_URL = process.env.ROBOROCK_BRIDGE_URL ?? "http://localhost:8001";
+const PLATFORM_URL = process.env.PLATFORM_URL ?? "http://localhost:8001";
 
 /**
  * GET /api/snapshot/[filename]
@@ -20,7 +20,7 @@ export async function GET(
   }
 
   try {
-    const res = await fetch(`${BRIDGE_URL}/snapshots/${filename}`, {
+    const res = await fetch(`${PLATFORM_URL}/snapshots/${filename}`, {
       signal: AbortSignal.timeout(8_000),
     });
     if (!res.ok) {

@@ -1,5 +1,5 @@
 """
-bridge/device — 机器车硬件抽象层
+platform/devices — 机器车硬件抽象层
 
 公开接口：
 

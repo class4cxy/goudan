@@ -61,7 +61,7 @@
 - 驱动 4 路直流电机（差速控制车轮）
 - 预留超声波传感器、红外循迹传感器接口
 - 通过 IIC 接口扩展 OLED 状态屏（可选）
-- Bridge 层通过 GPIO 引脚控制电机驱动 IC（`bridge/motor_test.py` 对应测试脚本）
+- Platform 层通过 GPIO 引脚控制电机驱动 IC（`platform/devices/motor_test.py` 对应测试脚本）
 
 ---
 
@@ -124,7 +124,7 @@
 | 230400 | 8 Bits | 1 | 无 | 无 |
 
 - **单向通信**：LD06 单向发送，稳定旋转后即开始发送测量数据，不需要发送任何指令
-- 每帧数据包为 **47 字节**（见 `bridge/devices/lidar.py` 协议解析实现）
+- 每帧数据包为 **47 字节**（见 `platform/devices/lidar.py` 协议解析实现）
 - 坐标系：左手坐标系，正前方为 X 轴（0 角度位置），旋转角度沿顺时针方向增大
 
 ### PWM 转速控制说明
@@ -135,7 +135,7 @@
 
 ### 在本项目中的角色
 
-- 提供 360° 环境点云数据，通过 `bridge/lidar_sensor.py` 接入 SLAM 引擎（breezyslam）
+- 提供 360° 环境点云数据，通过 `platform/lidar_sensor.py` 接入 SLAM 引擎（breezyslam）
 - 通过 CP2102 USB-TTL 模块连接到树莓派 USB 口，在系统中注册为串口设备（如 `/dev/ttyUSB0`）
 
 ---
@@ -191,7 +191,7 @@ CP2102 USB-A     →  树莓派 USB-A 口
 ### 在本项目中的角色
 
 - 连接后在树莓派中识别为 `/dev/ttyUSB0`（或 `/dev/ttyACM0`）
-- Bridge 层 `bridge/devices/lidar.py` 打开该串口，波特率 230400，进行协议解析
+- Bridge 层 `platform/devices/lidar.py` 打开该串口，波特率 230400，进行协议解析
 
 ---
 
@@ -254,13 +254,13 @@ CP2102 USB-A     →  树莓派 USB-A 口
 
 ### 在本项目中的角色
 
-- **录音（Sensory）**：Bridge 层 `bridge/audio_sensor.py` 通过 PyAudio/sounddevice 采集 PCM 音频，经 WebRTC VAD 检测语音活动，将完整语音块作为 `sense.audio.speech_end` 事件发布到 Spine
-- **外放（Action）**：Bridge 层 `bridge/audio_effector.py` 接收 TTS 合成结果（edge-tts），通过 ALSA 播放至扬声器
+- **录音（Sensory）**：Bridge 层 `platform/audio_sensor.py` 通过 PyAudio/sounddevice 采集 PCM 音频，经 WebRTC VAD 检测语音活动，将完整语音块作为 `sense.audio.speech_end` 事件发布到 Spine
+- **外放（Action）**：Bridge 层 `platform/audio_effector.py` 接收 TTS 合成结果（edge-tts），通过 ALSA 播放至扬声器
 - 设备名称查询：`aplay -l`（播放设备）、`arecord -l`（录音设备）
 
 ### 采样率策略（代码层）
 
-`bridge/devices/microphone.py` 会在启动时自动探测设备支持的采样率：
+`platform/devices/microphone.py` 会在启动时自动探测设备支持的采样率：
 
 1. 优先尝试 **16000Hz**（webrtcvad 原生支持，零开销）
 2. 若不支持，自动回退到 **48000Hz** + 3:1 均值抽取降采样至 16000Hz
@@ -268,7 +268,7 @@ CP2102 USB-A     →  树莓派 USB-A 口
 ```
 arecord -l            # 查看 ALSA 已注册的录音设备
 aplay -l              # 查看播放设备
-python3 bridge/devices/microphone_test.py --probe   # 探测设备支持的采样率
+python3 platform/devices/microphone_test.py --probe   # 探测设备支持的采样率
 ```
 
 ### 注意事项
@@ -283,7 +283,7 @@ defaults.ctl.card 1
 ```
 
 - 具体卡号（card 0/1/2）通过 `aplay -l` 确认
-- `bridge/devices/microphone.py` 中 `find_usb_audio_device()` 会扫描设备名含 `usb` 的输入设备自动匹配，免去手动配置
+- `platform/devices/microphone.py` 中 `find_usb_audio_device()` 会扫描设备名含 `usb` 的输入设备自动匹配，免去手动配置
 
 ---
 
@@ -323,25 +323,25 @@ defaults.ctl.card 1
 
 | BCM 编号 | 物理引脚 | 功能描述 | 所属模块 | 代码文件 | 备注 |
 |----------|---------|---------|---------|---------|------|
-| GPIO 2 | Pin 3 | SDA1（I2C 数据） | INA219 电源传感器 | `bridge/devices/power_sensor.py` | I2C 总线，硬件复用允许挂多设备 |
-| GPIO 3 | Pin 5 | SCL1（I2C 时钟） | INA219 电源传感器 | `bridge/devices/power_sensor.py` | I2C 总线，同上 |
-| GPIO 5 | Pin 29 | M3 IN1（PWM 正转） | 左后轮电机 | `bridge/devices/chassis.py` | SW-6008 驱动，直接 IN PWM 模式 |
-| GPIO 6 | Pin 31 | M3 IN2（PWM 反转） | 左后轮电机 | `bridge/devices/chassis.py` | 同上 |
-| GPIO 9 | Pin 21 | M4 IN2（PWM 反转） | 右后轮电机 | `bridge/devices/chassis.py` | ⚠️ 兼 SPI0 MISO，禁止启用 SPI0 |
-| GPIO 12 | Pin 32 | PWM0 — 云台水平轴 Pan | 摄像头云台舵机 | `bridge/devices/servo.py` | 硬件 PWM，50Hz |
-| GPIO 13 | Pin 33 | PWM1 — 云台垂直轴 Tilt | 摄像头云台舵机 | `bridge/devices/servo.py` | ⚠️ 硬件 PWM；扩展板 GPIO 接口也引出此脚，勿再外接 |
-| GPIO 22 | Pin 15 | M4 IN1（PWM 正转） | 右后轮电机 | `bridge/devices/chassis.py` | SW-6008 驱动 |
-| GPIO 24 | Pin 18 | M1 IN1（PWM 正转） | 左前轮电机 | `bridge/devices/chassis.py` | SW-6008 驱动 |
-| GPIO 25 | Pin 22 | M1 IN2（PWM 反转） | 左前轮电机 | `bridge/devices/chassis.py` | SW-6008 驱动 |
-| GPIO 26 | Pin 37 | M2 IN2（PWM 反转） | 右前轮电机 | `bridge/devices/chassis.py` | SW-6008 驱动 |
-| GPIO 27 | Pin 13 | M2 IN1（PWM 正转） | 右前轮电机 | `bridge/devices/chassis.py` | SW-6008 驱动 |
+| GPIO 2 | Pin 3 | SDA1（I2C 数据） | INA219 电源传感器 | `platform/devices/power_sensor.py` | I2C 总线，硬件复用允许挂多设备 |
+| GPIO 3 | Pin 5 | SCL1（I2C 时钟） | INA219 电源传感器 | `platform/devices/power_sensor.py` | I2C 总线，同上 |
+| GPIO 5 | Pin 29 | M3 IN1（PWM 正转） | 左后轮电机 | `platform/devices/chassis.py` | SW-6008 驱动，直接 IN PWM 模式 |
+| GPIO 6 | Pin 31 | M3 IN2（PWM 反转） | 左后轮电机 | `platform/devices/chassis.py` | 同上 |
+| GPIO 9 | Pin 21 | M4 IN2（PWM 反转） | 右后轮电机 | `platform/devices/chassis.py` | ⚠️ 兼 SPI0 MISO，禁止启用 SPI0 |
+| GPIO 12 | Pin 32 | PWM0 — 云台水平轴 Pan | 摄像头云台舵机 | `platform/devices/servo.py` | 硬件 PWM，50Hz |
+| GPIO 13 | Pin 33 | PWM1 — 云台垂直轴 Tilt | 摄像头云台舵机 | `platform/devices/servo.py` | ⚠️ 硬件 PWM；扩展板 GPIO 接口也引出此脚，勿再外接 |
+| GPIO 22 | Pin 15 | M4 IN1（PWM 正转） | 右后轮电机 | `platform/devices/chassis.py` | SW-6008 驱动 |
+| GPIO 24 | Pin 18 | M1 IN1（PWM 正转） | 左前轮电机 | `platform/devices/chassis.py` | SW-6008 驱动 |
+| GPIO 25 | Pin 22 | M1 IN2（PWM 反转） | 左前轮电机 | `platform/devices/chassis.py` | SW-6008 驱动 |
+| GPIO 26 | Pin 37 | M2 IN2（PWM 反转） | 右前轮电机 | `platform/devices/chassis.py` | SW-6008 驱动 |
+| GPIO 27 | Pin 13 | M2 IN1（PWM 正转） | 右前轮电机 | `platform/devices/chassis.py` | SW-6008 驱动 |
 
 **USB 设备（不占用 GPIO 引脚）：**
 
 | 设备节点 | 用途 | 模块 |
 |---------|------|------|
-| `/dev/ttyUSB0` | LD06 激光雷达数据输入 | `bridge/devices/lidar.py` |
-| USB Audio Card | 录音/外放 | `bridge/audio_sensor.py` / `bridge/audio_effector.py` |
+| `/dev/ttyUSB0` | LD06 激光雷达数据输入 | `platform/devices/lidar.py` |
+| USB Audio Card | 录音/外放 | `platform/audio_sensor.py` / `platform/audio_effector.py` |
 
 ---
 

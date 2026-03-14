@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-const BRIDGE_URL = process.env.ROBOROCK_BRIDGE_URL ?? "http://localhost:8001";
+const PLATFORM_URL = process.env.PLATFORM_URL ?? "http://localhost:8001";
 
 /**
  * GET /api/slam/map
@@ -11,7 +11,7 @@ const BRIDGE_URL = process.env.ROBOROCK_BRIDGE_URL ?? "http://localhost:8001";
  */
 export async function GET(): Promise<Response> {
   try {
-    const res = await fetch(`${BRIDGE_URL}/slam/map`, {
+    const res = await fetch(`${PLATFORM_URL}/slam/map`, {
       signal: AbortSignal.timeout(8_000),
     });
 
