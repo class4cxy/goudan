@@ -60,7 +60,7 @@ class PowerReading:
 class PowerSensorConfig:
     shunt_ohms: float        = 0.1    # 板载分流电阻阻值（R100 = 0.1Ω）
     i2c_address: int         = 0x40   # INA219 I2C 地址（默认 0x40）
-    max_expected_amps: float = 3.2    # 预期最大电流（A），INA219 + 0.1Ω 分流电阻硬件上限
+    max_expected_amps: float = 2.5    # 预期最大电流（A）；pi-ina219 要求严格小于 3.2A 上限
     poll_interval_s: float   = 5.0    # 采样间隔（秒）
     battery_full_v: float    = 8.4    # 电池满电电压（V）：2S LiPo = 8.4V（4.2V×2）
     battery_empty_v: float   = 6.6    # 电池安全下限电压（V）：2S LiPo = 6.6V（3.3V×2）
