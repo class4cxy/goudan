@@ -4,6 +4,10 @@ uvicorn[standard]>=0.32.0
 python-dotenv>=1.0.0
 
 # 音频感官层 (AudioSensor)
+# ⚠️  系统依赖（pip 前需先安装）：
+#   sudo apt install -y libportaudio2 python3-dev gcc
+#   libportaudio2：sounddevice 底层音频引擎（OSError: cannot find PortAudio）
+#   python3-dev + gcc：webrtcvad 无 aarch64 预编译 wheel，需本地编译
 sounddevice>=0.5.0
 webrtcvad>=2.0.10
 numpy>=1.26.0

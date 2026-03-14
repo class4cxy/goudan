@@ -173,7 +173,7 @@ class Microphone:
             return
 
         self._vad = webrtcvad.Vad(self._vad_aggressiveness)
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
 
         # 优先自动检测 USB 设备
         device = self._device
