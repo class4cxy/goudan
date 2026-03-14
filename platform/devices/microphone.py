@@ -174,6 +174,7 @@ class Microphone:
 
     async def start(self) -> None:
         """启动持续采集循环（阻塞，应在独立 task 中运行）。"""
+        logger.info("[Microphone] start() 被调用")
         try:
             import sounddevice as sd
             import webrtcvad
@@ -181,6 +182,13 @@ class Microphone:
             logger.error(f"[Microphone] 缺少依赖或系统库：{e}，请安装 sounddevice/webrtcvad 及 libportaudio2")
             return
 
+        try:
+            await self._run(sd, webrtcvad)
+        except Exception as e:
+            logger.error(f"[Microphone] 采集任务异常退出：{e}", exc_info=True)
+
+    async def _run(self, sd, webrtcvad) -> None:
+        """实际采集逻辑（从 start 分离，方便统一捕获异常）。"""
         self._vad = webrtcvad.Vad(self._vad_aggressiveness)
         self._loop = asyncio.get_running_loop()
 
