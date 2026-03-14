@@ -14,7 +14,7 @@
 import { Spine } from '../../runtime/spine'
 import type { SpineEvent, AudioSpeechEndPayload } from '../../runtime/spine'
 
-const QWEN_ASR_MODEL = 'qwen-audio-turbo'
+const ASR_MODEL = 'qwen3-asr-flash'
 
 const MIN_DURATION_MS = 400  // 短于此时长的片段丢弃（环境噪声）
 
@@ -56,15 +56,28 @@ export function startAudioThalamus(): void {
     async (event: SpineEvent<AudioSpeechEndPayload>) => {
       const { audio_b64, sample_rate, duration_ms } = event.payload
 
-      if (duration_ms < MIN_DURATION_MS) return
+      console.log(`[AudioThalamus] ← speech_end  时长=${duration_ms}ms  字节=${Math.round(audio_b64.length * 0.75 / 1024)}KB`)
+
+      if (duration_ms < MIN_DURATION_MS) {
+        console.log(`[AudioThalamus] 时长过短（<${MIN_DURATION_MS}ms），丢弃`)
+        return
+      }
 
       try {
+        console.log(`[AudioThalamus] → STT 请求中...`)
         const text = await transcribe(audio_b64, sample_rate)
-        if (!text?.trim()) return
+
+        if (!text?.trim()) {
+          console.log(`[AudioThalamus] STT 返回空，丢弃`)
+          return
+        }
+
+        console.log(`[AudioThalamus] STT 结果："${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`)
 
         // 唤醒词检测：命中则走 sense.audio.keyword 路径，不再发 transcript
         const hitWord = detectWakeWord(text)
         if (hitWord) {
+          console.log(`[AudioThalamus] 唤醒词命中："${hitWord}"`)
           Spine.publish({
             type: 'sense.audio.keyword',
             priority: 'HIGH',
@@ -127,6 +140,7 @@ async function transcribe(audio_b64: string, sampleRate: number): Promise<string
     throw new Error('语音转文字API配置不完整，请检查 SPEECH_API_URL / SPEECH_API_KEY')
   }
 
+  // PCM → WAV，base64 编码后作为 input_audio data URI 传入 chat/completions
   const pcmBuffer = Buffer.from(audio_b64, 'base64')
   const wavBuffer = pcmToWav(pcmBuffer, sampleRate)
   const wavBase64 = wavBuffer.toString('base64')
@@ -139,7 +153,7 @@ async function transcribe(audio_b64: string, sampleRate: number): Promise<string
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: QWEN_ASR_MODEL,
+      model: ASR_MODEL,
       messages: [
         {
           role: 'user',
@@ -158,7 +172,7 @@ async function transcribe(audio_b64: string, sampleRate: number): Promise<string
 
   if (!res.ok) {
     const body = await res.text().catch(() => '')
-    throw new Error(`Qwen ASR 调用失败：status=${res.status}, body=${body.slice(0, 200)}`)
+    throw new Error(`ASR 调用失败：status=${res.status}, body=${body.slice(0, 200)}`)
   }
 
   const data = (await res.json().catch(() => null)) as {
