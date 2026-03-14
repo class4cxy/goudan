@@ -18,6 +18,14 @@ const ASR_MODEL = 'qwen3-asr-flash'
 
 const MIN_DURATION_MS = 400  // 短于此时长的片段丢弃（环境噪声）
 
+// 本地 STT 端点（由 PLATFORM_URL 派生，也可单独用 LOCAL_STT_URL 覆盖）
+// 设置后优先使用本地 faster-whisper，失败时自动降级到云端 ASR
+const LOCAL_STT_URL: string | null = (() => {
+  if (process.env.LOCAL_STT_URL) return process.env.LOCAL_STT_URL
+  if (process.env.PLATFORM_URL) return `${process.env.PLATFORM_URL.replace(/\/$/, '')}/stt/transcribe`
+  return null
+})()
+
 // 唤醒词列表，逗号分隔，支持环境变量覆盖
 const WAKE_WORDS: string[] = (process.env.WAKE_WORDS ?? 'Aria,小豆,狗蛋,aria')
   .split(',')
@@ -137,11 +145,51 @@ function detectWakeWord(text: string): string | null {
 const MAX_PCM_BYTES = 960_000
 
 async function transcribe(audio_b64: string, sampleRate: number): Promise<string> {
+  // ── 优先尝试本地 STT（faster-whisper）────────────────────────────────────
+  if (LOCAL_STT_URL) {
+    try {
+      const text = await transcribeLocal(audio_b64, sampleRate)
+      return text
+    } catch (err) {
+      console.warn(`[AudioThalamus] 本地 STT 失败，降级云端：${(err as Error).message}`)
+    }
+  }
+
+  // ── 云端 ASR（Qwen）───────────────────────────────────────────────────────
+  return transcribeCloud(audio_b64, sampleRate)
+}
+
+/** 调用本地 platform FastAPI /stt/transcribe（faster-whisper）。 */
+async function transcribeLocal(audio_b64: string, sampleRate: number): Promise<string> {
+  const res = await fetch(LOCAL_STT_URL!, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ audio_b64, sample_rate: sampleRate }),
+    signal: AbortSignal.timeout(30_000),
+  })
+
+  if (res.status === 503) {
+    throw new Error('本地 STT 引擎不可用（faster-whisper 未安装或模型未加载）')
+  }
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`本地 STT 返回错误：status=${res.status}, body=${body.slice(0, 200)}`)
+  }
+
+  const data = (await res.json()) as { text?: string }
+  return data.text ?? ''
+}
+
+/** 调用云端 Qwen ASR API（兼容 OpenAI audio 格式）。 */
+async function transcribeCloud(audio_b64: string, sampleRate: number): Promise<string> {
   const speechApiUrl = process.env.SPEECH_API_URL
   const speechApiKey = process.env.SPEECH_API_KEY
 
   if (!speechApiUrl || !speechApiKey) {
-    throw new Error('语音转文字API配置不完整，请检查 SPEECH_API_URL / SPEECH_API_KEY')
+    throw new Error(
+      '语音转文字未配置：本地 STT 不可用，且云端 SPEECH_API_URL / SPEECH_API_KEY 未设置'
+    )
   }
 
   // PCM → WAV，base64 编码后作为 input_audio data URI 传入 chat/completions
@@ -154,8 +202,7 @@ async function transcribe(audio_b64: string, sampleRate: number): Promise<string
   }
 
   const wavBuffer = pcmToWav(pcmBuffer, sampleRate)
-  const wavBase64 = wavBuffer.toString('base64')
-  const dataUri = `data:audio/wav;base64,${wavBase64}`
+  const dataUri = `data:audio/wav;base64,${wavBuffer.toString('base64')}`
 
   const body = JSON.stringify({
     model: ASR_MODEL,
@@ -173,7 +220,7 @@ async function transcribe(audio_b64: string, sampleRate: number): Promise<string
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0) {
       await new Promise((r) => setTimeout(r, 1500))
-      console.log(`[AudioThalamus] ASR 重试（第 ${attempt} 次）...`)
+      console.log(`[AudioThalamus] 云端 ASR 重试（第 ${attempt} 次）...`)
     }
 
     const res = await fetch(speechApiUrl, {
@@ -200,7 +247,7 @@ async function transcribe(audio_b64: string, sampleRate: number): Promise<string
     }
 
     const resBody = await res.text().catch(() => '')
-    lastErr = new Error(`ASR 调用失败：status=${res.status}, body=${resBody.slice(0, 200)}`)
+    lastErr = new Error(`云端 ASR 调用失败：status=${res.status}, body=${resBody.slice(0, 200)}`)
 
     // 只对 5xx 重试，4xx 直接抛出
     if (res.status < 500) break
