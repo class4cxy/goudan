@@ -132,6 +132,10 @@ function detectWakeWord(text: string): string | null {
 
 // ─── STT ─────────────────────────────────────────────────────────────────────
 
+/** 单次 PCM 音频允许发往 ASR 的最大字节数（~30s @ 16kHz 16-bit mono = 960KB PCM）。
+ *  网关批处理后端对超大音频容易返回 500，裁剪后只保留最近部分。 */
+const MAX_PCM_BYTES = 960_000
+
 async function transcribe(audio_b64: string, sampleRate: number): Promise<string> {
   const speechApiUrl = process.env.SPEECH_API_URL
   const speechApiKey = process.env.SPEECH_API_KEY
@@ -141,50 +145,68 @@ async function transcribe(audio_b64: string, sampleRate: number): Promise<string
   }
 
   // PCM → WAV，base64 编码后作为 input_audio data URI 传入 chat/completions
-  const pcmBuffer = Buffer.from(audio_b64, 'base64')
+  let pcmBuffer = Buffer.from(audio_b64, 'base64')
+
+  // 超长音频裁剪：保留最近的 MAX_PCM_BYTES 字节（避免网关 500 batching 错误）
+  if (pcmBuffer.length > MAX_PCM_BYTES) {
+    console.log(`[AudioThalamus] 音频过长（${Math.round(pcmBuffer.length / 1024)}KB），裁剪至 ${Math.round(MAX_PCM_BYTES / 1024)}KB`)
+    pcmBuffer = pcmBuffer.subarray(pcmBuffer.length - MAX_PCM_BYTES)
+  }
+
   const wavBuffer = pcmToWav(pcmBuffer, sampleRate)
   const wavBase64 = wavBuffer.toString('base64')
   const dataUri = `data:audio/wav;base64,${wavBase64}`
 
-  const res = await fetch(speechApiUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${speechApiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: ASR_MODEL,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'input_audio',
-              input_audio: { data: dataUri },
-            },
-          ],
-        },
-      ],
-      stream: false,
-    }),
-    signal: AbortSignal.timeout(60_000),
+  const body = JSON.stringify({
+    model: ASR_MODEL,
+    messages: [
+      {
+        role: 'user',
+        content: [{ type: 'input_audio', input_audio: { data: dataUri } }],
+      },
+    ],
+    stream: false,
   })
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`ASR 调用失败：status=${res.status}, body=${body.slice(0, 200)}`)
+  // 最多重试 1 次（针对 500 批处理后端瞬时错误）
+  let lastErr: Error | null = null
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 1500))
+      console.log(`[AudioThalamus] ASR 重试（第 ${attempt} 次）...`)
+    }
+
+    const res = await fetch(speechApiUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${speechApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body,
+      signal: AbortSignal.timeout(60_000),
+    })
+
+    if (res.ok) {
+      const data = (await res.json().catch(() => null)) as {
+        choices?: Array<{ message?: { content?: unknown } }>
+      } | null
+
+      const text =
+        typeof data?.choices?.[0]?.message?.content === 'string'
+          ? data.choices[0].message.content
+          : ''
+
+      return text
+    }
+
+    const resBody = await res.text().catch(() => '')
+    lastErr = new Error(`ASR 调用失败：status=${res.status}, body=${resBody.slice(0, 200)}`)
+
+    // 只对 5xx 重试，4xx 直接抛出
+    if (res.status < 500) break
   }
 
-  const data = (await res.json().catch(() => null)) as {
-    choices?: Array<{ message?: { content?: unknown } }>
-  } | null
-
-  const text =
-    typeof data?.choices?.[0]?.message?.content === 'string'
-      ? data.choices[0].message.content
-      : ''
-
-  return text
+  throw lastErr!
 }
 
 /** 将原始 PCM（16bit mono）封装为标准 WAV，供 Whisper API 识别。 */
