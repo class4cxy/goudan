@@ -24,6 +24,7 @@ import { Spine } from '../../runtime/spine'
 import type { SpineEvent, AudioTranscriptPayload, AudioEmotionPayload, AudioKeywordPayload } from '../../runtime/spine'
 import { ConversationContext } from './context'
 import { generateVoiceResponse } from '@/core/cognition/brain/conversation'
+import { resetIdleTimer } from './active/idle-initiator'
 
 // ─── 类型 ─────────────────────────────────────────────────────────────────────
 
@@ -170,6 +171,7 @@ class ConversationManagerClass {
   // ─── 私有：唤醒处理 ───────────────────────────────────────────────────────
 
   private _onWake(transcript: string): void {
+    resetIdleTimer()
     console.log(`[ConvManager] 唤醒！transcript="${transcript.slice(0, 40)}"`)
     this._interrupt({
       id: randomUUID(),
@@ -227,6 +229,7 @@ class ConversationManagerClass {
   }
 
   private _startThinking(userText: string, interruptCurrent = false): void {
+    resetIdleTimer()
     this.state = 'THINKING'
     console.log(`[ConvManager] → THINKING，用户：${userText.slice(0, 40)}`)
 
@@ -267,11 +270,14 @@ class ConversationManagerClass {
     console.log(`[ConvManager] → SPEAKING（主动），source=${req.source}`)
     this.context.addAssistant(req.content)
 
+    // priority <= 1（HIGH）时需要打断当前正在播放的 TTS
+    const shouldInterrupt = req.priority <= 1
+
     Spine.publish({
       type: 'action.speak',
       priority: 'MEDIUM',
       source: 'conversation.manager',
-      payload: { text: req.content, interrupt_current: false },
+      payload: { text: req.content, interrupt_current: shouldInterrupt },
       summary: `主动发言（${req.source}）："${req.content.slice(0, 40)}"`,
     })
 
@@ -345,12 +351,8 @@ class ConversationManagerClass {
 
   // ─── 私有：辅助 ──────────────────────────────────────────────────────────
 
-  /** 向 Bridge 发出停止当前 TTS 的信号（用空 interrupt 实现） */
-  private _publishStop(): void {
-    // Bridge 侧：action.speak 若 interrupt_current=true 且 text 非空则打断
-    // 此处直接利用即将入队的新内容携带 interrupt_current=true 来实现停止
-    // 无需单独发一条 stop 消息
-  }
+  /** 打断信号由即将出队的新内容携带 interrupt_current=true 实现，此处无需额外操作。 */
+  private _publishStop(): void {}
 
   private _clearTimers(): void {
     this._clearListenTimer()
