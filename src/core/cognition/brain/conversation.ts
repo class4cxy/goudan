@@ -32,22 +32,29 @@ const VOICE_ADDENDUM = `
  * @param context       当前会话上下文（含对话历史）
  * @param onSentence    每生成一句就立即回调，isFirst=true 代表第一句
  * @param triggerNote   可选：主动发起时注入的情景说明
+ * @param tools         可选：工具集（ALL_TOOLS），由调用方注入避免循环依赖
  * @returns             完整回复文本
  */
 export async function generateVoiceResponse(
   context: ConversationContext,
   onSentence: (text: string, isFirst: boolean) => void,
   triggerNote?: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tools?: Record<string, any>,
 ): Promise<string> {
   const systemPrompt = buildVoiceSystemPrompt(context.getLastEmotion(), triggerNote)
   const messages = context.getMessages()
 
+  const hasTools = tools && Object.keys(tools).length > 0
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { textStream } = streamText({
     model: AGENT_MODEL,
     system: systemPrompt,
     messages,
-    maxOutputTokens: 200,
-  })
+    maxOutputTokens: 300,
+    ...(hasTools ? { tools, maxSteps: 5 } : {}),
+  } as Parameters<typeof streamText>[0])
 
   let buffer = ''
   let fullText = ''
