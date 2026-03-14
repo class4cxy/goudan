@@ -269,7 +269,12 @@ class ConversationManagerClass {
     }, undefined, ALL_TOOLS).then((fullText) => {
       this.context.addAssistant(fullText)
       if (this.state === 'SPEAKING') {
+        // 正常路径：等 Platform 的 speak_end 事件，此处只启动兜底计时器
         this._startResponseWait()
+      } else {
+        // LLM 只调了工具没有生成口语回复（state 仍为 THINKING）→ 直接回 IDLE
+        console.log('[ConvManager] LLM 仅工具调用，无口语输出，→ IDLE')
+        this._toIdle()
       }
     }).catch((err) => {
       console.error('[ConvManager] LLM 出错：', err)
@@ -330,6 +335,7 @@ class ConversationManagerClass {
 
   /** TTS 播完后进入的倾听窗口：用户可直接说话，无需再说唤醒词。 */
   private _startListeningAfterSpeak(): void {
+    this._clearListenTimer()   // 先清旧计时器，防止泄漏
     this.state = 'LISTENING'
     console.log('[ConvManager] → LISTENING（TTS 后倾听）')
     this.listenTimer = setTimeout(() => {

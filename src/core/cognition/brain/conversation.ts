@@ -9,7 +9,7 @@
  * 首句延迟目标：< 1.5s（从用户说完到第一句 TTS 开始播放）
  */
 
-import { streamText } from 'ai'
+import { streamText, stepCountIs } from 'ai'
 import { AGENT_MODEL } from './index'
 import { buildSystemPrompt } from './prompts'
 import type { ConversationContext } from '@/core/behavior/conversation/context'
@@ -52,8 +52,9 @@ export async function generateVoiceResponse(
     model: AGENT_MODEL,
     system: systemPrompt,
     messages,
-    maxOutputTokens: 300,
-    ...(hasTools ? { tools, maxSteps: 5 } : {}),
+    // 有工具时不限制输出 token（工具调用后 LLM 需要额外生成一次口语回复）
+    ...(hasTools ? {} : { maxOutputTokens: 200 }),
+    ...(hasTools ? { tools, stopWhen: stepCountIs(5) } : {}),
   } as Parameters<typeof streamText>[0])
 
   let buffer = ''
