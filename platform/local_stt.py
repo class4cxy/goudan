@@ -88,14 +88,13 @@ class LocalSTT:
         wav_bytes = _pcm_to_wav(pcm_bytes, sample_rate)
 
         with self._lock:
+            # vad_filter=False：上游 WebRTC VAD 已做语音检测，
+            # 传入的音频块均为有效语音，无需二次过滤
             segments, _ = self._model.transcribe(
                 io.BytesIO(wav_bytes),
                 language="zh",
                 beam_size=5,
-                vad_filter=True,       # 内置 VAD 过滤静音段
-                vad_parameters=dict(
-                    min_silence_duration_ms=300,
-                ),
+                vad_filter=False,
             )
             return "".join(seg.text for seg in segments).strip()
 
