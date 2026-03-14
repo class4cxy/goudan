@@ -37,9 +37,9 @@ CHANNELS = 1                 # USB 音频模块麦克风为单声道
 FRAME_DURATION_MS = 30       # webrtcvad 支持 10/20/30ms
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000)  # 480 samples @ 16kHz
 
-# sounddevice 回调块大小：100ms 回调一次（vs 30ms 时 33次/秒），大幅降低 GIL 争抢导致的 input overflow
-# 内部将 100ms 块拆分为多个 30ms VAD 帧逐帧处理
-BLOCK_DURATION_MS = 100
+# sounddevice 回调块大小：300ms 回调一次（vs 30ms 时 33次/秒），大幅降低 GIL 争抢导致的 input overflow
+# 内部将 300ms 块拆分为多个 30ms VAD 帧逐帧处理
+BLOCK_DURATION_MS = 300
 
 # 设为 None 则使用 find_usb_audio_device() 自动检测，未检测到时再退到 ALSA 默认设备
 DEFAULT_DEVICE: str | None = None
@@ -138,7 +138,7 @@ class Microphone:
         self,
         on_speech_start: Callable[[], Awaitable[None]] | None = None,
         on_speech_end: Callable[[bytes, int, int], Awaitable[None]] | None = None,
-        vad_aggressiveness: int = 2,
+        vad_aggressiveness: int = 1,
         device: str | None = DEFAULT_DEVICE,
     ):
         self._on_speech_start = on_speech_start
@@ -271,16 +271,6 @@ class Microphone:
         # webrtcvad 要求帧长精确（FRAME_SIZE * 2 bytes）
         if len(pcm_bytes) != FRAME_SIZE * 2:
             return
-
-        # ── 诊断：每 100 帧（约 3s）打印一次 RMS 电平和 mute 状态 ──────
-        self._diag_frame_count = getattr(self, "_diag_frame_count", 0) + 1
-        if self._diag_frame_count % 100 == 1:
-            samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
-            rms = float(np.sqrt(np.mean(samples ** 2)))
-            logger.info(
-                f"[Microphone] 诊断 — RMS={rms:.1f}  muted={self._is_muted}  "
-                f"speaking={self._is_speaking}  VAD灵敏度={self._vad_aggressiveness}"
-            )
 
         try:
             is_speech = self._vad.is_speech(pcm_bytes, SAMPLE_RATE)
