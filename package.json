@@ -6,7 +6,7 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "platform": "cd platform && uvicorn main:app --host 0.0.0.0 --port 8001 --reload"
+    "platform": "cd platform && python3 -m uvicorn main:app --host 0.0.0.0 --port 8001 --reload"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
