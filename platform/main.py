@@ -19,6 +19,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # from audio_sensor import AudioSensor    # TODO: 音频硬件安装后取消注释
@@ -324,6 +325,11 @@ async def _shutdown():
 
 # ── FastAPI ───────────────────────────────────────────────────────
 app = FastAPI(title="Roborock Bridge", version="2.0.0", lifespan=lifespan)
+
+# 静态文件服务：将快照目录挂载到 /snapshots，供前端直接访问
+_snapshot_dir = os.environ.get("CAMERA_SNAPSHOT_DIR", "/tmp/roborock_snapshots")
+os.makedirs(_snapshot_dir, exist_ok=True)
+app.mount("/snapshots", StaticFiles(directory=_snapshot_dir), name="snapshots")
 
 
 # ── 请求模型 ──────────────────────────────────────────────────────

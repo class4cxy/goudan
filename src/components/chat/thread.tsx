@@ -24,6 +24,9 @@ import {
   TakeRobotPhotoToolUI,
   MoveCameraMountToolUI,
   CenterCameraMountToolUI,
+  StartExploringToolUI,
+  StopExploringToolUI,
+  GetMapStatusToolUI,
 } from "@/components/chat/tool-uis";
 
 // ── Generic tool fallback ─────────────────────────────────────────
@@ -162,6 +165,9 @@ export function ChatThread() {
       <AddTaskToolUI />
       <ListTasksToolUI />
       <CleaningHistoryToolUI />
+      <StartExploringToolUI />
+      <StopExploringToolUI />
+      <GetMapStatusToolUI />
 
       <ThreadPrimitive.Root className="flex h-full flex-col bg-zinc-950 group">
         <ThreadPrimitive.Viewport className="flex-1 overflow-y-auto">

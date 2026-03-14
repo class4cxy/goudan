@@ -44,6 +44,7 @@ export type SpineEventType =
   | 'action.capture'              // 拍照/录像
   | 'action.patrol'               // 开始巡检路线
   | 'action.ignore'               // 显式决策：本次不介入
+  | 'action.explore'              // 自主建图探索控制（start/stop）
 
 // ─── Payload 类型定义 ─────────────────────────────────────────────────────────
 
