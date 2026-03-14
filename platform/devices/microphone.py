@@ -37,6 +37,10 @@ CHANNELS = 1                 # USB 音频模块麦克风为单声道
 FRAME_DURATION_MS = 30       # webrtcvad 支持 10/20/30ms
 FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000)  # 480 samples @ 16kHz
 
+# sounddevice 回调块大小：100ms 回调一次（vs 30ms 时 33次/秒），大幅降低 GIL 争抢导致的 input overflow
+# 内部将 100ms 块拆分为多个 30ms VAD 帧逐帧处理
+BLOCK_DURATION_MS = 100
+
 # 设为 None 则使用 find_usb_audio_device() 自动检测，未检测到时再退到 ALSA 默认设备
 DEFAULT_DEVICE: str | None = None
 
@@ -192,34 +196,57 @@ class Microphone:
             logger.error(str(e))
             return
 
-        native_blocksize = int(native_rate * FRAME_DURATION_MS / 1000)
+        # 用更大的回调块（100ms）降低回调频率，减少 GIL 争抢和 input overflow
+        native_blocksize = int(native_rate * BLOCK_DURATION_MS / 1000)
+        # 每个 100ms 块解码后（降采样至 16kHz）包含的 30ms VAD 帧数
+        vad_frames_per_block = BLOCK_DURATION_MS // FRAME_DURATION_MS
 
         logger.info(
             f"[Microphone] 启动：设备={device!r}，"
             f"采集={native_rate}Hz，目标={SAMPLE_RATE}Hz，"
-            f"降采样因子={downsample}，VAD 灵敏度={self._vad_aggressiveness}"
+            f"降采样因子={downsample}，块大小={BLOCK_DURATION_MS}ms，"
+            f"VAD 灵敏度={self._vad_aggressiveness}"
         )
 
+        # 用于在回调线程积累 overflow 计数，每秒最多打印一次，避免 I/O 卡回调
+        _overflow_count = [0]
+
         def _sd_callback(indata: np.ndarray, frames: int, time, status):
-            # 此回调运行在 sounddevice 专用音频线程，VAD 状态机在此线程同步完成，
-            # 仅语音事件（start/end）时才跨线程通知 asyncio，消除每帧 input overflow。
-            if status:
-                logger.warning(f"[Microphone] sounddevice 状态：{status}")
+            # 回调运行在 sounddevice 专用音频线程，必须快速返回。
+            # 仅累计 overflow 计数；VAD 状态机同步完成；只在语音事件时才跨线程通知 asyncio。
+            if status and status.input_overflow:
+                _overflow_count[0] += 1
+
             frame = indata[:, 0].copy().astype(np.int16)
             if downsample > 1:
                 frame = _decimate(frame, downsample)
-            self._process_frame_sync(frame.tobytes())
+
+            # 将 100ms 块拆分为 30ms VAD 帧逐帧处理
+            for i in range(vad_frames_per_block):
+                chunk = frame[i * FRAME_SIZE : (i + 1) * FRAME_SIZE]
+                if len(chunk) == FRAME_SIZE:
+                    self._process_frame_sync(chunk.tobytes())
+
+        def _flush_overflow_log():
+            """定期把积累的 overflow 计数打印为一条 warning，避免在音频线程做 I/O。"""
+            count = _overflow_count[0]
+            if count > 0:
+                logger.warning(f"[Microphone] input overflow ×{count}（过去 5s）")
+                _overflow_count[0] = 0
 
         with sd.InputStream(
             samplerate=native_rate,
             channels=CHANNELS,
             dtype="int16",
             blocksize=native_blocksize,
+            latency="high",        # 更大的内部缓冲，进一步防止 overflow
             callback=_sd_callback,
             device=device,
         ):
             logger.info("[Microphone] 麦克风已开启，开始监听...")
-            await asyncio.sleep(float("inf"))
+            while True:
+                await asyncio.sleep(5)
+                _flush_overflow_log()
 
     # ─── 内部 VAD 状态机（同步，运行在音频回调线程）────────────────────
 
