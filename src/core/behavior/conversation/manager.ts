@@ -24,6 +24,7 @@ import { Spine } from '../../runtime/spine'
 import type { SpineEvent, AudioTranscriptPayload, AudioEmotionPayload, AudioKeywordPayload, AudioSpeakEndPayload } from '../../runtime/spine'
 import { ConversationContext } from './context'
 import { generateVoiceResponse } from '@/core/cognition/brain/conversation'
+import { ALL_TOOLS } from '@/core/cognition/tools'
 import { resetIdleTimer } from './active/idle-initiator'
 
 // ─── 类型 ─────────────────────────────────────────────────────────────────────
@@ -265,7 +266,7 @@ class ConversationManagerClass {
         payload: { text: sentence, interrupt_current: isFirst && interruptCurrent },
         summary: `语音回复第 ${sentenceCount} 句："${sentence.slice(0, 40)}"`,
       })
-    }).then((fullText) => {
+    }, undefined, ALL_TOOLS).then((fullText) => {
       this.context.addAssistant(fullText)
       if (this.state === 'SPEAKING') {
         this._startResponseWait()
@@ -316,7 +317,7 @@ class ConversationManagerClass {
         payload: { text: sentence, interrupt_current: false },
         summary: `主动发言 LLM 第 ${sentenceCount} 句（${req.source}）："${sentence.slice(0, 40)}"`,
       })
-    }, req.triggerNote).then((fullText) => {
+    }, req.triggerNote, ALL_TOOLS).then((fullText) => {
       if (fullText) this.context.addAssistant(fullText)
       if (this.state === 'SPEAKING') {
         this._startResponseWait()
