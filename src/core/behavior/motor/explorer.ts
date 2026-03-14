@@ -40,18 +40,25 @@ const STOP_MM            = 350
  * 转向完成阈值（mm）：_turnUntilClear 中正前 ±30° 超过此值即退出。
  * 只检查正前，不要求对角也清晰，避免在普通房间找不到"全清"方向。
  */
-const TURN_EXIT_MM       = 500
+const TURN_EXIT_MM       = 400
 
 // ── 运动参数 ─────────────────────────────────────────────────────
 const FORWARD_SPEED      = 30
 const TURN_SPEED         = 35
-/** 单次脉冲前进时长（秒） */
+/**
+ * 正常脉冲前进时长（秒）。
+ * 脱困后使用更长的 ESCAPE_BURST_DURATION，把机器人真正带离障碍区域。
+ */
 const BURST_DURATION     = 0.4
-/** 后退时长（秒） */
+/** 脱困后的前进时长（秒）：比普通脉冲长，确保离开障碍区 */
+const ESCAPE_BURST_DURATION = 0.8
+/** 普通后退时长（秒） */
 const REVERSE_DURATION   = 0.6
-/** 单次转向时长（秒）：果断旋转，不 nudge */
+/** 卡死时大后退时长（秒）：连续卡死后彻底换区域 */
+const BIG_REVERSE_DURATION = 1.5
+/** 单次转向时长（秒） */
 const TURN_STEP_DURATION = 0.5
-/** 最大连续转向次数（超过后换方向+后退脱困） */
+/** 单次转向最大步数（超过后换方向+后退） */
 const MAX_TURN_STEPS     = 8
 
 // ── 扇区角度 ─────────────────────────────────────────────────────
@@ -70,7 +77,9 @@ interface LidarPoint {
 // ── Explorer 单例 ─────────────────────────────────────────────────
 
 class ExplorerClass {
-  private _running  = false
+  private _running       = false
+  /** 连续卡死轮数（每次 _turnUntilClear 超过 MAX_TURN_STEPS 视为一次卡死） */
+  private _stuckCount    = 0
 
   get isRunning() { return this._running }
 
@@ -127,18 +136,17 @@ class ExplorerClass {
         continue
       }
 
-      // 四扇区
+      // 五扇区
       const front      = this._minDist(points, -30,             30)
       const frontLeft  = this._minDist(points, -FRONT_HALF_DEG, -30)
       const frontRight = this._minDist(points,  30,  FRONT_HALF_DEG)
       const sideLeft   = this._minDist(points, -SIDE_END_DEG,  -SIDE_START_DEG)
       const sideRight  = this._minDist(points,  SIDE_START_DEG,  SIDE_END_DEG)
 
-      // 综合前方危险（正前 + 对角扇区）
       const frontAll = Math.min(front, frontLeft, frontRight)
 
       if (frontAll < STOP_MM) {
-        // ── 紧急后退 + 果断转向 ───────────────────────────────────
+        // ── 紧急避障 ─────────────────────────────────────────────
         console.log(
           `[Explorer] 紧急避障：正前=${front}mm 前左=${frontLeft}mm 前右=${frontRight}mm`
         )
@@ -148,11 +156,25 @@ class ExplorerClass {
         await this._sleep(REVERSE_DURATION * 1000 + 150)
 
         const turnDir = this._chooseTurnDir(frontLeft, frontRight, sideLeft, sideRight)
-        await this._turnUntilClear(turnDir)
+        const escaped = await this._turnUntilClear(turnDir)
+
+        if (escaped) {
+          // 成功脱困：用更长脉冲把机器人真正带离障碍区，然后重置卡死计数
+          this._stuckCount = 0
+          this._motor('forward', FORWARD_SPEED, ESCAPE_BURST_DURATION)
+          await this._sleep(ESCAPE_BURST_DURATION * 1000 + 50)
+        } else {
+          // 两个方向都没出路：卡死一次
+          this._stuckCount++
+          console.warn(`[Explorer] 卡死第 ${this._stuckCount} 次，执行大后退`)
+          const reverseDur = this._stuckCount >= 2 ? BIG_REVERSE_DURATION : REVERSE_DURATION
+          this._motor('backward', FORWARD_SPEED, reverseDur)
+          await this._sleep(reverseDur * 1000 + 150)
+          if (this._stuckCount >= 2) this._stuckCount = 0   // 重置，给机器人重新尝试的机会
+        }
 
       } else if (front < CLEAR_MM) {
-        // ── 正前偏近：果断转向（不 nudge）────────────────────────
-        // 选侧方更空旷的方向旋转一步，然后重新检测
+        // ── 正前偏近：朝侧方更空旷一侧旋转一步 ──────────────────
         const turnDir = sideLeft >= sideRight ? 'turn_left' : 'turn_right'
         console.log(
           `[Explorer] 转向 ${turnDir}：正前=${front}mm 左侧=${sideLeft}mm 右侧=${sideRight}mm`
@@ -161,7 +183,8 @@ class ExplorerClass {
         await this._sleep(TURN_STEP_DURATION * 1000 + 100)
 
       } else {
-        // ── 正前开阔：脉冲前进 ────────────────────────────────────
+        // ── 正前开阔：脉冲前进，重置卡死计数 ────────────────────
+        this._stuckCount = 0
         this._motor('forward', FORWARD_SPEED, BURST_DURATION)
         await this._sleep(BURST_DURATION * 1000 + 50)
       }
@@ -179,19 +202,20 @@ class ExplorerClass {
     sideRight: number,
   ): 'turn_left' | 'turn_right' {
     if (Math.abs(frontLeft - frontRight) > 150) {
-      // frontLeft 小 → 左前有障碍 → 转右
       return frontLeft <= frontRight ? 'turn_right' : 'turn_left'
     }
     return sideLeft >= sideRight ? 'turn_left' : 'turn_right'
   }
 
   /**
-   * 持续转向直到正前扇区（±30°）超过 TURN_EXIT_MM。
-   * 只检查正前，不要求对角也清晰，避免在普通房间永远找不到"全清"方向。
+   * 持续转向直到正前扇区（±30°）> TURN_EXIT_MM。
+   * 最多换方向一次（两个方向各转 MAX_TURN_STEPS 步）。
+   * 返回 true = 找到出路；false = 两个方向都被堵死（卡死）。
    */
-  private async _turnUntilClear(dir: 'turn_left' | 'turn_right'): Promise<void> {
-    let steps = 0
+  private async _turnUntilClear(dir: 'turn_left' | 'turn_right'): Promise<boolean> {
+    let steps      = 0
     let currentDir = dir
+    let switches   = 0          // 已换方向次数
 
     while (this._running) {
       this._motor(currentDir, TURN_SPEED, TURN_STEP_DURATION)
@@ -200,24 +224,32 @@ class ExplorerClass {
       const points = await this._fetchLidar()
       if (!points) continue
 
-      // 只用正前扇区判断是否可以前进
       const front = this._minDist(points, -30, 30)
-      console.log(`[Explorer] 转向中（步 ${steps + 1}/${MAX_TURN_STEPS}）：正前=${front}mm`)
+      console.log(
+        `[Explorer] 转向中（步 ${steps + 1}/${MAX_TURN_STEPS}，换向 ${switches} 次）：正前=${front}mm`
+      )
 
       if (front > TURN_EXIT_MM) {
-        console.log('[Explorer] 正前已开阔，继续前进')
-        return
+        console.log('[Explorer] 正前已开阔，脱困成功')
+        return true
       }
 
       steps++
       if (steps >= MAX_TURN_STEPS) {
-        console.warn('[Explorer] 多步转向未找到出路，换方向')
+        switches++
+        if (switches >= 2) {
+          // 两个方向都找不到出路 → 告知调用方卡死
+          console.warn('[Explorer] 两个方向均未找到出路，卡死')
+          return false
+        }
+        console.warn('[Explorer] 该方向未找到出路，换反方向')
         currentDir = currentDir === 'turn_left' ? 'turn_right' : 'turn_left'
         steps = 0
         this._motor('backward', FORWARD_SPEED, REVERSE_DURATION)
         await this._sleep(REVERSE_DURATION * 1000 + 150)
       }
     }
+    return false
   }
 
   // ── 工具方法 ────────────────────────────────────────────────────
