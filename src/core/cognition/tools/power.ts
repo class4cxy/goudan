@@ -1,7 +1,7 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 
-const PLATFORM_URL = process.env.PLATFORM_URL ?? 'http://localhost:8001'
+const PLATFORM_URL = process.env.ROBOROCK_BRIDGE_URL ?? 'http://localhost:8001'
 
 /**
  * getPowerStatus — 查询机器车电源状态
