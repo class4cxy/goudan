@@ -14,20 +14,19 @@ const BRIDGE_URL = process.env.ROBOROCK_BRIDGE_URL ?? "http://localhost:8001";
 
 export const takeRobotPhoto = tool({
   description:
-    "用机器车上的摄像头拍一张照片，返回 base64 编码的 JPEG 图像。" +
+    "用机器车上的摄像头拍一张照片，保存到服务器并返回图片 URL。" +
     "拍照前可先用 moveCameraMount 调整云台朝向，确保拍到想要的区域。",
   inputSchema: z.object({}),
   execute: async () => {
     try {
-      const res = await fetch(`${BRIDGE_URL}/camera/capture/base64`, {
+      const res = await fetch(`${BRIDGE_URL}/camera/capture/save`, {
         signal: AbortSignal.timeout(10_000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const { data, timestamp } = (await res.json()) as {
-        data: string;
-        timestamp: number;
-      };
-      return { success: true, image_base64: data, timestamp };
+      const { path } = (await res.json()) as { path: string };
+      const filename = path.split("/").pop()!;
+      const image_url = `/api/snapshot/${filename}`;
+      return { success: true, image_url, timestamp: Date.now() };
     } catch (err) {
       return {
         success: false,

@@ -17,6 +17,8 @@ import {
   Loader2Icon,
   CameraIcon,
   ScanEyeIcon,
+  NavigationIcon,
+  SquareIcon,
 } from "lucide-react";
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -320,7 +322,7 @@ export const CleaningHistoryToolUI = makeAssistantToolUI<
 
 export const TakeRobotPhotoToolUI = makeAssistantToolUI<
   Record<string, never>,
-  { success: boolean; image_base64?: string; timestamp?: number; error?: string; hint?: string }
+  { success: boolean; image_url?: string; timestamp?: number; error?: string; hint?: string }
 >({
   toolName: "takeRobotPhoto",
   render({ result, status: execStatus }) {
@@ -336,9 +338,9 @@ export const TakeRobotPhotoToolUI = makeAssistantToolUI<
     }
     return (
       <ToolCard icon={CameraIcon} title="机器车视角">
-        {result.image_base64 && (
+        {result.image_url && (
           <img
-            src={`data:image/jpeg;base64,${result.image_base64}`}
+            src={result.image_url}
             alt="机器车摄像头截图"
             className="w-full rounded-md object-cover"
           />
@@ -373,6 +375,86 @@ export const MoveCameraMountToolUI = makeAssistantToolUI<
         {!loading && result && !result.success && (
           <p className="text-xs text-red-400 mt-1">{result.error}</p>
         )}
+      </ToolCard>
+    );
+  },
+});
+
+export const StartExploringToolUI = makeAssistantToolUI<
+  Record<string, never>,
+  { success: boolean; message?: string; error?: string }
+>({
+  toolName: "startExploring",
+  render({ result, status: execStatus }) {
+    const loading = execStatus.type === "running";
+    return (
+      <ToolCard icon={NavigationIcon} title="自主建图" loading={loading}>
+        {!loading && result && (
+          <p className={`text-xs ${result.success ? "text-emerald-400" : "text-red-400"}`}>
+            {result.success ? result.message : result.error}
+          </p>
+        )}
+      </ToolCard>
+    );
+  },
+});
+
+export const StopExploringToolUI = makeAssistantToolUI<
+  { save_name?: string },
+  { success: boolean; message?: string; map_name?: string; error?: string }
+>({
+  toolName: "stopExploring",
+  render({ result, status: execStatus }) {
+    const loading = execStatus.type === "running";
+    return (
+      <ToolCard icon={SquareIcon} title="停止建图" loading={loading}>
+        {!loading && result && (
+          <div className="space-y-1">
+            <p className={`text-xs ${result.success ? "text-emerald-400" : "text-red-400"}`}>
+              {result.success ? result.message : result.error}
+            </p>
+            {result.map_name && (
+              <Badge variant="outline" className="text-[10px]">
+                📦 {result.map_name}
+              </Badge>
+            )}
+          </div>
+        )}
+      </ToolCard>
+    );
+  },
+});
+
+export const GetMapStatusToolUI = makeAssistantToolUI<
+  Record<string, never>,
+  { success: boolean; is_mapping?: boolean; scan_count?: number; exploring?: boolean; pose?: { x_mm: number; y_mm: number; theta_deg: number }; error?: string }
+>({
+  toolName: "getMapStatus",
+  render({ result, status: execStatus }) {
+    const loading = execStatus.type === "running";
+    if (loading) return <ToolCard icon={MapIcon} title="查询地图状态..." loading />;
+    if (!result?.success) {
+      return (
+        <ToolCard icon={MapIcon} title="地图状态">
+          <p className="text-xs text-red-400">{result?.error}</p>
+        </ToolCard>
+      );
+    }
+    return (
+      <ToolCard icon={MapIcon} title="地图状态">
+        <div className="flex flex-wrap gap-2 text-xs">
+          <Badge variant={result.exploring ? "success" : "secondary"}>
+            {result.exploring ? "🔍 探索中" : "已停止"}
+          </Badge>
+          {result.scan_count !== undefined && (
+            <Badge variant="outline">已扫 {result.scan_count} 圈</Badge>
+          )}
+          {result.pose && (
+            <Badge variant="outline" className="font-mono text-[10px]">
+              x:{Math.round(result.pose.x_mm)} y:{Math.round(result.pose.y_mm)}
+            </Badge>
+          )}
+        </div>
       </ToolCard>
     );
   },

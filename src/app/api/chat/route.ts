@@ -16,6 +16,7 @@ function firstText(msg: UIMessage): string | null {
   return null;
 }
 
+
 export async function POST(req: Request) {
   const { messages, threadId } = (await req.json()) as {
     messages: UIMessage[];
