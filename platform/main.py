@@ -196,9 +196,19 @@ async def lifespan(app: FastAPI):
     await _shutdown()
 
 
+def _task_done_callback(task: asyncio.Task) -> None:
+    """捕获并打印 background task 的未处理异常（create_task 默认静默吞掉）。"""
+    if task.cancelled():
+        logger.warning(f"[Task] {task.get_name()} 被取消")
+    elif task.exception():
+        logger.error(f"[Task] {task.get_name()} 异常退出", exc_info=task.exception())
+
+
 async def _startup():
-    asyncio.create_task(audio_sensor.start(), name="audio_sensor")
-    asyncio.create_task(audio_effector.start(), name="audio_effector")
+    t_sensor = asyncio.create_task(audio_sensor.start(), name="audio_sensor")
+    t_effector = asyncio.create_task(audio_effector.start(), name="audio_effector")
+    t_sensor.add_done_callback(_task_done_callback)
+    t_effector.add_done_callback(_task_done_callback)
     logger.info("🎙 音频组件已启动")
 
     # 必须在进入 to_thread 前捕获事件循环，子线程中无法调用 asyncio.get_event_loop()（Python 3.10+）
