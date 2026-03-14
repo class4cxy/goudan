@@ -25,7 +25,8 @@ pyserial>=3.5
 # breezyslam>=0.8.0
 
 # GPIO (树莓派引脚控制，底盘电机 + 摄像头云台 PWM)
-RPi.GPIO>=0.7.0
+# RPi.GPIO 不支持树莓派 5（BCM2712），使用 rpi-lgpio 作为兼容替代
+rpi-lgpio>=0.6
 
 # 电源监测 (INA219 电流/电压传感器，I2C)
 pi-ina219>=1.3.0
