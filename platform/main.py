@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from audio_sensor import AudioSensor
 from audio_effector import AudioEffector
+from local_stt import LocalSTT
 from lidar_sensor import LidarSensor
 from slam import SlamEngine, SlamConfig
 from devices import (
@@ -90,6 +91,7 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 audio_sensor   = AudioSensor(ws_manager)
 audio_effector = AudioEffector(audio_sensor, ws_manager)
+local_stt      = LocalSTT()
 chassis = Chassis(DEFAULT_CONFIG)
 camera  = CameraMount(DEFAULT_CAMERA_CONFIG)
 
@@ -210,6 +212,13 @@ async def _startup():
     t_sensor.add_done_callback(_task_done_callback)
     t_effector.add_done_callback(_task_done_callback)
     logger.info("🎙 音频组件已启动")
+
+    # 在独立线程中加载 Whisper 模型（避免阻塞事件循环，模型首次下载可能较慢）
+    await asyncio.to_thread(local_stt.load)
+    if local_stt.is_available:
+        logger.info(f"🧠 本地 STT 就绪（模型：{local_stt.status['model']}）")
+    else:
+        logger.warning("⚠️  本地 STT 不可用，将依赖云端 ASR（SPEECH_API_URL）")
 
     # 必须在进入 to_thread 前捕获事件循环，子线程中无法调用 asyncio.get_event_loop()（Python 3.10+）
     _loop = asyncio.get_running_loop()
@@ -400,6 +409,48 @@ async def health():
             "token_expired": TOKEN_FILE.with_suffix(".json.expired").exists(),
         },
     }
+
+
+# ── 本地 STT 接口 ──────────────────────────────────────────────────
+
+class STTRequest(BaseModel):
+    audio_b64:   str
+    sample_rate: int = 16000
+
+
+@app.get("/stt/status", summary="本地 STT 引擎状态")
+async def stt_status():
+    """查询本地 Whisper STT 引擎当前状态（模型名称、是否就绪）。"""
+    return local_stt.status
+
+
+@app.post("/stt/transcribe", summary="本地语音识别（faster-whisper）")
+async def stt_transcribe(req: STTRequest):
+    """
+    将 base64 编码的 PCM 音频（16-bit mono）转为中文文字。
+
+    请求体：
+      - audio_b64:   base64(PCM raw bytes)
+      - sample_rate: 采样率，默认 16000
+
+    返回：
+      - text: 识别出的文字
+      - model: 使用的模型名称
+
+    503：faster-whisper 未安装或模型加载失败
+    """
+    if not local_stt.is_available:
+        raise HTTPException(
+            status_code=503,
+            detail="本地 STT 不可用，请安装：pip install faster-whisper",
+        )
+    try:
+        text = await asyncio.to_thread(
+            local_stt.transcribe, req.audio_b64, req.sample_rate
+        )
+        return {"text": text, "model": local_stt.status["model"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── 音频模块接口 ───────────────────────────────────────────────────
