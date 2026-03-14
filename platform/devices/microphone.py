@@ -16,6 +16,11 @@ Microphone — 麦克风硬件抽象层
   优先尝试 16000Hz（webrtcvad 原生支持）；
   若设备不支持，自动回退到 48000Hz 并以 3:1 均值抽取降采样至 16000Hz。
 
+性能说明：
+  VAD 状态机在 sounddevice 音频回调线程中同步执行，仅在语音开始/结束事件时才通过
+  run_coroutine_threadsafe 跨线程通知 asyncio 事件循环。
+  避免了每帧（33次/秒）跨线程投递协程导致的事件循环积压和 input overflow。
+
 依赖：sounddevice, webrtcvad, numpy
 """
 
@@ -196,15 +201,14 @@ class Microphone:
         )
 
         def _sd_callback(indata: np.ndarray, frames: int, time, status):
+            # 此回调运行在 sounddevice 专用音频线程，VAD 状态机在此线程同步完成，
+            # 仅语音事件（start/end）时才跨线程通知 asyncio，消除每帧 input overflow。
             if status:
                 logger.warning(f"[Microphone] sounddevice 状态：{status}")
-            if self._loop and self._loop.is_running():
-                frame = indata[:, 0].copy().astype(np.int16)
-                if downsample > 1:
-                    frame = _decimate(frame, downsample)
-                asyncio.run_coroutine_threadsafe(
-                    self._process_frame(frame.tobytes()), self._loop
-                )
+            frame = indata[:, 0].copy().astype(np.int16)
+            if downsample > 1:
+                frame = _decimate(frame, downsample)
+            self._process_frame_sync(frame.tobytes())
 
         with sd.InputStream(
             samplerate=native_rate,
@@ -217,13 +221,19 @@ class Microphone:
             logger.info("[Microphone] 麦克风已开启，开始监听...")
             await asyncio.sleep(float("inf"))
 
-    # ─── 内部 VAD 状态机 ──────────────────────────────────────────────
+    # ─── 内部 VAD 状态机（同步，运行在音频回调线程）────────────────────
 
-    async def _process_frame(self, pcm_bytes: bytes) -> None:
+    def _process_frame_sync(self, pcm_bytes: bytes) -> None:
+        """
+        在音频回调线程中同步运行 VAD 状态机。
+
+        仅在语音开始/结束事件时通过 run_coroutine_threadsafe 通知 asyncio，
+        而非每帧都投递协程，从而消除事件循环积压和 input overflow。
+        """
         if self._is_muted or self._vad is None:
             return
 
-        # webrtcvad 要求帧长精确（480 bytes = 240 个 int16 samples @ 16kHz 30ms）
+        # webrtcvad 要求帧长精确（FRAME_SIZE * 2 bytes）
         if len(pcm_bytes) != FRAME_SIZE * 2:
             return
 
@@ -237,8 +247,10 @@ class Microphone:
                 self._is_speaking = True
                 self._speech_buffer.clear()
                 self._silent_frames = 0
-                if self._on_speech_start:
-                    await self._on_speech_start()
+                if self._on_speech_start and self._loop:
+                    asyncio.run_coroutine_threadsafe(
+                        self._on_speech_start(), self._loop
+                    )
                 logger.debug("[Microphone] → speech_start")
 
             self._speech_buffer.append(pcm_bytes)
@@ -250,10 +262,10 @@ class Microphone:
                 self._speech_buffer.append(pcm_bytes)  # 保留尾部静音，避免截断
 
                 if self._silent_frames >= SILENCE_FRAMES:
-                    await self._flush_speech()
+                    self._flush_speech_sync()
 
-    async def _flush_speech(self) -> None:
-        """将缓冲的语音块打包，回调上层，然后重置状态。"""
+    def _flush_speech_sync(self) -> None:
+        """打包语音块，通过 run_coroutine_threadsafe 提交 on_speech_end 回调，然后重置状态。"""
         self._is_speaking = False
 
         if len(self._speech_buffer) < MIN_SPEECH_FRAMES:
@@ -265,8 +277,10 @@ class Microphone:
         raw_pcm = b"".join(self._speech_buffer)
         duration_ms = len(self._speech_buffer) * FRAME_DURATION_MS
 
-        if self._on_speech_end:
-            await self._on_speech_end(raw_pcm, SAMPLE_RATE, duration_ms)
+        if self._on_speech_end and self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._on_speech_end(raw_pcm, SAMPLE_RATE, duration_ms), self._loop
+            )
 
         logger.debug(f"[Microphone] → speech_end ({duration_ms}ms, {len(raw_pcm)} bytes)")
 
