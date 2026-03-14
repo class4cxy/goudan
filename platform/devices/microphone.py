@@ -162,9 +162,16 @@ class Microphone:
         logger.debug("[Microphone] 已静音")
 
     def unmute(self) -> None:
-        """外放结束后恢复监听。"""
+        """外放结束后恢复监听，同时清除静音期间可能残留的 VAD 脏状态。"""
         self._is_muted = False
-        logger.debug("[Microphone] 已恢复")
+        # 静音期间 VAD 状态机被冻结，若 _is_speaking 仍为 True 则说明有未 flush 的脏缓冲，
+        # 直接丢弃，防止 TTS 回声数据被当作用户语音发给 STT。
+        if self._is_speaking:
+            logger.debug(f"[Microphone] unmute 时丢弃脏缓冲 {len(self._speech_buffer)} 帧")
+            self._is_speaking = False
+            self._speech_buffer.clear()
+            self._silent_frames = 0
+        logger.info("[Microphone] 已恢复监听")
 
     @property
     def is_muted(self) -> bool:
