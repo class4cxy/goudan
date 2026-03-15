@@ -64,6 +64,8 @@ const LISTEN_AFTER_SPEAK_MS = 10_000
 const RESPONSE_WAIT_FALLBACK_MS = 30_000
 /** LISTENING 状态无输入超时 */
 const LISTEN_TIMEOUT_MS = 10_000
+/** 是否要求唤醒词后才响应语音。默认 true；调试本地语音对话可设 VOICE_REQUIRE_WAKE_WORD=false */
+const REQUIRE_WAKE_WORD = (process.env.VOICE_REQUIRE_WAKE_WORD ?? 'true').toLowerCase() !== 'false'
 
 // ─── ConversationManager ─────────────────────────────────────────────────────
 
@@ -93,8 +95,14 @@ class ConversationManagerClass {
         // 用户说话打断 agent
         this._clearTimers()
         this._startThinking(e.payload.text, true)
+      } else if (this.state === 'IDLE' && !REQUIRE_WAKE_WORD) {
+        // 调试模式：允许免唤醒词直接进入对话
+        resetIdleTimer()
+        console.log('[ConvManager] 免唤醒模式命中，IDLE transcript 直接进入 THINKING')
+        this._startThinking(e.payload.text)
       }
-      // IDLE / THINKING 状态的 transcript 由旁听分析器 (AmbientAnalyzer) 处理
+      // THINKING 状态 transcript 始终由旁听分析器忽略；
+      // IDLE 状态在 REQUIRE_WAKE_WORD=true 时由旁听分析器处理。
     })
 
     // 订阅情绪更新，暂存供下次 thinking 使用

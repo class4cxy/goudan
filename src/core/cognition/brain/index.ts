@@ -10,12 +10,11 @@
  */
 
 import { createDeepSeek } from "@ai-sdk/deepseek";
-
 const deepseek = createDeepSeek({
   apiKey: process.env.DEEPSEEK_API_KEY ?? "",
 });
 
-/** 主推理模型，供所有 brain 子模块共用 */
+/** 主推理模型（全局默认），供 chat/task 等主链路使用 */
 export const AGENT_MODEL = deepseek("deepseek-chat");
 
 export { buildSystemPrompt, SYSTEM_PROMPT, SCHEDULER_PROMPT } from "./prompts";
