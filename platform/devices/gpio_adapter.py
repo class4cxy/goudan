@@ -24,6 +24,9 @@ except (ImportError, RuntimeError):
     class _FakeGPIO:  # noqa: N801
         BCM = "BCM"
         OUT = "OUT"
+        IN = "IN"
+        HIGH = 1
+        LOW = 0
 
         def setmode(self, *_a) -> None:
             pass
@@ -33,6 +36,10 @@ except (ImportError, RuntimeError):
 
         def setup(self, *_a, **_kw) -> None:
             pass
+
+        def input(self, pin: int) -> int:
+            logger.debug("[GPIO-SIM] read pin=%s -> LOW", pin)
+            return self.LOW
 
         def output(self, pin: int, value: bool) -> None:
             logger.debug("[GPIO-SIM] pin=%s value=%s", pin, value)
