@@ -44,6 +44,7 @@ from .microphone import Microphone
 from .speaker import Speaker
 from .lidar import Lidar, LidarConfig, DEFAULT_LIDAR_CONFIG, LidarScan, LidarPoint
 from .power_sensor import PowerSensor, PowerSensorConfig, DEFAULT_POWER_CONFIG, PowerReading
+from .ultrasonic import Ultrasonic, UltrasonicConfig, DEFAULT_ULTRASONIC_CONFIG, UltrasonicReading
 
 __all__ = [
     # 底盘
@@ -76,4 +77,9 @@ __all__ = [
     "PowerSensorConfig",
     "DEFAULT_POWER_CONFIG",
     "PowerReading",
+    # 超声波
+    "Ultrasonic",
+    "UltrasonicConfig",
+    "DEFAULT_ULTRASONIC_CONFIG",
+    "UltrasonicReading",
 ]

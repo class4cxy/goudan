@@ -31,6 +31,7 @@ from devices import (
     CameraMount, DEFAULT_CAMERA_CONFIG,
     Camera, CaptureConfig,
     PowerSensor, PowerSensorConfig, PowerReading,
+    Ultrasonic, UltrasonicConfig, UltrasonicReading,
 )
 
 from roborock.data import UserData
@@ -145,6 +146,31 @@ power_sensor = PowerSensor(
     on_low_battery=_on_low_battery,
 )
 
+def _on_ultrasonic_too_close(reading: UltrasonicReading) -> None:
+    loop = _main_loop
+    if loop and loop.is_running():
+        asyncio.run_coroutine_threadsafe(
+            ws_manager.broadcast({
+                "type": "sense.ultrasonic.too_close",
+                "payload": {
+                    **reading.to_dict(),
+                    "threshold_cm": float(os.environ.get("ULTRASONIC_TOO_CLOSE_CM", "25")),
+                    "message": f"前方障碍过近：{reading.distance_cm:.1f} cm",
+                },
+            }),
+            loop,
+        )
+
+ultrasonic = Ultrasonic(
+    config=UltrasonicConfig(
+        trig_pin=int(os.environ.get("ULTRASONIC_TRIG_PIN", "23")),
+        echo_pin=int(os.environ.get("ULTRASONIC_ECHO_PIN", "16")),
+        poll_interval_s=float(os.environ.get("ULTRASONIC_POLL_INTERVAL", "0.2")),
+        too_close_threshold_cm=float(os.environ.get("ULTRASONIC_TOO_CLOSE_CM", "25")),
+    ),
+    on_too_close=_on_ultrasonic_too_close,
+)
+
 
 # ── 全局状态 ──────────────────────────────────────────────────────
 state: dict[str, Any] = {
@@ -227,6 +253,17 @@ async def _startup():
         logger.warning("⚠️  INA219 未连接，电源监测以模拟模式运行")
     else:
         logger.info("🔋 电源传感器已启动（INA219 @ 0x40）")
+
+    # 启动超声波测距（GPIO 轮询线程，开发机自动模拟模式）
+    await asyncio.to_thread(ultrasonic.start)
+    if ultrasonic.is_simulation:
+        logger.warning("⚠️  超声波传感器运行在模拟模式（未检测到 RPi.GPIO）")
+    else:
+        logger.info(
+            "📏 超声波传感器已启动（Trig=GPIO%s Echo=GPIO%s）",
+            ultrasonic.status["trig_pin"],
+            ultrasonic.status["echo_pin"],
+        )
 
     username: str = ""
     user_data: UserData | None = None
@@ -331,6 +368,10 @@ async def _shutdown():
         pass
     try:
         power_sensor.stop()
+    except Exception:
+        pass
+    try:
+        ultrasonic.stop()
     except Exception:
         pass
 
@@ -492,7 +533,9 @@ async def robot_status():
             "chassis":     not chassis.is_simulation,
             "microphone":  True,
             "speaker":     True,
+            "ultrasonic":  not ultrasonic.is_simulation,
         },
+        "distance": ultrasonic.latest_reading.to_dict() if ultrasonic.latest_reading else None,
     }
 
 
@@ -1021,6 +1064,37 @@ async def power_status():
       - is_low_battery: 当前是否处于低电量状态（< 20%）
     """
     return power_sensor.status
+
+
+# ── 超声波测距接口 ───────────────────────────────────────────────────
+
+@app.get("/ultrasonic/status", summary="超声波传感器状态")
+async def ultrasonic_status():
+    """
+    查询 HC-SR04 传感器当前状态。
+
+    返回字段：
+      - is_simulation: 是否为模拟模式（True = 非树莓派环境）
+      - is_running:    后台轮询线程是否存活
+      - trig_pin/echo_pin: GPIO 引脚配置（BCM）
+      - latest:        最近一次测距读数（distance_cm / is_too_close）
+    """
+    return ultrasonic.status
+
+
+@app.get("/ultrasonic/read", summary="执行一次超声波测距")
+async def ultrasonic_read():
+    """
+    同步触发一次测距并返回结果。
+    若读数超时或超量程，返回 503。
+    """
+    reading = await asyncio.to_thread(ultrasonic.read_once)
+    if reading is None:
+        raise HTTPException(
+            status_code=503,
+            detail="超声波测距失败（回波超时或目标超量程），请检查 Trig/Echo 接线与供电",
+        )
+    return reading.to_dict()
 
 
 # ── WebSocket — Spine 双向通道 ─────────────────────────────────────
