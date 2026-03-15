@@ -19,6 +19,12 @@
  *     WARN_MM=700mm 的 nudge 会让机器人在两侧墙壁之间反复微调，
  *     形成左右振荡，永远走不开。新版只区分"能走"和"不能走"，
  *     遇到障碍就果断旋转半步，不做微调。
+ *
+ *   雷达装高时的盲区（重要）：
+ *     LD06 为 2D 平面雷达，只扫描一个水平面。若雷达装在车身最高处，
+ *     低于该平面的障碍物（桌沿、矮栏、台阶、矮墙）雷达完全“看不见”，
+ *     车体仍会撞上。此时可设 EXPLORER_HIGH_LIDAR=1 启用保守模式（缩短
+ *     步长、降速），减轻碰撞；根本解决需保险杠或底盘高度测距等硬件。
  */
 
 import { PlatformConnector } from '../../runtime/platform-connector'
@@ -45,6 +51,12 @@ const DIAG_STOP_MM       = 130
 const CLEAR_MM           = 500
 /** 转向完成阈值：_turnUntilClear 中正前 > 此值即退出 */
 const TURN_EXIT_MM       = 300
+
+/** 雷达装高时的保守阈值：更早停车、更短“开阔”距离，减少盲区冲撞 */
+const FRONT_STOP_MM_HIGH_LIDAR  = 280
+const CLEAR_MM_HIGH_LIDAR      = 350
+const BURST_DURATION_HIGH_LIDAR = 0.22
+const FORWARD_SPEED_HIGH_LIDAR = 22
 
 // ── 运动参数 ─────────────────────────────────────────────────────
 const FORWARD_SPEED      = 30
@@ -91,11 +103,23 @@ interface LidarPoint {
   distance: number
   confidence: number
 }
+interface SlamPose {
+  x_mm: number
+  y_mm: number
+  theta_deg: number
+}
 
 // ── Explorer 单例 ─────────────────────────────────────────────────
 
 /** 大角度逃脱旋转时长（秒）：约 120°，用于振荡时跳出障碍物簇 */
 const ESCAPE_ROTATE_DURATION = 1.8
+
+/** 雷达装在车身最高处时设为 1，启用保守前进（缩短步长、降速、更早停车） */
+const HIGH_LIDAR = process.env.EXPLORER_HIGH_LIDAR === '1'
+/** 前进后最小位移阈值（mm）：低于该值记为“无进展” */
+const PROGRESS_MIN_MOVE_MM = Number(process.env.EXPLORER_PROGRESS_MIN_MOVE_MM ?? '25')
+/** 连续无进展脉冲次数：达到后触发强制脱困 */
+const STUCK_BURSTS_LIMIT = Number(process.env.EXPLORER_STUCK_BURSTS ?? (HIGH_LIDAR ? '2' : '3'))
 
 class ExplorerClass {
   private _running            = false
@@ -105,18 +129,37 @@ class ExplorerClass {
   private _lastEmergencySide: 'left' | 'right' | null = null
   /** 交替触发计数：L→R→L 视为振荡 */
   private _oscillationCount   = 0
+  /** 连续前进无位移计数（用于“走不动还走”的硬保护） */
+  private _noProgressBursts   = 0
 
   get isRunning() { return this._running }
+
+  /** 当前生效的避障/前进参数（雷达装高时用保守值） */
+  private _frontStopMm()  { return HIGH_LIDAR ? FRONT_STOP_MM_HIGH_LIDAR : FRONT_STOP_MM }
+  private _clearMm()     { return HIGH_LIDAR ? CLEAR_MM_HIGH_LIDAR : CLEAR_MM }
+  private _burstDuration() { return HIGH_LIDAR ? BURST_DURATION_HIGH_LIDAR : BURST_DURATION }
+  private _forwardSpeed() { return HIGH_LIDAR ? FORWARD_SPEED_HIGH_LIDAR : FORWARD_SPEED }
 
   async start(): Promise<void> {
     if (this._running) return
     this._running = true
 
     try {
-      await fetch(`${PLATFORM_URL}/slam/start`, { method: 'POST', signal: AbortSignal.timeout(5000) })
+      const res = await fetch(`${PLATFORM_URL}/slam/start`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '')
+        console.error(`[Explorer] SLAM 启动失败：HTTP ${res.status} ${detail}`)
+        this._running = false
+        return
+      }
       console.log('[Explorer] SLAM 已启动')
     } catch (e) {
-      console.warn('[Explorer] SLAM 启动失败（继续探索）：', e)
+      console.error('[Explorer] SLAM 启动异常，探索取消：', e)
+      this._running = false
+      return
     }
 
     const connected = await this._waitForConnection(8000)
@@ -172,7 +215,7 @@ class ExplorerClass {
 
       // 正前和对角使用不同阈值（避免对角远处障碍误触发紧急）
       const diagMin    = Math.min(frontLeft, frontRight)
-      const isEmergency = front < FRONT_STOP_MM || diagMin < DIAG_STOP_MM
+      const isEmergency = front < this._frontStopMm() || diagMin < DIAG_STOP_MM
 
       if (isEmergency) {
         // ── 紧急避障 ─────────────────────────────────────────────
@@ -202,15 +245,17 @@ class ExplorerClass {
           this._motor(escapeDir, TURN_SPEED, ESCAPE_ROTATE_DURATION)
           await this._sleep(ESCAPE_ROTATE_DURATION * 1000 + 150)
           // 再长距离后退，离开障碍物簇
-          this._motor('backward', FORWARD_SPEED, BIG_REVERSE_DURATION)
+          this._motor('backward', this._forwardSpeed(), BIG_REVERSE_DURATION)
           await this._sleep(BIG_REVERSE_DURATION * 1000 + 150)
+          this._noProgressBursts = 0
           continue
         }
 
         this._motor('stop')
         await this._sleep(150)
-        this._motor('backward', FORWARD_SPEED, REVERSE_DURATION)
+        this._motor('backward', this._forwardSpeed(), REVERSE_DURATION)
         await this._sleep(REVERSE_DURATION * 1000 + 150)
+        this._noProgressBursts = 0
 
         const turnDir = this._chooseTurnDir(frontLeft, frontRight, sideLeft, sideRight)
         const escaped = await this._turnUntilClear(turnDir)
@@ -218,19 +263,20 @@ class ExplorerClass {
         if (escaped) {
           // 成功脱困：用更长脉冲把机器人真正带离障碍区，然后重置卡死计数
           this._stuckCount = 0
-          this._motor('forward', FORWARD_SPEED, ESCAPE_BURST_DURATION)
+          this._motor('forward', this._forwardSpeed(), ESCAPE_BURST_DURATION)
           await this._sleep(ESCAPE_BURST_DURATION * 1000 + 50)
         } else {
           // 两个方向都没出路：卡死一次
           this._stuckCount++
           console.warn(`[Explorer] 卡死第 ${this._stuckCount} 次，执行大后退`)
           const reverseDur = this._stuckCount >= 2 ? BIG_REVERSE_DURATION : REVERSE_DURATION
-          this._motor('backward', FORWARD_SPEED, reverseDur)
+          this._motor('backward', this._forwardSpeed(), reverseDur)
           await this._sleep(reverseDur * 1000 + 150)
           if (this._stuckCount >= 2) this._stuckCount = 0
+          this._noProgressBursts = 0
         }
 
-      } else if (front < CLEAR_MM) {
+      } else if (front < this._clearMm()) {
         // ── 正前偏近：朝侧方更空旷一侧旋转一步 ──────────────────
         const turnDir = sideLeft >= sideRight ? 'turn_left' : 'turn_right'
         console.log(
@@ -238,14 +284,42 @@ class ExplorerClass {
         )
         this._motor(turnDir, TURN_SPEED, TURN_STEP_DURATION)
         await this._sleep(TURN_STEP_DURATION * 1000 + 100)
+        this._noProgressBursts = 0
 
       } else {
         // ── 正前开阔：脉冲前进，重置所有计数 ────────────────────
         this._stuckCount       = 0
         this._oscillationCount = 0
         this._lastEmergencySide = null
-        this._motor('forward', FORWARD_SPEED, BURST_DURATION)
-        await this._sleep(BURST_DURATION * 1000 + 50)
+        const prePose = await this._fetchPose()
+        this._motor('forward', this._forwardSpeed(), this._burstDuration())
+        await this._sleep(this._burstDuration() * 1000 + 50)
+        const postPose = await this._fetchPose()
+
+        if (prePose && postPose) {
+          const moved = Math.hypot(postPose.x_mm - prePose.x_mm, postPose.y_mm - prePose.y_mm)
+          if (moved < PROGRESS_MIN_MOVE_MM) {
+            this._noProgressBursts++
+            console.warn(
+              `[Explorer] 前进无进展：位移=${moved.toFixed(1)}mm，连续=${this._noProgressBursts}/${STUCK_BURSTS_LIMIT}`
+            )
+          } else {
+            this._noProgressBursts = 0
+          }
+        }
+
+        if (this._noProgressBursts >= STUCK_BURSTS_LIMIT) {
+          // 位姿几乎不变却持续前进，判定“顶住了”：立刻停止并强制脱困
+          console.warn('[Explorer] 检测到走不动还在走，执行强制脱困')
+          this._motor('stop')
+          await this._sleep(120)
+          this._motor('backward', this._forwardSpeed(), BIG_REVERSE_DURATION)
+          await this._sleep(BIG_REVERSE_DURATION * 1000 + 150)
+          const hardTurnDir = sideLeft >= sideRight ? 'turn_left' : 'turn_right'
+          this._motor(hardTurnDir, TURN_SPEED, ESCAPE_ROTATE_DURATION)
+          await this._sleep(ESCAPE_ROTATE_DURATION * 1000 + 150)
+          this._noProgressBursts = 0
+        }
       }
     }
   }
@@ -304,7 +378,7 @@ class ExplorerClass {
         console.warn('[Explorer] 该方向未找到出路，换反方向')
         currentDir = currentDir === 'turn_left' ? 'turn_right' : 'turn_left'
         steps = 0
-        this._motor('backward', FORWARD_SPEED, REVERSE_DURATION)
+        this._motor('backward', this._forwardSpeed(), REVERSE_DURATION)
         await this._sleep(REVERSE_DURATION * 1000 + 150)
       }
     }
@@ -321,6 +395,18 @@ class ExplorerClass {
       if (!res.ok) return null
       const data = (await res.json()) as { points: LidarPoint[] }
       return data.points.length > 0 ? data.points : null
+    } catch {
+      return null
+    }
+  }
+
+  private async _fetchPose(): Promise<SlamPose | null> {
+    try {
+      const res = await fetch(`${PLATFORM_URL}/slam/pose`, {
+        signal: AbortSignal.timeout(700),
+      })
+      if (!res.ok) return null
+      return (await res.json()) as SlamPose
     } catch {
       return null
     }
