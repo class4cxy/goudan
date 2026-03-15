@@ -19,6 +19,12 @@ const AMBIENT_WINDOW_MS = 60_000     // 旁听上下文保留 60 秒
 const INTEREST_THRESHOLD = 7         // 评分 ≥ 7 才插话（0-10）
 const COOLDOWN_MS = 5 * 60_000       // 插话后冷却 5 分钟
 const MIN_TURNS_TO_ANALYZE = 2       // 至少积累 2 句才开始分析
+const MIN_AMBIENT_TEXT_LEN = Number(process.env.MIN_AMBIENT_TEXT_LEN ?? 4)
+
+const AMBIENT_NOISE_PATTERNS = [
+  /^(嗯+|啊+|哦+|唉+|哈+|额+)[。！!？?，,、\s]*$/i,
+  /^(是吗|好吧|好的|行吧|ok|okay|all right|alright)[。！!？?，,、\s]*$/i,
+]
 
 interface AmbientEntry {
   text: string
@@ -34,6 +40,7 @@ export function startAmbientAnalyzer(): void {
     async (event: SpineEvent<AudioTranscriptPayload>) => {
       // 只在 IDLE 状态旁听，对话进行中不干扰
       if (ConversationManager.getState() !== 'IDLE') return
+      if (!shouldAnalyzeAmbient(event.payload.text)) return
 
       const now = Date.now()
 
@@ -52,6 +59,18 @@ export function startAmbientAnalyzer(): void {
   )
 
   console.log('[AmbientAnalyzer] 已启动，订阅 sense.audio.transcript（IDLE 旁听）')
+}
+
+function shouldAnalyzeAmbient(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+
+  for (const pattern of AMBIENT_NOISE_PATTERNS) {
+    if (pattern.test(trimmed)) return false
+  }
+
+  const compact = trimmed.replace(/[\s，,。！？!?.、；;:："'“”‘’]/g, '')
+  return compact.length >= MIN_AMBIENT_TEXT_LEN
 }
 
 // ─── 兴趣评分 ─────────────────────────────────────────────────────────────────

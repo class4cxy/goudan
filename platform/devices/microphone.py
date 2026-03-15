@@ -26,6 +26,7 @@ Microphone — 麦克风硬件抽象层
 
 import asyncio
 import logging
+import os
 from collections.abc import Awaitable, Callable
 
 import numpy as np
@@ -49,6 +50,12 @@ SILENCE_FRAMES = SILENCE_THRESHOLD_MS // FRAME_DURATION_MS
 
 MIN_SPEECH_MS = 300          # 低于此时长的片段丢弃（过滤噪声）
 MIN_SPEECH_FRAMES = MIN_SPEECH_MS // FRAME_DURATION_MS
+
+# 语音片段质量门控：
+# 1) voiced_ratio：被 VAD 判为语音的帧占比
+# 2) rms_dbfs：片段整体能量（dBFS，越接近 0 越响）
+MIN_VOICED_RATIO = float(os.environ.get("MIC_MIN_VOICED_RATIO", "0.35"))
+MIN_CLIP_RMS_DBFS = float(os.environ.get("MIC_MIN_CLIP_RMS_DBFS", "-42"))
 
 # 采样率回退顺序：先尝试 16000Hz，若不支持则尝试 48000Hz（3:1 整数比，可无损降采样）
 _PROBE_RATES = [16000, 48000]
@@ -151,6 +158,7 @@ class Microphone:
         self._is_speaking = False
         self._speech_buffer: list[bytes] = []
         self._silent_frames = 0
+        self._voiced_frames = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._vad = None  # 延迟初始化，避免 import 时崩溃
 
@@ -171,6 +179,7 @@ class Microphone:
             self._is_speaking = False
             self._speech_buffer.clear()
             self._silent_frames = 0
+            self._voiced_frames = 0
         logger.info("[Microphone] 已恢复监听")
 
     @property
@@ -289,6 +298,7 @@ class Microphone:
                 self._is_speaking = True
                 self._speech_buffer.clear()
                 self._silent_frames = 0
+                self._voiced_frames = 0
                 if self._on_speech_start and self._loop:
                     asyncio.run_coroutine_threadsafe(
                         self._on_speech_start(), self._loop
@@ -297,6 +307,7 @@ class Microphone:
 
             self._speech_buffer.append(pcm_bytes)
             self._silent_frames = 0
+            self._voiced_frames += 1
 
         else:
             if self._is_speaking:
@@ -318,13 +329,53 @@ class Microphone:
 
         raw_pcm = b"".join(self._speech_buffer)
         duration_ms = len(self._speech_buffer) * FRAME_DURATION_MS
+        voiced_ratio = self._voiced_frames / max(len(self._speech_buffer), 1)
+        rms_dbfs = _compute_rms_dbfs(raw_pcm)
+
+        if voiced_ratio < MIN_VOICED_RATIO:
+            logger.debug(
+                "[Microphone] 丢弃低语音占比片段（voiced_ratio=%.2f < %.2f）",
+                voiced_ratio, MIN_VOICED_RATIO
+            )
+            self._speech_buffer.clear()
+            self._silent_frames = 0
+            self._voiced_frames = 0
+            return
+
+        if rms_dbfs < MIN_CLIP_RMS_DBFS:
+            logger.debug(
+                "[Microphone] 丢弃低能量片段（rms_dbfs=%.1f < %.1f）",
+                rms_dbfs, MIN_CLIP_RMS_DBFS
+            )
+            self._speech_buffer.clear()
+            self._silent_frames = 0
+            self._voiced_frames = 0
+            return
 
         if self._on_speech_end and self._loop:
             asyncio.run_coroutine_threadsafe(
                 self._on_speech_end(raw_pcm, SAMPLE_RATE, duration_ms), self._loop
             )
 
-        logger.debug(f"[Microphone] → speech_end ({duration_ms}ms, {len(raw_pcm)} bytes)")
+        logger.debug(
+            f"[Microphone] → speech_end ({duration_ms}ms, {len(raw_pcm)} bytes, "
+            f"voiced_ratio={voiced_ratio:.2f}, rms_dbfs={rms_dbfs:.1f})"
+        )
 
         self._speech_buffer.clear()
         self._silent_frames = 0
+        self._voiced_frames = 0
+
+
+def _compute_rms_dbfs(raw_pcm: bytes) -> float:
+    """
+    计算 PCM 片段 RMS 能量（dBFS）。
+
+    dBFS 范围通常在 [-90, 0]，数值越大（越接近 0）表示声音越强。
+    """
+    if not raw_pcm:
+        return -90.0
+    samples = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    rms = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
+    rms = max(rms, 1e-6)
+    return float(20 * np.log10(rms))
