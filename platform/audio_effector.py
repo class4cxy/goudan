@@ -12,6 +12,7 @@ AudioEffector — 应用层（音频输出桥接）
 
 import asyncio
 import logging
+import os
 
 from devices import Speaker
 
@@ -25,6 +26,9 @@ class AudioEffector:
         self._audio_sensor = audio_sensor
         self._ws_manager = ws_manager
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._fallback_ms = int(os.environ.get("AUDIO_SPEAK_END_FALLBACK_MS", "15000"))
+        self._speak_seq = 0
+        self._fallback_task: asyncio.Task | None = None
         self._speaker = Speaker(
             on_play_start=audio_sensor.mute if audio_sensor else None,
             on_play_end=self._on_play_end,
@@ -37,13 +41,9 @@ class AudioEffector:
 
         # 队列为空 → 所有句子已播完，通知 Node.js 重新进入 LISTENING
         if self._speaker._queue.empty() and self._ws_manager and self._loop:
-            self._loop.create_task(
-                self._ws_manager.broadcast({
-                    "type": "sense.audio.speak_end",
-                    "payload": {},
-                })
-            )
-            logger.info("[AudioEffector] → sense.audio.speak_end 已广播")
+            self._loop.create_task(self._emit_speak_end(forced=False, reason="queue_empty"))
+            if self._fallback_task and not self._fallback_task.done():
+                self._fallback_task.cancel()
 
     async def start(self) -> None:
         """启动播放队列（委托给 Speaker，阻塞）。"""
@@ -53,3 +53,40 @@ class AudioEffector:
     async def enqueue(self, text: str, interrupt: bool = False) -> None:
         """将播放指令加入队列（委托给 Speaker）。"""
         await self._speaker.enqueue(text, interrupt)
+        self._speak_seq += 1
+        self._schedule_fallback(self._speak_seq)
+
+    async def _emit_speak_end(self, forced: bool, reason: str) -> None:
+        """广播 speak_end；forced=True 表示通过兜底机制触发。"""
+        if not self._ws_manager:
+            return
+        await self._ws_manager.broadcast({
+            "type": "sense.audio.speak_end",
+            "payload": {"forced": forced, "reason": reason},
+        })
+        logger.info("[AudioEffector] → sense.audio.speak_end 已广播（forced=%s, reason=%s）", forced, reason)
+
+    def _schedule_fallback(self, seq: int) -> None:
+        """为每轮 speak 安排兜底回执，避免播放链路异常导致 Node 长时间卡在 SPEAKING。"""
+        if not self._loop:
+            return
+        if self._fallback_task and not self._fallback_task.done():
+            self._fallback_task.cancel()
+        self._fallback_task = self._loop.create_task(self._fallback_emit(seq))
+
+    async def _fallback_emit(self, seq: int) -> None:
+        try:
+            await asyncio.sleep(self._fallback_ms / 1000)
+            if seq != self._speak_seq:
+                return
+
+            is_playing = bool(self._speaker._current_task and not self._speaker._current_task.done())
+            has_pending = not self._speaker._queue.empty()
+            if not is_playing and not has_pending:
+                return
+
+            if self._audio_sensor:
+                self._audio_sensor.unmute()
+            await self._emit_speak_end(forced=True, reason="fallback_timeout")
+        except asyncio.CancelledError:
+            return

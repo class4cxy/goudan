@@ -15,6 +15,7 @@ import type { SpineEventType, EventPriority } from '../spine'
 
 const PLATFORM_WS_URL = process.env.PLATFORM_WS_URL ?? 'ws://localhost:8001/ws'
 const RECONNECT_DELAY_MS = 3000
+const MAX_PENDING_MESSAGES = 50
 
 // ─── Bridge 事件 → Spine 事件 映射表 ────────────────────────────────────────
 
@@ -67,6 +68,7 @@ class PlatformConnectorClass {
   private ws: WebSocket | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private started = false
+  private pendingMessages: Array<{ type: string; payload: unknown }> = []
 
   get isConnected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN
@@ -84,7 +86,14 @@ class PlatformConnectorClass {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message))
     } else {
-      console.warn('[PlatformConnector] WebSocket 未连接，消息丢弃：', message.type)
+      // 断线时先缓存 action 消息，重连后补发，避免 speak 丢包导致状态机卡在 SPEAKING。
+      this.pendingMessages.push(message)
+      if (this.pendingMessages.length > MAX_PENDING_MESSAGES) {
+        this.pendingMessages.shift()
+      }
+      console.warn(
+        `[PlatformConnector] WebSocket 未连接，消息入队：${message.type}（pending=${this.pendingMessages.length}）`
+      )
     }
   }
 
@@ -100,6 +109,7 @@ class PlatformConnectorClass {
         clearTimeout(this.reconnectTimer)
         this.reconnectTimer = null
       }
+      this._flushPending()
     })
 
     this.ws.on('message', (raw: WebSocket.RawData) => {
@@ -140,6 +150,17 @@ class PlatformConnectorClass {
     Spine.subscribe(OUTBOUND_TYPES, (event) => {
       this.send({ type: event.type, payload: event.payload })
     })
+  }
+
+  private _flushPending(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    if (this.pendingMessages.length === 0) return
+
+    const toSend = this.pendingMessages.splice(0, this.pendingMessages.length)
+    for (const message of toSend) {
+      this.ws.send(JSON.stringify(message))
+    }
+    console.log(`[PlatformConnector] 已补发 ${toSend.length} 条待发送消息`)
   }
 }
 
