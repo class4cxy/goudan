@@ -10,6 +10,7 @@ HC-SR04 超声波传感器真机测试脚本
 用法：
   python ultrasonic_test.py
   python ultrasonic_test.py --test 2
+  python ultrasonic_test.py --scan
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from ultrasonic import Ultrasonic, UltrasonicConfig
 
 DIVIDER = "─" * 60
+
+DEFAULT_SCAN_PINS = [23, 16, 18, 19, 20, 21, 4, 17, 11, 10]
 
 
 def test_pin_config(trig_pin: int, echo_pin: int) -> None:
@@ -115,9 +118,89 @@ def test_too_close_callback(cfg: UltrasonicConfig) -> None:
         print(f"  告警触发次数：{triggered[0]}")
 
 
+def scan_pin_pairs(
+    candidate_pins: list[int],
+    attempts_per_pair: int = 3,
+    min_ok_distance: float = 2.0,
+    max_ok_distance: float = 400.0,
+) -> None:
+    """
+    扫描候选 Trig/Echo 组合，找出最可能的接线。
+    建议测试时在传感器正前方放置平整障碍物（20~80cm）。
+    """
+    print(f"\n{DIVIDER}")
+    print("  测试 5 — 自动扫描 Trig/Echo 组合")
+    print(DIVIDER)
+    print(f"  候选引脚：{candidate_pins}")
+    print(f"  每组合尝试次数：{attempts_per_pair}")
+    print("  提示：请在传感器前方保持稳定障碍物，避免误判")
+
+    if len(candidate_pins) < 2:
+        print("  ❌ 候选引脚数量不足（至少 2 个）")
+        return
+
+    scored: list[tuple[int, int, int, float]] = []
+    total_pairs = len(candidate_pins) * (len(candidate_pins) - 1)
+    tested = 0
+
+    for trig in candidate_pins:
+        for echo in candidate_pins:
+            if trig == echo:
+                continue
+            tested += 1
+            print(f"\r  扫描进度：{tested}/{total_pairs}  当前 Trig={trig} Echo={echo}", end="", flush=True)
+            ok_count = 0
+            distances: list[float] = []
+
+            cfg = UltrasonicConfig(trig_pin=trig, echo_pin=echo)
+            sensor = Ultrasonic(cfg)
+            sensor.start()
+            try:
+                time.sleep(0.03)
+                for _ in range(attempts_per_pair):
+                    reading = sensor.read_once()
+                    if reading and min_ok_distance <= reading.distance_cm <= max_ok_distance:
+                        ok_count += 1
+                        distances.append(reading.distance_cm)
+                    time.sleep(0.03)
+            finally:
+                sensor.stop()
+
+            avg_d = (sum(distances) / len(distances)) if distances else 0.0
+            scored.append((trig, echo, ok_count, avg_d))
+
+    print()
+    ranked = sorted(scored, key=lambda x: (x[2], -abs(80.0 - x[3])), reverse=True)
+    good = [x for x in ranked if x[2] > 0]
+
+    if not good:
+        print("  ❌ 未找到可用 Trig/Echo 组合")
+        print("  请检查：供电、GND 共地、Echo 电平转换、候选引脚范围")
+        return
+
+    print("\n  候选结果（按成功次数排序）：")
+    print("  Trig  Echo  成功次数  平均距离(cm)")
+    print("  " + "-" * 36)
+    for trig, echo, ok_count, avg_d in good[:8]:
+        print(f"  {trig:>4}  {echo:>4}  {ok_count:>8}  {avg_d:>11.2f}")
+
+    best = good[0]
+    print("\n  ✅ 最可能接线：")
+    print(f"    Trig=GPIO{best[0]}, Echo=GPIO{best[1]}（成功 {best[2]}/{attempts_per_pair}）")
+    print(f"    可直接复测：python3 ultrasonic_test.py --test 2 --trig-pin {best[0]} --echo-pin {best[1]}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="HC-SR04 超声波传感器真机测试")
     parser.add_argument("--test", type=int, default=0, help="直接运行指定测试编号")
+    parser.add_argument("--scan", action="store_true", help="自动扫描 Trig/Echo 组合")
+    parser.add_argument(
+        "--scan-pins",
+        type=str,
+        default=",".join(str(x) for x in DEFAULT_SCAN_PINS),
+        help="扫描候选 BCM 引脚，逗号分隔，例如 23,16,18,19",
+    )
+    parser.add_argument("--scan-attempts", type=int, default=3, help="每个引脚组合尝试次数")
     parser.add_argument("--trig-pin", type=int, default=23)
     parser.add_argument("--echo-pin", type=int, default=16)
     parser.add_argument("--threshold-cm", type=float, default=25.0)
@@ -138,7 +221,12 @@ def main() -> None:
         2: lambda: test_single_read(cfg),
         3: lambda: test_continuous(cfg),
         4: lambda: test_too_close_callback(cfg),
+        5: lambda: scan_pin_pairs(_parse_scan_pins(args.scan_pins), args.scan_attempts),
     }
+
+    if args.scan:
+        scan_pin_pairs(_parse_scan_pins(args.scan_pins), args.scan_attempts)
+        return
 
     if args.test:
         tests.get(args.test, lambda: print("无效测试编号"))()
@@ -150,14 +238,34 @@ def main() -> None:
         print("  [2] 单次测距")
         print("  [3] 持续监测 20s")
         print("  [4] 近距离告警回调验证")
+        print("  [5] 自动扫描 Trig/Echo 组合")
         print("  [0] 退出")
         print(DIVIDER)
         print("  请选择：", end="")
         c = input().strip()
         if c == "0":
             break
-        if c in {"1", "2", "3", "4"}:
+        if c in {"1", "2", "3", "4", "5"}:
             tests[int(c)]()
+
+
+def _parse_scan_pins(raw: str) -> list[int]:
+    pins: list[int] = []
+    for part in raw.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        try:
+            pins.append(int(p))
+        except ValueError:
+            pass
+    dedup = []
+    seen = set()
+    for pin in pins:
+        if pin not in seen:
+            dedup.append(pin)
+            seen.add(pin)
+    return dedup or list(DEFAULT_SCAN_PINS)
 
 
 if __name__ == "__main__":
