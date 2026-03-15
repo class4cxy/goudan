@@ -24,6 +24,13 @@ const WAKE_WORDS: string[] = (process.env.WAKE_WORDS ?? 'Aria,小豆,狗蛋,aria
   .map((w) => w.trim())
   .filter(Boolean)
 
+const NOISE_PATTERNS = [
+  /^(嗯+|啊+|哦+|唉+|哈+|额+)[。！!？?，,、\s]*$/i,
+  /^(是吗|好吧|好的|行吧|ok|okay|all right|alright)[。！!？?，,、\s]*$/i,
+]
+const STRONG_INTENT_WORDS = ['停止', '暂停', '继续', '开始', '回家', '回去', '前进', '后退', '左转', '右转', '拍照']
+const MIN_MEANINGFUL_TEXT_LEN = Number(process.env.MIN_MEANINGFUL_TEXT_LEN ?? 2)
+
 // ─── 情绪关键词规则表 ─────────────────────────────────────────────────────────
 
 const EMOTION_RULES: Array<{
@@ -72,18 +79,24 @@ export function startAudioThalamus(): void {
           return
         }
 
-        console.log(`[AudioThalamus] STT 结果："${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`)
+        const normalized = normalizeTranscript(text)
+        if (!normalized) {
+          console.log('[AudioThalamus] STT 文本判定为弱信号/环境噪声，丢弃')
+          return
+        }
+
+        console.log(`[AudioThalamus] STT 结果："${normalized.slice(0, 60)}${normalized.length > 60 ? '…' : ''}"`)
 
         // 唤醒词检测：命中则走 sense.audio.keyword 路径，不再发 transcript
-        const hitWord = detectWakeWord(text)
+        const hitWord = detectWakeWord(normalized)
         if (hitWord) {
           console.log(`[AudioThalamus] 唤醒词命中："${hitWord}"`)
           Spine.publish({
             type: 'sense.audio.keyword',
             priority: 'HIGH',
             source: 'thalamus.audio',
-            payload: { keyword: hitWord, transcript: text, duration_ms },
-            summary: `唤醒词命中："${hitWord}"，原句：${text.slice(0, 40)}`,
+            payload: { keyword: hitWord, transcript: normalized, duration_ms },
+            summary: `唤醒词命中："${hitWord}"，原句：${normalized.slice(0, 40)}`,
           })
           return
         }
@@ -93,12 +106,12 @@ export function startAudioThalamus(): void {
           type: 'sense.audio.transcript',
           priority: 'MEDIUM',
           source: 'thalamus.audio',
-          payload: { text, duration_ms },
-          summary: `转写完成："${text.slice(0, 40)}${text.length > 40 ? '…' : ''}"`,
+          payload: { text: normalized, duration_ms },
+          summary: `转写完成："${normalized.slice(0, 40)}${normalized.length > 40 ? '…' : ''}"`,
         })
 
         // 并行发布情绪分析
-        const emotion = analyzeEmotion(text)
+        const emotion = analyzeEmotion(normalized)
         Spine.publish({
           type: 'sense.audio.emotion',
           priority: emotion.priority,
@@ -106,7 +119,7 @@ export function startAudioThalamus(): void {
           payload: {
             emotion: emotion.emotion,
             confidence: emotion.confidence,
-            text_snippet: text.slice(0, 60),
+            text_snippet: normalized.slice(0, 60),
           },
           summary: `情绪：${emotion.emotion}（置信度 ${Math.round(emotion.confidence * 100)}%）`,
         })
@@ -128,6 +141,26 @@ function detectWakeWord(text: string): string | null {
     }
   }
   return null
+}
+
+function normalizeTranscript(rawText: string): string | null {
+  const text = rawText.trim()
+  if (!text) return null
+
+  for (const pattern of NOISE_PATTERNS) {
+    if (pattern.test(text)) return null
+  }
+
+  const compact = text.replace(/[\s，,。！？!?.、；;:："'“”‘’]/g, '')
+  if (!compact) return null
+
+  const hasWakeWord = detectWakeWord(text) !== null
+  const hasStrongIntent = STRONG_INTENT_WORDS.some((k) => text.includes(k))
+  if (!hasWakeWord && !hasStrongIntent && compact.length < MIN_MEANINGFUL_TEXT_LEN) {
+    return null
+  }
+
+  return text
 }
 
 // ─── STT ─────────────────────────────────────────────────────────────────────
