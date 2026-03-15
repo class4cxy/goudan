@@ -88,13 +88,17 @@ class LocalSTT:
         wav_bytes = _pcm_to_wav(pcm_bytes, sample_rate)
 
         with self._lock:
-            # vad_filter=False：上游 WebRTC VAD 已做语音检测，
-            # 传入的音频块均为有效语音，无需二次过滤
+            # initial_prompt：引导输出简体中文，抑制繁体和幻觉重复
+            # vad_filter=False：上游 WebRTC VAD 已做语音检测，传入均为有效语音
             segments, _ = self._model.transcribe(
                 io.BytesIO(wav_bytes),
                 language="zh",
                 beam_size=5,
                 vad_filter=False,
+                initial_prompt="以下是普通话语音，使用简体中文输出。",
+                no_speech_threshold=0.6,
+                log_prob_threshold=-1.0,
+                compression_ratio_threshold=2.4,
             )
             return "".join(seg.text for seg in segments).strip()
 

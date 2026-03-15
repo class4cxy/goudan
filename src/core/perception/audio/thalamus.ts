@@ -16,7 +16,7 @@ import type { SpineEvent, AudioSpeechEndPayload } from '../../runtime/spine'
 
 const ASR_MODEL = 'qwen3-asr-flash'
 
-const MIN_DURATION_MS = 400  // 短于此时长的片段丢弃（环境噪声）
+const MIN_DURATION_MS = 800  // 短于此时长的片段丢弃（环境噪声 / 过短无法识别）
 
 // 本地 STT 端点（由 PLATFORM_URL 派生，也可单独用 LOCAL_STT_URL 覆盖）
 // 设置后优先使用本地 faster-whisper，失败时自动降级到云端 ASR
