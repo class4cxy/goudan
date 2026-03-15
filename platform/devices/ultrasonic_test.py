@@ -43,7 +43,8 @@ def test_single_read(cfg: UltrasonicConfig) -> None:
     print("  测试 2 — 单次测距")
     print(DIVIDER)
     sensor = Ultrasonic(cfg)
-    sensor.start()
+    if not _safe_start(sensor, cfg):
+        return
     try:
         time.sleep(0.1)
         reading = sensor.read_once()
@@ -72,7 +73,8 @@ def test_continuous(cfg: UltrasonicConfig, duration_s: int = 20) -> None:
         print(f"\r  {r.distance_cm:7.2f} cm |{bar:<40}|{flag}", end="", flush=True)
 
     sensor = Ultrasonic(cfg, on_reading=on_reading)
-    sensor.start()
+    if not _safe_start(sensor, cfg):
+        return
     try:
         time.sleep(duration_s)
     except KeyboardInterrupt:
@@ -104,7 +106,8 @@ def test_too_close_callback(cfg: UltrasonicConfig) -> None:
         print(f"\n  ✅ 触发告警：{r.distance_cm:.2f} cm (< {cfg.too_close_threshold_cm:.1f} cm)")
 
     sensor = Ultrasonic(cfg, on_too_close=on_too_close)
-    sensor.start()
+    if not _safe_start(sensor, cfg):
+        return
     try:
         time.sleep(10)
     except KeyboardInterrupt:
@@ -154,7 +157,12 @@ def scan_pin_pairs(
 
             cfg = UltrasonicConfig(trig_pin=trig, echo_pin=echo)
             sensor = Ultrasonic(cfg)
-            sensor.start()
+            try:
+                sensor.start()
+            except Exception:
+                # 单个组合初始化失败（如引脚被占用）时跳过，继续扫描其它组合。
+                scored.append((trig, echo, 0, 0.0))
+                continue
             try:
                 time.sleep(0.03)
                 for _ in range(attempts_per_pair):
@@ -266,6 +274,22 @@ def _parse_scan_pins(raw: str) -> list[int]:
             dedup.append(pin)
             seen.add(pin)
     return dedup or list(DEFAULT_SCAN_PINS)
+
+
+def _safe_start(sensor: Ultrasonic, cfg: UltrasonicConfig) -> bool:
+    try:
+        sensor.start()
+        return True
+    except Exception as e:
+        print("  ❌ 传感器初始化失败")
+        print(f"  Trig=GPIO{cfg.trig_pin}, Echo=GPIO{cfg.echo_pin}")
+        print(f"  详情：{e}")
+        print("  排查建议：")
+        print("    1) 关闭占用引脚的功能（常见：SPI1 占用 GPIO20/21）")
+        print("    2) 执行 `raspi-gpio get 20` 和 `raspi-gpio get 21` 查看复用状态")
+        print("    3) 执行 `sudo lsof /dev/gpiochip0 /dev/gpiochip4` 检查占用进程")
+        print("    4) 若仍失败，改用其它空闲引脚并重新 --scan")
+        return False
 
 
 if __name__ == "__main__":
