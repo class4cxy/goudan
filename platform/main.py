@@ -213,12 +213,16 @@ async def _startup():
     t_effector.add_done_callback(_task_done_callback)
     logger.info("🎙 音频组件已启动")
 
-    # 在独立线程中加载 Whisper 模型（避免阻塞事件循环，模型首次下载可能较慢）
-    await asyncio.to_thread(local_stt.load)
-    if local_stt.is_available:
-        logger.info(f"🧠 本地 STT 就绪（模型：{local_stt.status['model']}）")
-    else:
-        logger.warning("⚠️  本地 STT 不可用，将依赖云端 ASR（SPEECH_API_URL）")
+    # 后台加载 Whisper 模型（不阻塞端口监听，避免启动期间 ECONNREFUSED）
+    async def _load_stt():
+        await asyncio.to_thread(local_stt.load)
+        if local_stt.is_available:
+            logger.info(f"🧠 本地 STT 就绪（模型：{local_stt.status['model']}）")
+        else:
+            logger.warning("⚠️  本地 STT 不可用，将依赖云端 ASR（SPEECH_API_URL）")
+
+    t_stt = asyncio.create_task(_load_stt(), name="local_stt_load")
+    t_stt.add_done_callback(_task_done_callback)
 
     # 必须在进入 to_thread 前捕获事件循环，子线程中无法调用 asyncio.get_event_loop()（Python 3.10+）
     _loop = asyncio.get_running_loop()

@@ -145,6 +145,14 @@ function detectWakeWord(text: string): string | null {
 const MAX_PCM_BYTES = 960_000
 
 async function transcribe(audio_b64: string, sampleRate: number): Promise<string> {
+  // 超长音频统一截断（约 30s），防止 Whisper 静音幻觉 & 网关超时
+  let pcmBuffer = Buffer.from(audio_b64, 'base64')
+  if (pcmBuffer.length > MAX_PCM_BYTES) {
+    console.log(`[AudioThalamus] 音频过长（${Math.round(pcmBuffer.length / 1024)}KB），截断至 ${Math.round(MAX_PCM_BYTES / 1024)}KB`)
+    pcmBuffer = pcmBuffer.subarray(pcmBuffer.length - MAX_PCM_BYTES)
+    audio_b64 = pcmBuffer.toString('base64')
+  }
+
   // ── 优先尝试本地 STT（faster-whisper）────────────────────────────────────
   if (LOCAL_STT_URL) {
     try {
