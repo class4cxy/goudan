@@ -96,17 +96,26 @@ class Ultrasonic:
         if self._is_simulation:
             logger.warning("[Ultrasonic] GPIO 模拟模式，测距将返回模拟数据")
         else:
-            GPIO.setwarnings(False)
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(self._cfg.trig_pin, GPIO.OUT)
-            GPIO.setup(self._cfg.echo_pin, GPIO.IN)
-            GPIO.output(self._cfg.trig_pin, False)
-            time.sleep(0.05)
-            logger.info(
-                "[Ultrasonic] 已初始化 Trig=GPIO%s Echo=GPIO%s",
-                self._cfg.trig_pin,
-                self._cfg.echo_pin,
-            )
+            try:
+                GPIO.setwarnings(False)
+                GPIO.setmode(GPIO.BCM)
+                GPIO.setup(self._cfg.trig_pin, GPIO.OUT)
+                GPIO.setup(self._cfg.echo_pin, GPIO.IN)
+                GPIO.output(self._cfg.trig_pin, False)
+                time.sleep(0.05)
+                logger.info(
+                    "[Ultrasonic] 已初始化 Trig=GPIO%s Echo=GPIO%s",
+                    self._cfg.trig_pin,
+                    self._cfg.echo_pin,
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    "初始化 GPIO 失败："
+                    f"Trig=GPIO{self._cfg.trig_pin}, Echo=GPIO{self._cfg.echo_pin}。"
+                    "请检查：1) 当前用户 GPIO 权限；2) 引脚是否被 SPI/I2S/其他进程占用；"
+                    "3) 线序与电平转换。原始错误："
+                    f"{e}"
+                ) from e
 
         self._stop_event.clear()
         self._thread = threading.Thread(
