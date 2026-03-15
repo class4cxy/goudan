@@ -4,8 +4,8 @@ HC-SR04 超声波传感器真机测试脚本
 在树莓派上运行（Trig/Echo 接线完成后）。
 
 默认接线（BCM）：
-  Trig -> GPIO23
-  Echo -> GPIO16
+  Trig -> GPIO20
+  Echo -> GPIO21
 
 用法：
   python ultrasonic_test.py
@@ -25,7 +25,7 @@ from ultrasonic import Ultrasonic, UltrasonicConfig
 
 DIVIDER = "─" * 60
 
-DEFAULT_SCAN_PINS = [23, 16, 18, 19, 20, 21, 4, 17, 11, 10]
+DEFAULT_SCAN_PINS = [20, 21, 23, 16, 18, 19, 4, 17, 11, 10]
 
 
 def test_pin_config(trig_pin: int, echo_pin: int) -> None:
@@ -201,8 +201,8 @@ def main() -> None:
         help="扫描候选 BCM 引脚，逗号分隔，例如 23,16,18,19",
     )
     parser.add_argument("--scan-attempts", type=int, default=3, help="每个引脚组合尝试次数")
-    parser.add_argument("--trig-pin", type=int, default=23)
-    parser.add_argument("--echo-pin", type=int, default=16)
+    parser.add_argument("--trig-pin", type=int, default=20)
+    parser.add_argument("--echo-pin", type=int, default=21)
     parser.add_argument("--threshold-cm", type=float, default=25.0)
     args = parser.parse_args()
 

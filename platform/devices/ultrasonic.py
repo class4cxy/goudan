@@ -10,8 +10,8 @@ Ultrasonic — HC-SR04 超声波测距传感器硬件抽象层
 不含任何 WebSocket / FastAPI 逻辑，纯硬件操作。
 
 接线（默认 BCM 引脚）：
-  Trig -> GPIO23
-  Echo -> GPIO16
+  Trig -> GPIO20
+  Echo -> GPIO21
   VCC  -> 5V
   GND  -> GND
 
@@ -56,8 +56,8 @@ class UltrasonicReading:
 class UltrasonicConfig:
     """HC-SR04 配置。"""
 
-    trig_pin: int = 23
-    echo_pin: int = 16
+    trig_pin: int = 20
+    echo_pin: int = 21
     poll_interval_s: float = 0.2
     timeout_s: float = 0.03
     min_distance_cm: float = 2.0

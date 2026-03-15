@@ -163,8 +163,8 @@ def _on_ultrasonic_too_close(reading: UltrasonicReading) -> None:
 
 ultrasonic = Ultrasonic(
     config=UltrasonicConfig(
-        trig_pin=int(os.environ.get("ULTRASONIC_TRIG_PIN", "23")),
-        echo_pin=int(os.environ.get("ULTRASONIC_ECHO_PIN", "16")),
+        trig_pin=int(os.environ.get("ULTRASONIC_TRIG_PIN", "20")),
+        echo_pin=int(os.environ.get("ULTRASONIC_ECHO_PIN", "21")),
         poll_interval_s=float(os.environ.get("ULTRASONIC_POLL_INTERVAL", "0.2")),
         too_close_threshold_cm=float(os.environ.get("ULTRASONIC_TOO_CLOSE_CM", "25")),
     ),
