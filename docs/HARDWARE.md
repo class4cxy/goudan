@@ -331,10 +331,12 @@ defaults.ctl.card 1
 | GPIO 12 | Pin 32 | PWM0 — 云台水平轴 Pan | 摄像头云台舵机 | `platform/devices/servo.py` | 硬件 PWM，50Hz |
 | GPIO 13 | Pin 33 | PWM1 — 云台垂直轴 Tilt | 摄像头云台舵机 | `platform/devices/servo.py` | ⚠️ 硬件 PWM；扩展板 GPIO 接口也引出此脚，勿再外接 |
 | GPIO 22 | Pin 15 | M4 IN1（PWM 正转） | 右后轮电机 | `platform/devices/chassis.py` | SW-6008 驱动 |
+| GPIO 23 | Pin 16 | HC-SR04 Trig | 超声波测距 | `platform/devices/ultrasonic.py` | 默认 Trig 引脚 |
 | GPIO 24 | Pin 18 | M1 IN1（PWM 正转） | 左前轮电机 | `platform/devices/chassis.py` | SW-6008 驱动 |
 | GPIO 25 | Pin 22 | M1 IN2（PWM 反转） | 左前轮电机 | `platform/devices/chassis.py` | SW-6008 驱动 |
 | GPIO 26 | Pin 37 | M2 IN2（PWM 反转） | 右前轮电机 | `platform/devices/chassis.py` | SW-6008 驱动 |
 | GPIO 27 | Pin 13 | M2 IN1（PWM 正转） | 右前轮电机 | `platform/devices/chassis.py` | SW-6008 驱动 |
+| GPIO 16 | Pin 36 | HC-SR04 Echo | 超声波测距 | `platform/devices/ultrasonic.py` | 默认 Echo 引脚（注意 5V 电平问题） |
 
 **USB 设备（不占用 GPIO 引脚）：**
 
@@ -351,9 +353,9 @@ defaults.ctl.card 1
 
 | 接口标识（扩展板丝印） | BCM 编号 | 物理引脚 | 当前占用状态 | 说明 |
 |----------------------|---------|---------|------------|------|
-| GP23 | GPIO 23 | Pin 16 | **空闲** | 可用 |
+| GP23 | GPIO 23 | Pin 16 | **⚠️ 已被超声波 Trig 占用** | 若改线需同步更新 `ULTRASONIC_TRIG_PIN` |
 | GP13 | GPIO 13 | Pin 33 | **⚠️ 已被舵机 Tilt 占用** | 禁止外接任何设备 |
-| GP16 | GPIO 16 | Pin 36 | **空闲** | 可用 |
+| GP16 | GPIO 16 | Pin 36 | **⚠️ 已被超声波 Echo 占用** | 若改线需同步更新 `ULTRASONIC_ECHO_PIN` |
 | GP18 | GPIO 18 | Pin 12 | **空闲** | 可用（兼 PCM CLK / PWM） |
 | GP11 | GPIO 11 | Pin 23 | **空闲** | 兼 SPI0 CLK；若启用 SPI0 则不可用 |
 | GP19（上层板） | GPIO 19 | Pin 35 | **空闲** | 兼 SPI1 MISO / PWM1 |
@@ -374,6 +376,7 @@ defaults.ctl.card 1
 | 🟡 中 | GPIO 9 | 电机 M4 IN2 占用 SPI0 MISO。若未来需要 SPI 设备（如 OLED SPI 版），SPI0 不可用 | 避免启用 SPI0；SPI 设备优先选 SPI1（GPIO 19/20/21）或 I2C 接口版本 |
 | 🟡 中 | GPIO 10/11 | 扩展板 GP10/GP11 已引出，这两个引脚兼 SPI0 MOSI/CLK | 启用 SPI0 前需确认 GP10/GP11 接口上没有连接其他设备 |
 | 🟢 低 | GPIO 2/3 | I2C 总线已被 INA219 使用，扩展板 IIC 接口也引出同一总线 | I2C 支持多设备挂载（不同 I2C 地址），注意 INA219 默认地址 0x40，新设备选其他地址即可 |
+| 🟡 中 | GPIO 16 | 当前作为 HC-SR04 Echo 输入；HC-SR04 Echo 为 5V，若扩展板无电平转换会损伤 GPIO | 优先使用扩展板已带转换接口；若直连树莓派需分压（例如 1k+2k） |
 
 ---
 
@@ -384,13 +387,13 @@ defaults.ctl.card 1
 | BCM 编号 | 物理引脚 | 兼复用功能 | 推荐用途 |
 |---------|---------|----------|---------|
 | GPIO 4 | Pin 7 | — | 通用数字输入输出（如 DHT 温湿度传感器） |
-| GPIO 16 | Pin 36 | — | 通用数字输入输出 |
+| GPIO 16 | Pin 36 | — | （已被超声波 Echo 占用，默认不建议复用） |
 | GPIO 17 | Pin 11 | — | 通用数字输入输出 |
 | GPIO 18 | Pin 12 | PWM / PCM CLK | 若需第三路 PWM 可用此脚 |
 | GPIO 19 | Pin 35 | SPI1 MISO / PWM1 | 可用于 SPI1 设备 |
 | GPIO 20 | Pin 38 | SPI1 MOSI | 可用于 SPI1 设备 |
 | GPIO 21 | Pin 40 | SPI1 CLK | 可用于 SPI1 设备 |
-| GPIO 23 | Pin 16 | — | 通用数字输入输出 |
+| GPIO 23 | Pin 16 | — | （已被超声波 Trig 占用，默认不建议复用） |
 
 > **UART 提示**：GPIO 14（Pin 8, TX）和 GPIO 15（Pin 10, RX）为 UART0，树莓派官方系统默认用于串口控制台，如需接串口设备须先在 `raspi-config` 中禁用控制台。
 
@@ -406,7 +409,7 @@ defaults.ctl.card 1
           GND  (9) (10) GPIO15 RXD  ← 空闲 | UART0 RX（系统控制台）
        GPIO17 (11) (12) GPIO18      ← 空闲 | 空闲(PWM)
        GPIO27 (13) (14) GND         ← M2 IN1（右前轮）
-       GPIO22 (15) (16) GPIO23      ← M4 IN1（右后轮） | 空闲
+       GPIO22 (15) (16) GPIO23      ← M4 IN1（右后轮） | 超声波 Trig
          3V3 (17) (18) GPIO24       ← M1 IN1（左前轮）
 GPIO10/MOSI (19) (20) GND          ← 空闲(SPI0 MOSI)
  GPIO9/MISO (21) (22) GPIO25       ← M4 IN2（右后轮，⚠️SPI0 MISO） | M1 IN2（左前轮）
@@ -416,7 +419,7 @@ GPIO11/SCLK (23) (24) GPIO8/CE0   ← 空闲(SPI0 CLK) | 空闲
         GPIO5 (29) (30) GND         ← M3 IN1（左后轮）
         GPIO6 (31) (32) GPIO12/PWM0 ← M3 IN2（左后轮） | 舵机 Pan（云台水平）
   GPIO13/PWM1 (33) (34) GND         ← 舵机 Tilt（云台垂直，⚠️扩展板GP13已引出）
-       GPIO19 (35) (36) GPIO16      ← 空闲(SPI1 MISO) | 空闲
+       GPIO19 (35) (36) GPIO16      ← 空闲(SPI1 MISO) | 超声波 Echo
        GPIO26 (37) (38) GPIO20      ← M2 IN2（右前轮） | 空闲(SPI1 MOSI)
           GND (39) (40) GPIO21      ← 空闲(SPI1 CLK)
 
@@ -425,4 +428,4 @@ GPIO11/SCLK (23) (24) GPIO8/CE0   ← 空闲(SPI0 CLK) | 空闲
 
 ---
 
-*文档最后更新：2026-03-13*
+*文档最后更新：2026-03-15*
