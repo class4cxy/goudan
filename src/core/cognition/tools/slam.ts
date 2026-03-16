@@ -42,6 +42,12 @@ export const startExploring = tool({
       }
 
       await Explorer.start()
+      if (!Explorer.isRunning) {
+        return {
+          success: false,
+          error: '探索启动失败：请检查 /slam/start 与 /ultrasonic/status 是否正常（雷达/超声波/SLAM 状态）',
+        }
+      }
 
       return {
         success: true,

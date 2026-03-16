@@ -11,7 +11,7 @@
  *     sideRight   60° ~ 140°  右侧（选择转向方向）
  *
  *   决策（两档，无中间 nudge）：
- *     frontAll < STOP_MM   → 紧急后退 + 果断转向
+ *     frontAll < STOP_MM   → 紧急停车 + 果断转向
  *     front    < CLEAR_MM  → 果断转向（朝更空旷一侧）
  *     否则                 → 脉冲前进
  *
@@ -47,20 +47,22 @@ const PLATFORM_URL = process.env.PLATFORM_URL ?? 'http://localhost:8001'
 const FRONT_STOP_MM      = 220
 /** 对角 30°~50° 停车阈值（仅横向危险时触发，不会被远处斜向障碍误报） */
 const DIAG_STOP_MM       = 130
-/** 正前 ±30° 前进阈值：超过才脉冲前进（车短，500mm 足够） */
-const CLEAR_MM           = 500
+/** 正前 ±30° 前进阈值：超过才脉冲前进（过大容易在小空间持续原地转向） */
+const CLEAR_MM           = 380
 /** 转向完成阈值：_turnUntilClear 中正前 > 此值即退出 */
-const TURN_EXIT_MM       = 300
+const TURN_EXIT_MM       = Number(process.env.EXPLORER_TURN_EXIT_MM ?? '240')
+/** 斜向退出阈值：用于识别 30°~50° 方向可通行出口 */
+const TURN_EXIT_DIAG_MM  = Number(process.env.EXPLORER_TURN_EXIT_DIAG_MM ?? '330')
 
 /** 雷达装高时的保守阈值：更早停车、更短“开阔”距离，减少盲区冲撞 */
 const FRONT_STOP_MM_HIGH_LIDAR  = 280
-const CLEAR_MM_HIGH_LIDAR      = 350
+const CLEAR_MM_HIGH_LIDAR      = 300
 const BURST_DURATION_HIGH_LIDAR = 0.22
 const FORWARD_SPEED_HIGH_LIDAR = 22
 
 // ── 运动参数 ─────────────────────────────────────────────────────
 const FORWARD_SPEED      = 30
-const TURN_SPEED         = 35
+const TURN_SPEED         = Number(process.env.EXPLORER_TURN_SPEED ?? '30')
 /**
  * 正常脉冲前进时长（秒）。
  * 脱困后使用更长的 ESCAPE_BURST_DURATION，把机器人真正带离障碍区域。
@@ -73,9 +75,9 @@ const REVERSE_DURATION   = 0.6
 /** 卡死时大后退时长（秒）：连续卡死后彻底换区域 */
 const BIG_REVERSE_DURATION = 1.5
 /** 单次转向时长（秒） */
-const TURN_STEP_DURATION = 0.5
+const TURN_STEP_DURATION = Number(process.env.EXPLORER_TURN_STEP_DURATION ?? '0.4')
 /** 单次转向最大步数（超过后换方向+后退） */
-const MAX_TURN_STEPS     = 8
+const MAX_TURN_STEPS     = Number(process.env.EXPLORER_MAX_TURN_STEPS ?? '6')
 
 // ── 扇区角度 ─────────────────────────────────────────────────────
 //
@@ -108,6 +110,14 @@ interface SlamPose {
   y_mm: number
   theta_deg: number
 }
+interface UltrasonicStatus {
+  is_simulation: boolean
+  latest: {
+    timestamp_ms: number
+    distance_cm: number
+    is_too_close: boolean
+  } | null
+}
 
 // ── Explorer 单例 ─────────────────────────────────────────────────
 
@@ -120,6 +130,35 @@ const HIGH_LIDAR = process.env.EXPLORER_HIGH_LIDAR === '1'
 const PROGRESS_MIN_MOVE_MM = Number(process.env.EXPLORER_PROGRESS_MIN_MOVE_MM ?? '25')
 /** 连续无进展脉冲次数：达到后触发强制脱困 */
 const STUCK_BURSTS_LIMIT = Number(process.env.EXPLORER_STUCK_BURSTS ?? (HIGH_LIDAR ? '2' : '3'))
+/** 是否启用超声波前向安全门（默认启用，设 0 可关闭） */
+const USE_ULTRASONIC_GUARD = process.env.EXPLORER_USE_ULTRASONIC !== '0'
+/** 超声波硬急停阈值（cm）：低于该值一律不前进 */
+const ULTRASONIC_STOP_CM = Number(
+  process.env.EXPLORER_ULTRASONIC_STOP_CM ?? process.env.ULTRASONIC_TOO_CLOSE_CM ?? '25'
+)
+/** 硬急停阈值安全下限（cm）：避免阈值设得过小导致近距离来不及刹停 */
+const ULTRASONIC_STOP_MIN_CM = Number(process.env.EXPLORER_ULTRASONIC_STOP_MIN_CM ?? '20')
+/** 超声波谨慎阈值（cm）：低于该值优先转向，不执行前进脉冲 */
+const ULTRASONIC_TURN_CM = Number(process.env.EXPLORER_ULTRASONIC_TURN_CM ?? '35')
+/** 超声波数据新鲜度阈值（ms）：超过则视为不可用 */
+const ULTRASONIC_TTL_MS = Number(process.env.EXPLORER_ULTRASONIC_TTL_MS ?? '350')
+/** 前进分段时长（秒）：每段前都做一次超声波刹车检查 */
+const FORWARD_GUARD_STEP_S = Number(process.env.EXPLORER_FORWARD_GUARD_STEP_S ?? '0.08')
+/** 小空间连续原地转向上限：达到后尝试短前探，打破“打转” */
+const MAX_INPLACE_TURNS = Number(process.env.EXPLORER_MAX_INPLACE_TURNS ?? '4')
+/** 小空间短前探时长（秒） */
+const INPLACE_POKE_DURATION = Number(process.env.EXPLORER_INPLACE_POKE_DURATION ?? '0.2')
+/** 小空间短前探速度（0-100） */
+const INPLACE_POKE_SPEED = Number(process.env.EXPLORER_INPLACE_POKE_SPEED ?? '22')
+/** 侧向差值低于该阈值时维持上次转向，减少小空间左右抖动 */
+const TURN_HYSTERESIS_MM = Number(process.env.EXPLORER_TURN_HYSTERESIS_MM ?? '120')
+/** 斜向引导前探时长（秒）：识别到斜向出口后轻推进入该方向 */
+const DIAG_GUIDE_POKE_DURATION = Number(process.env.EXPLORER_DIAG_GUIDE_POKE_DURATION ?? '0.22')
+/** 斜向引导前探速度（0-100） */
+const DIAG_GUIDE_POKE_SPEED = Number(process.env.EXPLORER_DIAG_GUIDE_POKE_SPEED ?? '24')
+/** 是否允许后退动作（默认关闭：优先“停+转+前进”） */
+const ALLOW_REVERSE = process.env.EXPLORER_ALLOW_REVERSE === '1'
+const EFFECTIVE_ULTRASONIC_STOP_CM = Math.max(ULTRASONIC_STOP_CM, ULTRASONIC_STOP_MIN_CM)
 
 class ExplorerClass {
   private _running            = false
@@ -131,6 +170,10 @@ class ExplorerClass {
   private _oscillationCount   = 0
   /** 连续前进无位移计数（用于“走不动还走”的硬保护） */
   private _noProgressBursts   = 0
+  /** 连续“仅转向未前进”次数（用于小空间打转检测） */
+  private _inplaceTurnStreak  = 0
+  /** 上一次转向方向（用于小空间迟滞，避免左右来回抖动） */
+  private _lastTurnDir: 'turn_left' | 'turn_right' | null = null
 
   get isRunning() { return this._running }
 
@@ -212,15 +255,19 @@ class ExplorerClass {
       const frontRight = this._minDist(points,  DRIVE_HALF_DEG,  FRONT_HALF_DEG)
       const sideLeft   = this._minDist(points, -SIDE_END_DEG,   -SIDE_START_DEG)
       const sideRight  = this._minDist(points,  SIDE_START_DEG,   SIDE_END_DEG)
+      const ultrasonicCm = await this._fetchUltrasonicDistanceCm()
+      const ultraHardStop = ultrasonicCm !== null && ultrasonicCm <= EFFECTIVE_ULTRASONIC_STOP_CM
+      const ultraCaution = ultrasonicCm !== null && ultrasonicCm <= ULTRASONIC_TURN_CM
 
       // 正前和对角使用不同阈值（避免对角远处障碍误触发紧急）
       const diagMin    = Math.min(frontLeft, frontRight)
-      const isEmergency = front < this._frontStopMm() || diagMin < DIAG_STOP_MM
+      const isEmergency = front < this._frontStopMm() || diagMin < DIAG_STOP_MM || ultraHardStop
 
       if (isEmergency) {
         // ── 紧急避障 ─────────────────────────────────────────────
         console.log(
-          `[Explorer] 紧急避障：正前=${front}mm 前左=${frontLeft}mm 前右=${frontRight}mm`
+          `[Explorer] 紧急避障：正前=${front}mm 前左=${frontLeft}mm 前右=${frontRight}mm` +
+          `${ultrasonicCm !== null ? ` 超声波=${ultrasonicCm.toFixed(1)}cm` : ''}`
         )
 
         // 振荡检测：判断本次是左侧还是右侧触发
@@ -244,56 +291,109 @@ class ExplorerClass {
           const escapeDir = side === 'left' ? 'turn_right' : 'turn_left'
           this._motor(escapeDir, TURN_SPEED, ESCAPE_ROTATE_DURATION)
           await this._sleep(ESCAPE_ROTATE_DURATION * 1000 + 150)
-          // 再长距离后退，离开障碍物簇
-          this._motor('backward', this._forwardSpeed(), BIG_REVERSE_DURATION)
-          await this._sleep(BIG_REVERSE_DURATION * 1000 + 150)
+          if (ALLOW_REVERSE) {
+            // 可选：保留后退能力（默认关闭）
+            this._motor('backward', this._forwardSpeed(), BIG_REVERSE_DURATION)
+            await this._sleep(BIG_REVERSE_DURATION * 1000 + 150)
+          } else {
+            // 默认：仅停+转，不后退
+            this._motor('stop')
+            await this._sleep(120)
+          }
           this._noProgressBursts = 0
+          this._inplaceTurnStreak = 0
           continue
         }
 
         this._motor('stop')
         await this._sleep(150)
-        this._motor('backward', this._forwardSpeed(), REVERSE_DURATION)
-        await this._sleep(REVERSE_DURATION * 1000 + 150)
+        if (ALLOW_REVERSE) {
+          this._motor('backward', this._forwardSpeed(), REVERSE_DURATION)
+          await this._sleep(REVERSE_DURATION * 1000 + 150)
+        }
         this._noProgressBursts = 0
+        this._inplaceTurnStreak = 0
 
-        const turnDir = this._chooseTurnDir(frontLeft, frontRight, sideLeft, sideRight)
+        const turnDir = this._chooseTurnDir(frontLeft, frontRight, sideLeft, sideRight, false)
         const escaped = await this._turnUntilClear(turnDir)
 
         if (escaped) {
           // 成功脱困：用更长脉冲把机器人真正带离障碍区，然后重置卡死计数
           this._stuckCount = 0
-          this._motor('forward', this._forwardSpeed(), ESCAPE_BURST_DURATION)
-          await this._sleep(ESCAPE_BURST_DURATION * 1000 + 50)
+          await this._forwardWithUltrasonicGuard(ESCAPE_BURST_DURATION, this._forwardSpeed())
         } else {
           // 两个方向都没出路：卡死一次
           this._stuckCount++
-          console.warn(`[Explorer] 卡死第 ${this._stuckCount} 次，执行大后退`)
-          const reverseDur = this._stuckCount >= 2 ? BIG_REVERSE_DURATION : REVERSE_DURATION
-          this._motor('backward', this._forwardSpeed(), reverseDur)
-          await this._sleep(reverseDur * 1000 + 150)
+          console.warn(`[Explorer] 卡死第 ${this._stuckCount} 次，执行强制换向`)
+          if (ALLOW_REVERSE) {
+            const reverseDur = this._stuckCount >= 2 ? BIG_REVERSE_DURATION : REVERSE_DURATION
+            this._motor('backward', this._forwardSpeed(), reverseDur)
+            await this._sleep(reverseDur * 1000 + 150)
+          } else {
+            const forceDir = sideLeft >= sideRight ? 'turn_left' : 'turn_right'
+            this._motor(forceDir, TURN_SPEED, ESCAPE_ROTATE_DURATION)
+            await this._sleep(ESCAPE_ROTATE_DURATION * 1000 + 120)
+          }
           if (this._stuckCount >= 2) this._stuckCount = 0
           this._noProgressBursts = 0
+          this._inplaceTurnStreak = 0
         }
 
-      } else if (front < this._clearMm()) {
+      } else if (front < this._clearMm() || ultraCaution) {
         // ── 正前偏近：朝侧方更空旷一侧旋转一步 ──────────────────
-        const turnDir = sideLeft >= sideRight ? 'turn_left' : 'turn_right'
+        const turnDir = this._chooseTurnDir(frontLeft, frontRight, sideLeft, sideRight, true)
         console.log(
-          `[Explorer] 转向 ${turnDir}：正前=${front}mm 左侧=${sideLeft}mm 右侧=${sideRight}mm`
+          `[Explorer] 转向 ${turnDir}：正前=${front}mm 左侧=${sideLeft}mm 右侧=${sideRight}mm` +
+          `${ultrasonicCm !== null ? ` 超声波=${ultrasonicCm.toFixed(1)}cm` : ''}`
         )
         this._motor(turnDir, TURN_SPEED, TURN_STEP_DURATION)
         await this._sleep(TURN_STEP_DURATION * 1000 + 100)
         this._noProgressBursts = 0
+        this._inplaceTurnStreak++
+
+        // 斜向出口增强：若 30°~50° 某一侧明显开阔，给一次短前探，避免一直原地旋转。
+        const bestDiag = Math.max(frontLeft, frontRight)
+        if (
+          bestDiag > TURN_EXIT_DIAG_MM &&
+          front > this._frontStopMm() + 40 &&
+          !ultraHardStop
+        ) {
+          await this._forwardWithUltrasonicGuard(DIAG_GUIDE_POKE_DURATION, DIAG_GUIDE_POKE_SPEED)
+          this._inplaceTurnStreak = 0
+        }
+
+        if (
+          this._inplaceTurnStreak >= MAX_INPLACE_TURNS &&
+          front > this._frontStopMm() + 60 &&
+          !ultraHardStop
+        ) {
+          // 小空间“方向对但打转”时，给一个安全短前探打破原地旋转循环。
+          console.warn('[Explorer] 小空间连续转向，执行短前探脱困')
+          await this._forwardWithUltrasonicGuard(INPLACE_POKE_DURATION, INPLACE_POKE_SPEED)
+          this._inplaceTurnStreak = 0
+        }
+        if (this._inplaceTurnStreak >= MAX_INPLACE_TURNS * 2) {
+          // 仍在原地转：执行“后退+大角度换向”强脱困，避免 SLAM 在原地发散。
+          console.warn('[Explorer] 连续原地转向未脱困，执行强制换向脱困')
+          const escapeDir = turnDir === 'turn_left' ? 'turn_right' : 'turn_left'
+          if (ALLOW_REVERSE) {
+            this._motor('backward', this._forwardSpeed(), REVERSE_DURATION)
+            await this._sleep(REVERSE_DURATION * 1000 + 120)
+          }
+          this._motor(escapeDir, TURN_SPEED, ESCAPE_ROTATE_DURATION)
+          await this._sleep(ESCAPE_ROTATE_DURATION * 1000 + 120)
+          this._inplaceTurnStreak = 0
+          this._lastTurnDir = escapeDir
+        }
 
       } else {
         // ── 正前开阔：脉冲前进，重置所有计数 ────────────────────
         this._stuckCount       = 0
         this._oscillationCount = 0
         this._lastEmergencySide = null
+        this._inplaceTurnStreak = 0
         const prePose = await this._fetchPose()
-        this._motor('forward', this._forwardSpeed(), this._burstDuration())
-        await this._sleep(this._burstDuration() * 1000 + 50)
+        await this._forwardWithUltrasonicGuard(this._burstDuration(), this._forwardSpeed())
         const postPose = await this._fetchPose()
 
         if (prePose && postPose) {
@@ -313,8 +413,10 @@ class ExplorerClass {
           console.warn('[Explorer] 检测到走不动还在走，执行强制脱困')
           this._motor('stop')
           await this._sleep(120)
-          this._motor('backward', this._forwardSpeed(), BIG_REVERSE_DURATION)
-          await this._sleep(BIG_REVERSE_DURATION * 1000 + 150)
+          if (ALLOW_REVERSE) {
+            this._motor('backward', this._forwardSpeed(), BIG_REVERSE_DURATION)
+            await this._sleep(BIG_REVERSE_DURATION * 1000 + 150)
+          }
           const hardTurnDir = sideLeft >= sideRight ? 'turn_left' : 'turn_right'
           this._motor(hardTurnDir, TURN_SPEED, ESCAPE_ROTATE_DURATION)
           await this._sleep(ESCAPE_ROTATE_DURATION * 1000 + 150)
@@ -333,11 +435,24 @@ class ExplorerClass {
     frontRight: number,
     sideLeft: number,
     sideRight: number,
+    preferStable: boolean,
   ): 'turn_left' | 'turn_right' {
-    if (Math.abs(frontLeft - frontRight) > 150) {
-      return frontLeft <= frontRight ? 'turn_right' : 'turn_left'
+    if (
+      preferStable &&
+      this._lastTurnDir &&
+      Math.abs(frontLeft - frontRight) <= 150 &&
+      Math.abs(sideLeft - sideRight) <= TURN_HYSTERESIS_MM
+    ) {
+      return this._lastTurnDir
     }
-    return sideLeft >= sideRight ? 'turn_left' : 'turn_right'
+    if (Math.abs(frontLeft - frontRight) > 150) {
+      const dir = frontLeft <= frontRight ? 'turn_right' : 'turn_left'
+      this._lastTurnDir = dir
+      return dir
+    }
+    const dir = sideLeft >= sideRight ? 'turn_left' : 'turn_right'
+    this._lastTurnDir = dir
+    return dir
   }
 
   /**
@@ -358,12 +473,16 @@ class ExplorerClass {
       if (!points) continue
 
       const front = this._minDist(points, -DRIVE_HALF_DEG, DRIVE_HALF_DEG)
+      const frontLeft = this._minDist(points, -FRONT_HALF_DEG, -DRIVE_HALF_DEG)
+      const frontRight = this._minDist(points, DRIVE_HALF_DEG, FRONT_HALF_DEG)
+      const diagClear = Math.max(frontLeft, frontRight)
       console.log(
-        `[Explorer] 转向中（步 ${steps + 1}/${MAX_TURN_STEPS}，换向 ${switches} 次）：正前=${front}mm`
+        `[Explorer] 转向中（步 ${steps + 1}/${MAX_TURN_STEPS}，换向 ${switches} 次）：` +
+        `正前=${front}mm 斜向=${diagClear}mm`
       )
 
-      if (front > TURN_EXIT_MM) {
-        console.log('[Explorer] 正前已开阔，脱困成功')
+      if (front > TURN_EXIT_MM || (front > this._frontStopMm() && diagClear > TURN_EXIT_DIAG_MM)) {
+        console.log('[Explorer] 前方/斜向已开阔，脱困成功')
         return true
       }
 
@@ -378,8 +497,13 @@ class ExplorerClass {
         console.warn('[Explorer] 该方向未找到出路，换反方向')
         currentDir = currentDir === 'turn_left' ? 'turn_right' : 'turn_left'
         steps = 0
-        this._motor('backward', this._forwardSpeed(), REVERSE_DURATION)
-        await this._sleep(REVERSE_DURATION * 1000 + 150)
+        if (ALLOW_REVERSE) {
+          this._motor('backward', this._forwardSpeed(), REVERSE_DURATION)
+          await this._sleep(REVERSE_DURATION * 1000 + 150)
+        } else {
+          this._motor('stop')
+          await this._sleep(120)
+        }
       }
     }
     return false
@@ -410,6 +534,52 @@ class ExplorerClass {
     } catch {
       return null
     }
+  }
+
+  /**
+   * 读取前向超声波距离（cm）。
+   * 返回 null 表示未启用、传感器模拟模式、读数缺失或读数过期。
+   */
+  private async _fetchUltrasonicDistanceCm(): Promise<number | null> {
+    if (!USE_ULTRASONIC_GUARD) return null
+    try {
+      const res = await fetch(`${PLATFORM_URL}/ultrasonic/status`, {
+        signal: AbortSignal.timeout(600),
+      })
+      if (!res.ok) return null
+      const status = (await res.json()) as UltrasonicStatus
+      if (status.is_simulation || !status.latest) return null
+      const ageMs = Date.now() - status.latest.timestamp_ms
+      if (ageMs > ULTRASONIC_TTL_MS) return null
+      return status.latest.distance_cm
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 分段前进并在每段前做超声波急停检查，避免“脉冲期间顶撞”。
+   * 返回 true 表示完整前进，false 表示中途被超声波打断。
+   */
+  private async _forwardWithUltrasonicGuard(durationS: number, speed: number): Promise<boolean> {
+    if (durationS <= 0) return true
+    let elapsed = 0
+    while (elapsed < durationS && this._running) {
+      const distCm = await this._fetchUltrasonicDistanceCm()
+      if (distCm !== null && distCm <= EFFECTIVE_ULTRASONIC_STOP_CM) {
+        this._motor('stop')
+        await this._sleep(80)
+        console.warn(
+          `[Explorer] 超声波急停：${distCm.toFixed(1)}cm <= ${EFFECTIVE_ULTRASONIC_STOP_CM}cm`
+        )
+        return false
+      }
+      const step = Math.min(FORWARD_GUARD_STEP_S, durationS - elapsed)
+      this._motor('forward', speed, step)
+      await this._sleep(step * 1000 + 20)
+      elapsed += step
+    }
+    return true
   }
 
   /**

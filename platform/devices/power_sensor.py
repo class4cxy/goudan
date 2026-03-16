@@ -186,6 +186,10 @@ class PowerSensor:
         except ImportError:
             logger.error("[PowerSensor] 缺少依赖：pi-ina219，请运行：pip install pi-ina219")
             return False
+        except OSError as e:
+            logger.error(f"[PowerSensor] 加载 ina219 模块时发生 I/O 错误（包文件可能损坏）：{e}，"
+                         "请运行：pip install --force-reinstall pi-ina219")
+            return False
 
         try:
             self._ina = INA219(
