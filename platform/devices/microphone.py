@@ -50,7 +50,7 @@ BLOCK_DURATION_MS = 300
 # 设为 None 则使用 find_usb_audio_device() 自动检测，未检测到时再退到 ALSA 默认设备
 DEFAULT_DEVICE: str | None = None
 
-SILENCE_THRESHOLD_MS = 800   # 静音多久判定说话结束
+SILENCE_THRESHOLD_MS = 1500   # 静音多久判定说话结束
 SILENCE_FRAMES = SILENCE_THRESHOLD_MS // FRAME_DURATION_MS
 
 MIN_SPEECH_MS = 300          # 低于此时长的片段丢弃（过滤噪声）
