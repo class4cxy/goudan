@@ -3,6 +3,7 @@
  *
  * 用法：pm2 start ecosystem.config.cjs
  * 开机自启：pm2 save && pm2 startup
+ *
  */
 
 const path = require('path');
@@ -13,9 +14,8 @@ module.exports = {
     {
       name: 'platform',
       cwd: path.join(projectRoot, 'platform'),
-      script: path.join(projectRoot, 'platform', '.venv', 'bin', 'python'),
-      args: '-m uvicorn main:app --host 0.0.0.0 --port 8001',
-      interpreter: 'none',
+      script: path.join(projectRoot, 'platform', 'start.sh'),
+      interpreter: 'sh',
       autorestart: true,
       max_restarts: 10,
       min_uptime: '10s',
