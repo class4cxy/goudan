@@ -16,6 +16,11 @@ Microphone — 麦克风硬件抽象层
   优先尝试 16000Hz（webrtcvad 原生支持）；
   若设备不支持，自动回退到 48000Hz 并以 3:1 均值抽取降采样至 16000Hz。
 
+质量门控（_flush_speech_sync）：
+  - voiced_ratio：VAD 语音帧占语音段（不含尾部静音）的比例，低于阈值丢弃
+  - rms_dbfs：片段整体能量，低于阈值（过静）丢弃
+  两项门控均以 WARNING 记录，便于在生产日志中直接看到被丢弃的原因。
+
 性能说明：
   VAD 状态机在 sounddevice 音频回调线程中同步执行，仅在语音开始/结束事件时才通过
   run_coroutine_threadsafe 跨线程通知 asyncio 事件循环。
@@ -54,13 +59,10 @@ MIN_SPEECH_FRAMES = MIN_SPEECH_MS // FRAME_DURATION_MS
 # 语音片段质量门控：
 # 1) voiced_ratio：被 VAD 判为语音的帧占比
 # 2) rms_dbfs：片段整体能量（dBFS，越接近 0 越响）
-MIN_VOICED_RATIO = float(os.environ.get("MIC_MIN_VOICED_RATIO", "0.35"))
-MIN_CLIP_RMS_DBFS = float(os.environ.get("MIC_MIN_CLIP_RMS_DBFS", "-42"))
+MIN_VOICED_RATIO = float(os.environ.get("MIC_MIN_VOICED_RATIO", "0.20"))
+MIN_CLIP_RMS_DBFS = float(os.environ.get("MIC_MIN_CLIP_RMS_DBFS", "-50"))
 MAX_SPEECH_MS = int(os.environ.get("MIC_MAX_SPEECH_MS", "9000"))
 MAX_SPEECH_FRAMES = max(1, MAX_SPEECH_MS // FRAME_DURATION_MS)
-MIN_VOICE_BAND_RATIO = float(os.environ.get("MIC_MIN_VOICE_BAND_RATIO", "0.52"))
-MIN_ZCR = float(os.environ.get("MIC_MIN_ZCR", "0.01"))
-MAX_ZCR = float(os.environ.get("MIC_MAX_ZCR", "0.22"))
 
 # 采样率回退顺序：先尝试 16000Hz，若不支持则尝试 48000Hz（3:1 整数比，可无损降采样）
 _PROBE_RATES = [16000, 48000]
@@ -331,22 +333,24 @@ class Microphone:
         self._is_speaking = False
 
         if len(self._speech_buffer) < MIN_SPEECH_FRAMES:
-            logger.debug("[Microphone] 语音过短，丢弃")
+            logger.debug("[Microphone] 语音过短，丢弃（%d 帧 < %d 帧）", len(self._speech_buffer), MIN_SPEECH_FRAMES)
             self._speech_buffer.clear()
             self._silent_frames = 0
+            self._voiced_frames = 0
             return
 
         raw_pcm = b"".join(self._speech_buffer)
         duration_ms = len(self._speech_buffer) * FRAME_DURATION_MS
-        voiced_ratio = self._voiced_frames / max(len(self._speech_buffer), 1)
+
+        # voiced_ratio 分母只算语音帧（排除尾部静音帧），避免短句被误判丢弃
+        speech_frames_count = len(self._speech_buffer) - self._silent_frames
+        voiced_ratio = self._voiced_frames / max(speech_frames_count, 1)
         rms_dbfs = _compute_rms_dbfs(raw_pcm)
-        voice_band_ratio = _compute_voice_band_ratio(raw_pcm, SAMPLE_RATE)
-        zcr = _compute_zcr(raw_pcm)
 
         if voiced_ratio < MIN_VOICED_RATIO:
-            logger.debug(
-                "[Microphone] 丢弃低语音占比片段（voiced_ratio=%.2f < %.2f）",
-                voiced_ratio, MIN_VOICED_RATIO
+            logger.warning(
+                "[Microphone] 丢弃低语音占比片段（voiced_ratio=%.2f < %.2f，时长=%dms，rms=%.1fdBFS）",
+                voiced_ratio, MIN_VOICED_RATIO, duration_ms, rms_dbfs,
             )
             self._speech_buffer.clear()
             self._silent_frames = 0
@@ -354,29 +358,9 @@ class Microphone:
             return
 
         if rms_dbfs < MIN_CLIP_RMS_DBFS:
-            logger.debug(
-                "[Microphone] 丢弃低能量片段（rms_dbfs=%.1f < %.1f）",
-                rms_dbfs, MIN_CLIP_RMS_DBFS
-            )
-            self._speech_buffer.clear()
-            self._silent_frames = 0
-            self._voiced_frames = 0
-            return
-
-        if voice_band_ratio < MIN_VOICE_BAND_RATIO:
-            logger.debug(
-                "[Microphone] 丢弃非人声频带片段（voice_band_ratio=%.2f < %.2f）",
-                voice_band_ratio, MIN_VOICE_BAND_RATIO
-            )
-            self._speech_buffer.clear()
-            self._silent_frames = 0
-            self._voiced_frames = 0
-            return
-
-        if zcr < MIN_ZCR or zcr > MAX_ZCR:
-            logger.debug(
-                "[Microphone] 丢弃异常过零率片段（zcr=%.3f, 期望 %.3f~%.3f）",
-                zcr, MIN_ZCR, MAX_ZCR
+            logger.warning(
+                "[Microphone] 丢弃低能量片段（rms_dbfs=%.1f < %.1f，时长=%dms，voiced_ratio=%.2f）",
+                rms_dbfs, MIN_CLIP_RMS_DBFS, duration_ms, voiced_ratio,
             )
             self._speech_buffer.clear()
             self._silent_frames = 0
@@ -388,10 +372,9 @@ class Microphone:
                 self._on_speech_end(raw_pcm, SAMPLE_RATE, duration_ms), self._loop
             )
 
-        logger.debug(
-            f"[Microphone] → speech_end ({duration_ms}ms, {len(raw_pcm)} bytes, "
-            f"voiced_ratio={voiced_ratio:.2f}, rms_dbfs={rms_dbfs:.1f}, "
-            f"voice_band_ratio={voice_band_ratio:.2f}, zcr={zcr:.3f})"
+        logger.info(
+            "[Microphone] → speech_end（时长=%dms，voiced_ratio=%.2f，rms=%.1fdBFS）",
+            duration_ms, voiced_ratio, rms_dbfs,
         )
 
         self._speech_buffer.clear()
@@ -413,37 +396,3 @@ def _compute_rms_dbfs(raw_pcm: bytes) -> float:
     return float(20 * np.log10(rms))
 
 
-def _compute_voice_band_ratio(raw_pcm: bytes, sample_rate: int) -> float:
-    """
-    估算语音频带能量占比（85Hz-3400Hz / 全频段）。
-    值越高越接近人声主频带特征。
-    """
-    if not raw_pcm:
-        return 0.0
-    samples = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32)
-    if samples.size < 64:
-        return 0.0
-    samples -= float(np.mean(samples))
-    window = np.hanning(samples.size).astype(np.float32)
-    spectrum = np.fft.rfft(samples * window)
-    power = np.abs(spectrum) ** 2
-    freqs = np.fft.rfftfreq(samples.size, d=1.0 / sample_rate)
-    total = float(np.sum(power))
-    if total <= 1e-9:
-        return 0.0
-    band = power[(freqs >= 85.0) & (freqs <= 3400.0)]
-    return float(np.sum(band) / total)
-
-
-def _compute_zcr(raw_pcm: bytes) -> float:
-    """
-    计算过零率（Zero Crossing Rate），用于区分稳态噪声与自然语音。
-    """
-    if not raw_pcm:
-        return 0.0
-    samples = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32)
-    if samples.size < 2:
-        return 0.0
-    signs = np.signbit(samples)
-    crossings = np.count_nonzero(signs[1:] != signs[:-1])
-    return float(crossings / max(samples.size - 1, 1))

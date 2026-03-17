@@ -114,6 +114,10 @@ class PlatformConnectorClass {
 
     this.ws.on('message', (raw: WebSocket.RawData) => {
       try {
+        const data: { type: string; payload: Record<string, unknown> } = JSON.parse(raw.toString())
+        if (data.type.startsWith('sense.audio.')) {
+          console.log(data, 'jdochen')
+        }
         const msg = JSON.parse(raw.toString()) as { type: string; payload: Record<string, unknown> }
         this._handleInbound(msg)
       } catch (e) {
