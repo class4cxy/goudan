@@ -15,6 +15,7 @@ Speaker — 扬声器硬件抽象层
 import asyncio
 import io
 import logging
+import os
 from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"  # 微软 Azure 晓晓，自然中文女声
 DEFAULT_RATE = "+0%"
 DEFAULT_VOLUME = "+100%"   # edge-tts 最大输出音量
-SOFTWARE_GAIN = 2.0        # 软件增益倍数，USB 声卡输出偏小时补偿；超过 1.0 会 clip 削波
+SOFTWARE_GAIN = float(os.environ.get("SPEAKER_SOFTWARE_GAIN", "3.5"))  # 软件增益倍数，USB 声卡输出偏小时补偿；超过 1.0 会 clip 削波
 
 
 class Speaker:
