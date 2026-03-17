@@ -213,11 +213,23 @@ class Ultrasonic:
         return reading
 
     def _measure_distance_cm(self) -> float | None:
-        GPIO.output(self._cfg.trig_pin, False)
-        time.sleep(0.000002)
-        GPIO.output(self._cfg.trig_pin, True)
-        time.sleep(0.00001)
-        GPIO.output(self._cfg.trig_pin, False)
+        # Guard against RPi.GPIO's atexit cleanup invalidating the chip handle
+        # before our stop() method has a chance to join the thread.
+        if self._stop_event.is_set():
+            return None
+        try:
+            GPIO.output(self._cfg.trig_pin, False)
+            time.sleep(0.000002)
+            if self._stop_event.is_set():
+                return None
+            GPIO.output(self._cfg.trig_pin, True)
+            time.sleep(0.00001)
+            GPIO.output(self._cfg.trig_pin, False)
+        except Exception:
+            # Handle becomes invalid the moment GPIO.cleanup() runs (e.g. via
+            # RPi.GPIO's atexit handler on Ctrl+C). Return None so the polling
+            # loop exits cleanly without a traceback.
+            return None
 
         echo_start = self._wait_for_level(1, self._cfg.timeout_s)
         if echo_start is None:
@@ -235,7 +247,12 @@ class Ultrasonic:
     def _wait_for_level(self, level: int, timeout_s: float) -> float | None:
         deadline = time.perf_counter() + timeout_s
         while time.perf_counter() < deadline:
-            if GPIO.input(self._cfg.echo_pin) == level:
-                return time.perf_counter()
+            if self._stop_event.is_set():
+                return None
+            try:
+                if GPIO.input(self._cfg.echo_pin) == level:
+                    return time.perf_counter()
+            except Exception:
+                return None
         return None
 

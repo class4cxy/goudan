@@ -43,7 +43,11 @@ export async function generateVoiceResponse(
   tools?: Record<string, any>,
 ): Promise<string> {
   const systemPrompt = buildVoiceSystemPrompt(context.getLastEmotion(), triggerNote)
-  const messages = context.getMessages()
+  const rawMessages = context.getMessages()
+  // AI SDK 要求 messages 不能为空数组；主动发言时 context 可能尚无历史，注入占位消息
+  const messages = rawMessages.length > 0
+    ? rawMessages
+    : [{ role: 'user' as const, content: '（主动发言）' }]
 
   const hasTools = tools && Object.keys(tools).length > 0
 
