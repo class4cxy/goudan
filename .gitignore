@@ -23,3 +23,6 @@ dist/
 
 # 系统文件
 .DS_Store
+
+# lg GPIO 库运行时创建的 FIFO 管道（树莓派等）
+.lgd-nfy*

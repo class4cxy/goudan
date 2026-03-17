@@ -240,12 +240,15 @@ async def _startup():
     # 必须在进入 to_thread 前捕获事件循环，子线程中无法调用 asyncio.get_event_loop()（Python 3.10+）
     _loop = asyncio.get_running_loop()
 
-    # 启动激光雷达（串口读取在独立线程，失败自动降级模拟模式）
-    await asyncio.to_thread(lidar_sensor.start, _loop)
-
-    # 电源传感器回调在轮询线程中触发，提前注入 loop
+    # 提前注入 loop，供电源传感器回调及后续按需启动雷达的 REST 接口使用
     global _main_loop
     _main_loop = _loop
+
+    # 激光雷达懒启动：服务启动时不自动开启雷达，仅在需要时由意图驱动：
+    #   - 开始建图：POST /slam/start 内部自动启动
+    #   - 开始导航：Node.js MotorEffector 收到 action.navigate 后调用 POST /lidar/start
+    #   - 手动控制：POST /lidar/start / POST /lidar/stop
+    logger.info("⏸  激光雷达未自动启动，将在建图或导航时按需开启")
 
     # 启动电源传感器（I2C 轮询线程，失败自动降级模拟模式）
     await asyncio.to_thread(power_sensor.start)
@@ -840,6 +843,33 @@ async def camera_capture_status():
 
 # ── 激光雷达接口 ───────────────────────────────────────────────────
 
+@app.post("/lidar/start", summary="启动激光雷达扫描")
+async def lidar_start():
+    """
+    手动启动激光雷达串口读取线程。
+
+    - 若已在运行，直接返回当前状态（幂等）
+    - 若串口不可用（未接硬件），自动进入模拟模式并返回 is_simulation=true
+    - 建议在开始建图或室内导航前调用；也可设置环境变量 LIDAR_AUTO_START=true 让其随服务自动启动
+    """
+    if lidar_sensor.device.is_running:
+        return {"ok": True, "message": "激光雷达已在运行中", "status": lidar_sensor.device.status}
+    await asyncio.to_thread(lidar_sensor.start, _main_loop)
+    return {"ok": True, "status": lidar_sensor.device.status}
+
+
+@app.post("/lidar/stop", summary="停止激光雷达扫描")
+async def lidar_stop_endpoint():
+    """
+    停止激光雷达串口读取线程并关闭串口。
+
+    - 停止后不再广播 sense.lidar.scan，SLAM 建图也将停止接收新帧
+    - 可通过 POST /lidar/start 重新启动
+    """
+    lidar_sensor.stop()
+    return {"ok": True, "message": "激光雷达已停止", "status": lidar_sensor.device.status}
+
+
 @app.get("/lidar/status", summary="激光雷达连接状态")
 async def lidar_status():
     """
@@ -900,6 +930,7 @@ async def slam_start():
     """
     初始化 SLAM 引擎并开始接受激光雷达扫描帧建图。
 
+    - 若激光雷达未启动，自动尝试启动（无需提前调用 POST /lidar/start）
     - 若已在建图中，重置后重新开始
     - 需要 breezyslam 已安装（pip install breezyslam）
     - LiDAR 必须已连接（非模拟模式）
@@ -910,6 +941,9 @@ async def slam_start():
     """
     if not slam_engine.is_available:
         raise HTTPException(status_code=503, detail="breezyslam 未安装，请运行：pip install breezyslam")
+    # 若雷达未启动，自动启动（懒启动模式下建图前无需手动调用 /lidar/start）
+    if not lidar_sensor.device.is_running:
+        await asyncio.to_thread(lidar_sensor.start, _main_loop)
     if lidar_sensor.device.is_simulation:
         raise HTTPException(status_code=503, detail="激光雷达未连接，无法建图")
     ok = slam_engine.start_mapping()
@@ -918,13 +952,15 @@ async def slam_start():
     return {"ok": True, "status": slam_engine.status}
 
 
-@app.post("/slam/stop", summary="停止建图（冻结地图）")
+@app.post("/slam/stop", summary="停止建图（冻结地图）并关闭激光雷达")
 async def slam_stop():
     """
-    停止接受新扫描帧，地图冻结在当前状态。
+    停止接受新扫描帧，地图冻结在当前状态，同时关闭激光雷达串口。
     机器人位姿仍可查询，地图可继续保存。
+    若需重新建图，调用 POST /slam/start 会自动重启雷达。
     """
     slam_engine.stop_mapping()
+    lidar_sensor.stop()
     return {"ok": True, "status": slam_engine.status}
 
 

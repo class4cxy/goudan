@@ -16,6 +16,28 @@ import { Spine } from '../../runtime/spine'
 import { PlatformConnector } from '../../runtime/platform-connector'
 import type { SpineEvent, ActionNavigatePayload, ActionMotorPayload } from '../../runtime/spine'
 
+const PLATFORM_URL = process.env.PLATFORM_URL ?? 'http://localhost:8001'
+
+/** 启动激光雷达（幂等，已在运行则直接返回）。 */
+async function _lidarStart(): Promise<void> {
+  try {
+    await fetch(`${PLATFORM_URL}/lidar/start`, { method: 'POST', signal: AbortSignal.timeout(5000) })
+    console.log('[MotorEffector] 激光雷达已启动')
+  } catch (e) {
+    console.warn('[MotorEffector] 激光雷达启动失败：', e)
+  }
+}
+
+/** 停止激光雷达。 */
+async function _lidarStop(): Promise<void> {
+  try {
+    await fetch(`${PLATFORM_URL}/lidar/stop`, { method: 'POST', signal: AbortSignal.timeout(5000) })
+    console.log('[MotorEffector] 激光雷达已停止')
+  } catch (e) {
+    console.warn('[MotorEffector] 激光雷达停止失败：', e)
+  }
+}
+
 export function startMotorEffector(): void {
   // ─── 高层导航意图（当前为存根，激光雷达到来后在此实现路径规划）──────────────
 
@@ -26,10 +48,17 @@ export function startMotorEffector(): void {
       console.log(
         `[MotorEffector] 导航意图已收到：前往「${destination}」${reason ? `（${reason}）` : ''}`
       )
-      // TODO: 激光雷达模块装车后，在此接入 NavigationThalamus：
-      //   1. 查询内建地图，计算当前位置 → destination 的路径
-      //   2. 将路径分解为 action.motor 事件序列逐步执行
-      //   3. 订阅 sense.system.obstacle 事件实现动态避障重规划
+      // 导航需要雷达：启动雷达 → 执行路径规划 → 完成后停止雷达
+      void _lidarStart().then(async () => {
+        // TODO: NavigationThalamus 接入后在此实现：
+        //   1. 查询内建地图，计算当前位置 → destination 的路径
+        //   2. 将路径分解为 action.motor 事件序列逐步执行
+        //   3. 订阅 sense.system.obstacle 实现动态避障重规划
+        //   4. 路径执行完毕或被中断后调用 _lidarStop()
+        //
+        // 当前为存根：仅启动雷达并记录意图，不驱动电机
+        console.log(`[MotorEffector] 导航存根：目标「${destination}」已记录，待 NavigationThalamus 实现`)
+      })
     }
   )
 

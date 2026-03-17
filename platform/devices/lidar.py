@@ -165,7 +165,14 @@ class Lidar:
     # ─── 公共接口 ──────────────────────────────────────────────────
 
     def start(self) -> None:
-        """打开串口并启动后台读取线程（非阻塞）。"""
+        """打开串口并启动后台读取线程（非阻塞）。重复调用时若线程已在运行则直接返回。"""
+        if self.is_running:
+            logger.debug("[Lidar] 读取线程已在运行，跳过重复启动")
+            return
+
+        # 每次调用 start() 前重置模拟标志，允许硬件插入后重试
+        self._is_simulation = False
+
         try:
             import serial
         except ImportError:
