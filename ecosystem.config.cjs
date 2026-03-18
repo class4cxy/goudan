@@ -17,7 +17,7 @@ module.exports = {
     {
       name: 'home-agent',
       cwd: projectRoot,
-      script: 'node_modules/.bin/next',
+      script: 'node_modules/next/dist/bin/next',
       args: 'start',
       interpreter: 'node',
       autorestart: true,
