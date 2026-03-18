@@ -3,13 +3,12 @@
  * ============================
  * 职责：
  *   - 追踪上次对话活动时间
- *   - agent 空闲超过阈值时，随机选择一种主动发起策略入队
+ *   - agent 空闲超过阈值时，由 LLM 根据情景自由发挥主动搭话
  *   - 发布 sense.agent.idle 事件（供其他模块感知）
  *
- * 发起策略池（随机选，避免每次都说同一句）：
- *   - 询问型：「主人，有什么需要我做的吗？」
- *   - 信息推送型：让 LLM 根据情景自由发挥
- *   - 撒娇/牢骚型：「我有点无聊，能给我派个任务吗？」
+ * 静默时段：
+ *   - 23:00 ~ 08:00 为休息时间，禁止主动搭话
+ *   - 每天在 08:00 ~ 08:10 之间随机触发一次元气满满的早安问候
  */
 
 import { ConversationManager } from '../manager'
@@ -19,25 +18,42 @@ const IDLE_THRESHOLD_MS = 20 * 60_000   // 20 分钟无对话则触发
 const CHECK_INTERVAL_MS = 60_000         // 每分钟检查一次
 const COOLDOWN_MS = 30 * 60_000         // 主动发起后冷却 30 分钟
 
-// 主动发起的触发文案池（直接说的内容）
-const IDLE_LINES = [
-  '主人，我有点无聊，有什么事要我做吗？',
-  '最近家里挺安静的，需要我帮你做什么吗？',
-  '我在这儿待着，你有什么吩咐吗？',
-  '好无聊啊，要不要我去巡检一下各个房间？',
-  '主人，你在吗？有什么需要帮忙的吗？',
-]
+/** 休息时段：[起始小时, 结束小时)，前闭后开，跨午夜需分两段判断 */
+const QUIET_HOUR_START = 23
+const QUIET_HOUR_END = 8
+/** 早安问候在 08:00 ~ 08:MORNING_WINDOW_MINS 之间随机触发 */
+const MORNING_WINDOW_MINS = 10
 
-// 触发 LLM 自由发挥的情景描述（不直接说固定文案，而是给 LLM 一个场景让它自然表达）
+// 触发 LLM 自由发挥的情景描述（空闲搭话）
 const IDLE_TRIGGER_NOTES = [
   '你已经空闲了很长时间，家里没什么动静。主动找主人聊聊天，可以问问有没有事要做，也可以随口说点什么。',
   '家里很安静，你有些无聊。可以主动跟主人说话，表达一下你的状态或者询问有没有任务。',
   '距离上次对话已经过去了很长时间，主动联系一下主人，自然地开启对话。',
 ]
 
+// 触发 LLM 自由发挥的情景描述（早安问候，语气要充满朝气）
+const MORNING_TRIGGER_NOTES = [
+  '现在是早上八点左右，新的一天刚刚开始。用元气满满、积极阳光的语气向主人道早安，可以顺带问问今天有什么计划或者需要帮什么忙。语气要充满朝气，让主人感受到你的活力。',
+  '早上八点了，用充满活力和朝气的语气跟主人打招呼，表达你对新一天的期待，自然地询问有没有任务可以帮忙。',
+  '新的一天开始啦，用元气十足的方式跟主人说早安，语气轻快活泼，顺便问问今天有什么安排。',
+]
+
 let lastActivityMs = Date.now()
 let lastInitiateMs = 0
 let checkTimer: NodeJS.Timeout | null = null
+/** 记录已发送早安问候的日期字符串（如 "Mon Jan 01 2024"），避免当天重复 */
+let lastMorningGreetingDate = ''
+/** 当天早安问候的目标触发分钟（0 ~ MORNING_WINDOW_MINS-1 内随机），-1 表示未初始化 */
+let morningTargetMinute = -1
+
+function pickNote(pool: string[]): string {
+  return pool[Math.floor(Math.random() * pool.length)]
+}
+
+/** 判断当前是否处于休息时段（23:00 ~ 08:00） */
+function isQuietHour(hour: number): boolean {
+  return hour >= QUIET_HOUR_START || hour < QUIET_HOUR_END
+}
 
 /** 每次对话活动时调用，重置空闲计时器 */
 export function resetIdleTimer(): void {
@@ -47,6 +63,48 @@ export function resetIdleTimer(): void {
 export function startIdleInitiator(): void {
   checkTimer = setInterval(() => {
     const now = Date.now()
+    const date = new Date()
+    const hour = date.getHours()
+    const minute = date.getMinutes()
+    const dateStr = date.toDateString()
+
+    // ── 早安问候：每天在 08:00 ~ 08:MORNING_WINDOW_MINS 内随机触发一次 ──
+    if (hour === QUIET_HOUR_END && lastMorningGreetingDate !== dateStr) {
+      // 进入 8 点窗口后，为当天随机选一个触发分钟
+      if (morningTargetMinute === -1) {
+        morningTargetMinute = Math.floor(Math.random() * MORNING_WINDOW_MINS)
+        console.log(`[IdleInitiator] 今日早安目标分钟：08:0${morningTargetMinute}`)
+      }
+
+      if (minute >= morningTargetMinute && ConversationManager.getState() === 'IDLE') {
+        lastMorningGreetingDate = dateStr
+        morningTargetMinute = -1   // 重置，供明天重新抽签
+        lastInitiateMs = now       // 重置冷却，早安后不立刻触发空闲发言
+
+        ConversationManager.enqueue({
+          mode: 'active',
+          priority: 2,
+          source: 'idle.initiator.morning',
+          label: 'morning.greeting',
+          content: undefined,
+          triggerNote: pickNote(MORNING_TRIGGER_NOTES),
+          expiresAt: now + 60 * 60_000,   // 1 小时内未处理才过期
+        })
+
+        console.log('[IdleInitiator] 早安问候已入队')
+      }
+      return
+    }
+
+    // 离开 8 点窗口后重置目标分钟（防止跨天状态残留）
+    if (morningTargetMinute !== -1 && hour !== QUIET_HOUR_END) {
+      morningTargetMinute = -1
+    }
+
+    // ── 休息时段（23:00 ~ 08:00）：不主动搭话 ──
+    if (isQuietHour(hour)) return
+
+    // ── 常规空闲检测 ──
     const idleMs = now - lastActivityMs
     const cooldownOk = now - lastInitiateMs > COOLDOWN_MS
 
@@ -65,36 +123,18 @@ export function startIdleInitiator(): void {
       summary: `agent 已空闲 ${Math.round(idleMs / 60_000)} 分钟，准备主动发起对话`,
     })
 
-    // 随机策略：50% 概率直接说固定文案，50% 概率让 LLM 自由发挥
-    const useLLM = Math.random() < 0.5
-
-    if (useLLM) {
-      const triggerNote = IDLE_TRIGGER_NOTES[Math.floor(Math.random() * IDLE_TRIGGER_NOTES.length)]
-      // 无 content → manager 会让 LLM 根据 triggerNote 生成内容
-      // 这里用一个空的 user turn + triggerNote 来触发 LLM
-      ConversationManager.enqueue({
-        mode: 'active',
-        priority: 3,
-        source: 'idle.initiator',
-        label: 'idle.chat',
-        content: undefined,
-        triggerNote,
-        expiresAt: now + 10 * 60_000,  // 10 分钟内未处理则过期
-      })
-    } else {
-      const line = IDLE_LINES[Math.floor(Math.random() * IDLE_LINES.length)]
-      ConversationManager.enqueue({
-        mode: 'active',
-        priority: 3,
-        source: 'idle.initiator',
-        label: 'idle.chat',
-        content: line,
-        expiresAt: now + 10 * 60_000,
-      })
-    }
+    ConversationManager.enqueue({
+      mode: 'active',
+      priority: 3,
+      source: 'idle.initiator',
+      label: 'idle.chat',
+      content: undefined,
+      triggerNote: pickNote(IDLE_TRIGGER_NOTES),
+      expiresAt: now + 10 * 60_000,   // 10 分钟内未处理则过期
+    })
   }, CHECK_INTERVAL_MS)
 
-  console.log(`[IdleInitiator] 已启动，空闲阈值 ${IDLE_THRESHOLD_MS / 60_000} 分钟`)
+  console.log(`[IdleInitiator] 已启动，空闲阈值 ${IDLE_THRESHOLD_MS / 60_000} 分钟，休息时段 ${QUIET_HOUR_START}:00 ~ ${QUIET_HOUR_END}:00`)
 }
 
 export function stopIdleInitiator(): void {
