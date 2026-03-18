@@ -4,8 +4,9 @@ Speaker — 扬声器硬件抽象层
 职责：
   1. TTS 文字转音频（edge-tts，支持中文 Neural 声音）
   2. 通过扬声器播放（sounddevice + soundfile 解码 MP3）
-  3. 播放队列管理（顺序排队 / interrupt 中断清空）
-  4. 通过回调通知上层播放开始/结束（用于防回声 mute 联动）
+  3. 双队列流水线（文本队列 → 已合成音频队列），实现“边播边合成”
+  4. interrupt 中断清空（取消当前播放 + 取消当前合成 + 丢弃旧队列）
+  5. 通过回调通知上层播放开始/结束（用于防回声 mute 联动）
 
 不含任何 WebSocket / Spine 逻辑，纯硬件操作。
 
@@ -55,17 +56,20 @@ class Speaker:
         self._on_play_end = on_play_end
 
         self._queue: asyncio.Queue[dict] = asyncio.Queue()
+        self._ready_queue: asyncio.Queue[dict] = asyncio.Queue()
         self._current_task: asyncio.Task | None = None
+        self._current_tts_task: asyncio.Task | None = None
+        self._generation = 0
+        self._enqueue_lock = asyncio.Lock()
 
     # ─── 公共接口 ─────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        """消费播放队列（阻塞，应在独立 task 中运行）。"""
+        """启动双阶段流水线（阻塞，应在独立 task 中运行）。"""
         logger.info(f"[Speaker] 播放队列已启动（声音：{self._voice}）")
-        while True:
-            command = await self._queue.get()
-            await self._do_speak(command["text"])
-            self._queue.task_done()
+        tts_worker = asyncio.create_task(self._synthesis_loop(), name="speaker_tts_worker")
+        play_worker = asyncio.create_task(self._playback_loop(), name="speaker_play_worker")
+        await asyncio.gather(tts_worker, play_worker)
 
     async def enqueue(self, text: str, interrupt: bool = False) -> None:
         """
@@ -75,39 +79,119 @@ class Speaker:
             text:      要播放的文字
             interrupt: True 时先清空队列并取消当前播放，再插入新内容
         """
-        if interrupt:
-            while not self._queue.empty():
-                try:
-                    self._queue.get_nowait()
-                    self._queue.task_done()
-                except asyncio.QueueEmpty:
-                    break
-            if self._current_task and not self._current_task.done():
-                self._current_task.cancel()
+        normalized = text.strip()
+        if not normalized:
+            return
 
-        await self._queue.put({"text": text})
+        async with self._enqueue_lock:
+            if interrupt:
+                self._interrupt_pipeline_locked()
+
+            await self._queue.put({
+                "text": normalized,
+                "generation": self._generation,
+            })
+
+    def is_busy(self) -> bool:
+        """是否仍有播放或待处理任务（含合成中/待播/播放中）。"""
+        is_playing = bool(self._current_task and not self._current_task.done())
+        is_synthesizing = bool(self._current_tts_task and not self._current_tts_task.done())
+        return (
+            is_playing
+            or is_synthesizing
+            or not self._queue.empty()
+            or not self._ready_queue.empty()
+        )
+
+    def is_idle(self) -> bool:
+        return not self.is_busy()
 
     # ─── 内部播放流程 ──────────────────────────────────────────────────
 
-    async def _do_speak(self, text: str) -> None:
-        if not text.strip():
-            return
+    def _interrupt_pipeline_locked(self) -> None:
+        """切换代际并清空旧任务：用于 interrupt_current=true。"""
+        self._generation += 1
+        self._drain_queue(self._queue)
+        self._drain_queue(self._ready_queue)
 
-        if self._on_play_start:
-            self._on_play_start()
+        if self._current_task and not self._current_task.done():
+            self._current_task.cancel()
+        if self._current_tts_task and not self._current_tts_task.done():
+            self._current_tts_task.cancel()
 
-        try:
-            audio_data = await self._tts(text)
-            if audio_data:
-                self._current_task = asyncio.create_task(self._play(audio_data))
+    def _drain_queue(self, queue: asyncio.Queue[dict]) -> None:
+        while not queue.empty():
+            try:
+                queue.get_nowait()
+                queue.task_done()
+            except asyncio.QueueEmpty:
+                break
+
+    async def _synthesis_loop(self) -> None:
+        """消费文本队列并合成为音频，支持与播放并行。"""
+        while True:
+            item = await self._queue.get()
+            try:
+                generation = int(item.get("generation", -1))
+                text = str(item.get("text", "")).strip()
+                if not text:
+                    continue
+                if generation != self._generation:
+                    continue
+
+                self._current_tts_task = asyncio.create_task(self._tts(text))
+                try:
+                    audio_data = await self._current_tts_task
+                except asyncio.CancelledError:
+                    # interrupt 会主动取消当前合成；这是预期路径，不应让 worker 退出。
+                    if generation != self._generation:
+                        continue
+                    raise
+                finally:
+                    self._current_tts_task = None
+
+                if generation != self._generation:
+                    continue
+                if audio_data:
+                    await self._ready_queue.put({
+                        "audio_data": audio_data,
+                        "generation": generation,
+                    })
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"[Speaker] 合成流程异常：{e}")
+            finally:
+                self._queue.task_done()
+
+    async def _playback_loop(self) -> None:
+        """消费已合成音频队列并播放。"""
+        while True:
+            item = await self._ready_queue.get()
+            started = False
+            try:
+                generation = int(item.get("generation", -1))
+                audio_data = item.get("audio_data")
+                if generation != self._generation:
+                    continue
+                if not isinstance(audio_data, (bytes, bytearray)) or len(audio_data) == 0:
+                    continue
+
+                if self._on_play_start:
+                    self._on_play_start()
+                started = True
+
+                self._current_task = asyncio.create_task(self._play(bytes(audio_data)))
                 await self._current_task
-        except asyncio.CancelledError:
-            logger.debug("[Speaker] 播放被中断")
-        except Exception as e:
-            logger.error(f"[Speaker] 播放失败：{e}")
-        finally:
-            if self._on_play_end:
-                self._on_play_end()
+            except asyncio.CancelledError:
+                logger.debug("[Speaker] 播放被中断")
+            except Exception as e:
+                logger.error(f"[Speaker] 播放失败：{e}")
+            finally:
+                self._current_task = None
+                if started and self._on_play_end:
+                    self._on_play_end()
+                self._ready_queue.task_done()
 
     async def _tts(self, text: str) -> bytes | None:
         """调用 edge-tts 生成音频，返回 MP3 字节。"""

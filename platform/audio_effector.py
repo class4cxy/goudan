@@ -27,8 +27,11 @@ class AudioEffector:
         self._ws_manager = ws_manager
         self._loop: asyncio.AbstractEventLoop | None = None
         self._fallback_ms = int(os.environ.get("AUDIO_SPEAK_END_FALLBACK_MS", "15000"))
+        self._idle_confirm_ms = int(os.environ.get("AUDIO_SPEAK_END_IDLE_CONFIRM_MS", "250"))
         self._speak_seq = 0
+        self._last_emitted_seq = 0
         self._fallback_task: asyncio.Task | None = None
+        self._idle_confirm_task: asyncio.Task | None = None
         self._speaker = Speaker(
             on_play_start=audio_sensor.mute if audio_sensor else None,
             on_play_end=self._on_play_end,
@@ -39,11 +42,12 @@ class AudioEffector:
         if self._audio_sensor:
             self._audio_sensor.unmute()
 
-        # 队列为空 → 所有句子已播完，通知 Node.js 重新进入 LISTENING
-        if self._speaker._queue.empty() and self._ws_manager and self._loop:
-            self._loop.create_task(self._emit_speak_end(forced=False, reason="queue_empty"))
-            if self._fallback_task and not self._fallback_task.done():
-                self._fallback_task.cancel()
+        # 为避免句间短暂空窗（LLM 下一句尚未入队）导致误判，增加短延迟二次确认。
+        if self._speaker.is_idle() and self._ws_manager and self._loop:
+            seq = self._speak_seq
+            if self._idle_confirm_task and not self._idle_confirm_task.done():
+                self._idle_confirm_task.cancel()
+            self._idle_confirm_task = self._loop.create_task(self._confirm_and_emit_speak_end(seq))
 
     async def start(self) -> None:
         """启动播放队列（委托给 Speaker，阻塞）。"""
@@ -54,6 +58,8 @@ class AudioEffector:
         """将播放指令加入队列（委托给 Speaker）。"""
         await self._speaker.enqueue(text, interrupt)
         self._speak_seq += 1
+        if self._idle_confirm_task and not self._idle_confirm_task.done():
+            self._idle_confirm_task.cancel()
         self._schedule_fallback(self._speak_seq)
 
     async def _emit_speak_end(self, forced: bool, reason: str) -> None:
@@ -65,6 +71,23 @@ class AudioEffector:
             "payload": {"forced": forced, "reason": reason},
         })
         logger.info("[AudioEffector] → sense.audio.speak_end 已广播（forced=%s, reason=%s）", forced, reason)
+
+    async def _confirm_and_emit_speak_end(self, seq: int) -> None:
+        """短延迟确认空闲，避免句间瞬时空队列误触发 speak_end。"""
+        try:
+            await asyncio.sleep(self._idle_confirm_ms / 1000)
+            if seq != self._speak_seq:
+                return
+            if seq <= self._last_emitted_seq:
+                return
+            if not self._speaker.is_idle():
+                return
+            await self._emit_speak_end(forced=False, reason="queue_empty_confirmed")
+            self._last_emitted_seq = seq
+            if self._fallback_task and not self._fallback_task.done():
+                self._fallback_task.cancel()
+        except asyncio.CancelledError:
+            return
 
     def _schedule_fallback(self, seq: int) -> None:
         """为每轮 speak 安排兜底回执，避免播放链路异常导致 Node 长时间卡在 SPEAKING。"""
@@ -79,14 +102,15 @@ class AudioEffector:
             await asyncio.sleep(self._fallback_ms / 1000)
             if seq != self._speak_seq:
                 return
+            if seq <= self._last_emitted_seq:
+                return
 
-            is_playing = bool(self._speaker._current_task and not self._speaker._current_task.done())
-            has_pending = not self._speaker._queue.empty()
-            if not is_playing and not has_pending:
+            if self._speaker.is_idle():
                 return
 
             if self._audio_sensor:
                 self._audio_sensor.unmute()
             await self._emit_speak_end(forced=True, reason="fallback_timeout")
+            self._last_emitted_seq = seq
         except asyncio.CancelledError:
             return
