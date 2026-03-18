@@ -18,6 +18,13 @@ const ASR_MODEL = 'qwen3-asr-flash'
 
 const MIN_DURATION_MS = 800  // 短于此时长的片段丢弃（环境噪声 / 过短无法识别）
 
+// 本地 STT 端点：优先用 LOCAL_STT_URL，留空时从 PLATFORM_URL 自动派生
+const LOCAL_STT_URL: string | null = (() => {
+  if (process.env.LOCAL_STT_URL) return process.env.LOCAL_STT_URL
+  if (process.env.PLATFORM_URL) return `${process.env.PLATFORM_URL.replace(/\/$/, '')}/stt/transcribe`
+  return null
+})()
+
 // 唤醒词列表，逗号分隔，支持环境变量覆盖
 const WAKE_WORDS: string[] = (process.env.WAKE_WORDS ?? 'Aria,小豆,狗蛋,aria')
   .split(',')
@@ -72,7 +79,10 @@ export function startAudioThalamus(): void {
 
       try {
         console.log(`[AudioThalamus] → STT 请求中...`)
+        const sttStart = Date.now()
         const text = await transcribe(audio_b64, sample_rate)
+        const sttMs = Date.now() - sttStart
+        console.log(`[AudioThalamus] STT 耗时=${sttMs}ms（音频=${duration_ms}ms，实时率=${(duration_ms/sttMs).toFixed(1)}x）`)
 
         if (!text?.trim()) {
           console.log(`[AudioThalamus] STT 返回空，丢弃`)
@@ -178,8 +188,44 @@ async function transcribe(audio_b64: string, sampleRate: number): Promise<string
     audio_b64 = pcmBuffer.toString('base64')
   }
 
-  // ── 云端 ASR（Qwen）───────────────────────────────────────────────────────
-  return transcribeCloud(audio_b64, sampleRate)
+  // ── 优先尝试本地 STT ──────────────────────────────────────────────────────
+  if (LOCAL_STT_URL) {
+    try {
+      const t0 = Date.now()
+      const text = await transcribeLocal(audio_b64, sampleRate)
+      console.log(`[AudioThalamus] 本地 STT 耗时=${Date.now()-t0}ms`)
+      return text
+    } catch (err) {
+      console.warn(`[AudioThalamus] 本地 STT 失败，降级云端：${(err as Error).message}`)
+    }
+  }
+
+  // ── 云端 ASR（Qwen）———降级路径───────────────────────────────────────────
+  const t0 = Date.now()
+  const text = await transcribeCloud(audio_b64, sampleRate)
+  console.log(`[AudioThalamus] 云端 ASR 耗时=${Date.now()-t0}ms`)
+  return text
+}
+
+/** 调用本地 platform FastAPI /stt/transcribe。 */
+async function transcribeLocal(audio_b64: string, sampleRate: number): Promise<string> {
+  const res = await fetch(LOCAL_STT_URL!, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ audio_b64, sample_rate: sampleRate }),
+    signal: AbortSignal.timeout(30_000),
+  })
+
+  if (res.status === 503) {
+    throw new Error('本地 STT 引擎不可用（模型未加载）')
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`本地 STT 返回错误：status=${res.status}, body=${body.slice(0, 200)}`)
+  }
+
+  const data = (await res.json()) as { text?: string }
+  return data.text ?? ''
 }
 
 /** 调用云端 Qwen ASR API（兼容 OpenAI audio 格式）。 */
