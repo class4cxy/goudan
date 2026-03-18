@@ -17,9 +17,10 @@ Microphone — 麦克风硬件抽象层
   若设备不支持，自动回退到 48000Hz 并以 3:1 均值抽取降采样至 16000Hz。
 
 质量门控（_flush_speech_sync）：
-  - voiced_ratio：VAD 语音帧占语音段（不含尾部静音）的比例，低于阈值丢弃
+  - voiced_ratio：实时 VAD 语音帧占语音段（不含尾部静音）的比例，低于阈值丢弃
   - rms_dbfs：片段整体能量，低于阈值（过静）丢弃
-  两项门控均以 WARNING 记录，便于在生产日志中直接看到被丢弃的原因。
+  - strict_voiced_ratio：片段结束后用更严格 VAD 二次复检，低于阈值丢弃
+  三项门控均以 WARNING 记录，便于在生产日志中直接看到被丢弃的原因。
 
 性能说明：
   VAD 状态机在 sounddevice 音频回调线程中同步执行，仅在语音开始/结束事件时才通过
@@ -63,6 +64,9 @@ MIN_VOICED_RATIO = float(os.environ.get("MIC_MIN_VOICED_RATIO", "0.20"))
 MIN_CLIP_RMS_DBFS = float(os.environ.get("MIC_MIN_CLIP_RMS_DBFS", "-50"))
 MAX_SPEECH_MS = int(os.environ.get("MIC_MAX_SPEECH_MS", "9000"))
 MAX_SPEECH_FRAMES = max(1, MAX_SPEECH_MS // FRAME_DURATION_MS)
+POST_VAD_ENABLED = os.environ.get("MIC_POST_VAD_ENABLED", "1") != "0"
+POST_VAD_AGGRESSIVENESS = int(os.environ.get("MIC_POST_VAD_AGGRESSIVENESS", "3"))
+POST_MIN_VOICED_RATIO = float(os.environ.get("MIC_POST_MIN_VOICED_RATIO", "0.35"))
 
 # 采样率回退顺序：先尝试 16000Hz，若不支持则尝试 48000Hz（3:1 整数比，可无损降采样）
 _PROBE_RATES = [16000, 48000]
@@ -168,6 +172,7 @@ class Microphone:
         self._voiced_frames = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._vad = None  # 延迟初始化，避免 import 时崩溃
+        self._post_vad = None
 
     # ─── 公共控制接口 ─────────────────────────────────────────────────
 
@@ -213,6 +218,9 @@ class Microphone:
     async def _run(self, sd, webrtcvad) -> None:
         """实际采集逻辑（从 start 分离，方便统一捕获异常）。"""
         self._vad = webrtcvad.Vad(self._vad_aggressiveness)
+        if POST_VAD_ENABLED:
+            # 二次门控只用于片段收尾复检，不参与实时状态机，避免引入 speech_start/speech_end 卡死问题。
+            self._post_vad = webrtcvad.Vad(max(0, min(3, POST_VAD_AGGRESSIVENESS)))
         self._loop = asyncio.get_running_loop()
 
         # 优先自动检测 USB 设备
@@ -236,7 +244,8 @@ class Microphone:
             f"[Microphone] 启动：设备={device!r}，"
             f"采集={native_rate}Hz，目标={SAMPLE_RATE}Hz，"
             f"降采样因子={downsample}，块大小={BLOCK_DURATION_MS}ms，"
-            f"VAD 灵敏度={self._vad_aggressiveness}"
+            f"VAD 灵敏度={self._vad_aggressiveness}，"
+            f"二次门控={'on' if POST_VAD_ENABLED else 'off'}"
         )
 
         # 用于在回调线程积累 overflow 计数，每秒最多打印一次，避免 I/O 卡回调
@@ -344,6 +353,8 @@ class Microphone:
 
         # voiced_ratio 分母只算语音帧（排除尾部静音帧），避免短句被误判丢弃
         speech_frames_count = len(self._speech_buffer) - self._silent_frames
+        speech_frames_count = max(speech_frames_count, 1)
+        speech_only_pcm = b"".join(self._speech_buffer[:speech_frames_count])
         voiced_ratio = self._voiced_frames / max(speech_frames_count, 1)
         rms_dbfs = _compute_rms_dbfs(raw_pcm)
 
@@ -366,6 +377,18 @@ class Microphone:
             self._silent_frames = 0
             self._voiced_frames = 0
             return
+
+        if POST_VAD_ENABLED and self._post_vad is not None:
+            strict_voiced_ratio = _compute_vad_voiced_ratio(speech_only_pcm, self._post_vad)
+            if strict_voiced_ratio < POST_MIN_VOICED_RATIO:
+                logger.warning(
+                    "[Microphone] 丢弃二次VAD低占比片段（strict_voiced_ratio=%.2f < %.2f，时长=%dms，voiced_ratio=%.2f，rms=%.1fdBFS）",
+                    strict_voiced_ratio, POST_MIN_VOICED_RATIO, duration_ms, voiced_ratio, rms_dbfs,
+                )
+                self._speech_buffer.clear()
+                self._silent_frames = 0
+                self._voiced_frames = 0
+                return
 
         if self._on_speech_end and self._loop:
             asyncio.run_coroutine_threadsafe(
@@ -394,5 +417,26 @@ def _compute_rms_dbfs(raw_pcm: bytes) -> float:
     rms = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
     rms = max(rms, 1e-6)
     return float(20 * np.log10(rms))
+
+
+def _compute_vad_voiced_ratio(raw_pcm: bytes, vad) -> float:
+    """
+    使用指定 VAD 复检片段语音占比（仅统计完整 30ms 帧）。
+    """
+    frame_bytes = FRAME_SIZE * 2
+    total_frames = len(raw_pcm) // frame_bytes
+    if total_frames <= 0:
+        return 0.0
+
+    voiced_frames = 0
+    for i in range(total_frames):
+        frame = raw_pcm[i * frame_bytes : (i + 1) * frame_bytes]
+        try:
+            if vad.is_speech(frame, SAMPLE_RATE):
+                voiced_frames += 1
+        except Exception:
+            continue
+
+    return voiced_frames / total_frames
 
 

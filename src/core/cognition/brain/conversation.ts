@@ -18,13 +18,12 @@ import type { ConversationContext } from '@/core/behavior/conversation/context'
 const SENTENCE_BOUNDARY = /([。！？!?\n]+)/
 
 const VOICE_ADDENDUM = `
-
-## 当前为语音对话模式
-- 回复简洁口语化，每次不超过 3 句话
-- 禁止使用 Markdown 格式（*、#、-、**等）
-- 禁止列表格式，用自然连贯的句子代替
-- 不要说"好的，有其他需要随时说"这类套话
-- 直接给出答案或行动，不需要复述用户的问题`
+你当前在语音对话模式，必须严格遵守以下输出规范。
+1) 只输出可直接朗读的纯文本自然段；句数和长度按用户需求自适应，讲故事或详细解释时可以更长，不要换行。
+2) 绝对不要输出任何 Markdown 或排版符号：# * ** _ - > \` [] () | --- 以及编号/项目符号。
+3) 绝对不要输出标题、列表、代码块、链接、表格、引用。
+4) 允许自然的礼貌用语、关怀语气、轻松玩笑或撒娇式表达，用于缓解气氛；但要保持内容连贯、可朗读。
+5) 输出前先自检：如果包含任意格式符号或列表痕迹，立刻重写为纯口语句子后再输出。`
 
 /**
  * 流式生成语音回复，按句子边界逐句回调。
@@ -56,8 +55,7 @@ export async function generateVoiceResponse(
     model: AGENT_MODEL,
     system: systemPrompt,
     messages,
-    // 有工具时不限制输出 token（工具调用后 LLM 需要额外生成一次口语回复）
-    ...(hasTools ? {} : { maxOutputTokens: 200 }),
+    // 语音场景允许长回答（如讲故事），不对输出 token 做硬上限。
     ...(hasTools ? { tools, stopWhen: stepCountIs(5) } : {}),
   } as Parameters<typeof streamText>[0])
 
