@@ -37,3 +37,8 @@ rpi-lgpio>=0.6
 
 # 电源监测 (INA219 电流/电压传感器，I2C)
 pi-ina219>=1.3.0
+
+# 互联网搜索 (Web Search Tool)
+# trafilatura：网页正文提取（去广告/导航/噪音），供 Agent fetchWebPage 工具使用
+# 搜索引擎由 SearXNG Docker 容器提供（见 docker-compose.yml / README），Platform 通过 HTTP 调用
+trafilatura>=1.12.0

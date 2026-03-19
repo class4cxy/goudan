@@ -1,0 +1,28 @@
+# SearXNG 配置（供 goudan agent 使用）
+# 继承所有官方默认设置，只覆盖必要部分
+use_default_settings: true
+
+server:
+  # ⚠️ 生产环境请替换为随机字符串：python3 -c "import secrets; print(secrets.token_hex(32))"
+  secret_key: "goudan-searxng-please-change-this-secret"
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  # 必须显式声明 json，否则 ?format=json 会返回 400
+  formats:
+    - html
+    - json
+
+engines:
+  # 默认启用：bing / duckduckgo / google，其余保持官方默认
+  - name: bing
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: google
+    disabled: false
+  # 百度（中文内容友好）
+  - name: baidu
+    disabled: false

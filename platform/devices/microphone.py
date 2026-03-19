@@ -67,9 +67,11 @@ MAX_SPEECH_MS = int(os.environ.get("MIC_MAX_SPEECH_MS", "9000"))
 MAX_SPEECH_FRAMES = max(1, MAX_SPEECH_MS // FRAME_DURATION_MS)
 POST_VAD_ENABLED = os.environ.get("MIC_POST_VAD_ENABLED", "1") != "0"
 POST_VAD_AGGRESSIVENESS = int(os.environ.get("MIC_POST_VAD_AGGRESSIVENESS", "3"))
-POST_MIN_VOICED_RATIO = float(os.environ.get("MIC_POST_MIN_VOICED_RATIO", "0.2"))
+POST_MIN_VOICED_RATIO = float(os.environ.get("MIC_POST_MIN_VOICED_RATIO", "0.35"))
 # unmute 后的混响保护期：该窗口内开始的语音片段被视为 TTS 混响丢弃（防止扬声器回声进入 STT）
 POST_UNMUTE_GRACE_MS = int(os.environ.get("MIC_POST_UNMUTE_GRACE_MS", "800"))
+# mute 超时：静音超过此时长强制 unmute，防止 Speaker 异常/卡死导致录音永久休眠
+MUTE_TIMEOUT_S = float(os.environ.get("MIC_MUTE_TIMEOUT_S", "25"))
 
 # 采样率回退顺序：先尝试 16000Hz，若不支持则尝试 48000Hz（3:1 整数比，可无损降采样）
 _PROBE_RATES = [16000, 48000]
@@ -177,13 +179,15 @@ class Microphone:
         self._vad = None  # 延迟初始化，避免 import 时崩溃
         self._post_vad = None
         self._unmute_at: float = 0.0       # monotonic 时间戳，上次 unmute() 的时刻
-        self._speech_start_at: float = 0.0 # monotonic 时间戳，当前语音段开始时刻
+        self._muted_at: float = 0.0        # monotonic 时间戳，上次 mute() 的时刻
+        self._speech_start_at: float = 0.0  # monotonic 时间戳，当前语音段开始时刻
 
     # ─── 公共控制接口 ─────────────────────────────────────────────────
 
     def mute(self) -> None:
         """外放时静音，防止扬声器声音触发 VAD（防回声）。"""
         self._is_muted = True
+        self._muted_at = time.monotonic()
         logger.debug("[Microphone] 已静音")
 
     def unmute(self) -> None:
@@ -293,6 +297,16 @@ class Microphone:
             while True:
                 await asyncio.sleep(5)
                 _flush_overflow_log()
+                # mute 超时兜底：防止 Speaker 异常导致麦克风永久静音
+                if self._is_muted and self._muted_at > 0 and MUTE_TIMEOUT_S > 0:
+                    elapsed = time.monotonic() - self._muted_at
+                    if elapsed >= MUTE_TIMEOUT_S:
+                        logger.warning(
+                            "[Microphone] mute 超时（%.0fs >= %.0fs），强制 unmute，避免录音休眠",
+                            elapsed, MUTE_TIMEOUT_S,
+                        )
+                        self._is_muted = False
+                        self._unmute_at = time.monotonic()
 
     # ─── 内部 VAD 状态机（同步，运行在音频回调线程）────────────────────
 

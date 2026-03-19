@@ -13,6 +13,8 @@ import asyncio
 import json
 import logging
 import os
+import urllib.parse
+import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -238,6 +240,11 @@ def _task_done_callback(task: asyncio.Task) -> None:
         logger.warning(f"[Task] {task.get_name()} 被取消")
     elif task.exception():
         logger.error(f"[Task] {task.get_name()} 异常退出", exc_info=task.exception())
+
+    # audio_effector 退出时强制 unmute，防止 Speaker 异常导致麦克风永久静音
+    if task.get_name() == "audio_effector":
+        audio_sensor.unmute()
+        logger.warning("[Startup] audio_effector 已退出，强制 unmute 麦克风，避免录音休眠")
 
 
 async def _startup():
@@ -1141,6 +1148,111 @@ async def ultrasonic_read():
             detail="超声波测距失败（回波超时或目标超量程），请检查 Trig/Echo 接线与供电",
         )
     return reading.to_dict()
+
+
+# ── 互联网搜索接口 ────────────────────────────────────────────────────
+
+class FetchPageRequest(BaseModel):
+    url: str
+    max_chars: int = 3000
+
+
+_SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:8080").rstrip("/")
+
+
+@app.get("/search", summary="互联网搜索（SearXNG，聚合 Bing/Google/DDG/百度）")
+async def search_web(q: str, max_results: int = 5):
+    """
+    通过本地 SearXNG 服务搜索互联网，聚合多个搜索引擎结果，返回标题、URL 和摘要列表。
+
+    - q:           搜索关键词（支持中英文）
+    - max_results: 返回结果数（默认 5，最大 10）
+
+    依赖：SearXNG Docker 容器在 SEARXNG_URL（默认 http://localhost:8080）上运行。
+    启动命令：docker compose up -d
+
+    返回格式：
+      {
+        "query": "...",
+        "results": [
+          {"title": "...", "url": "...", "snippet": "..."},
+          ...
+        ]
+      }
+    """
+    import urllib.request
+
+    max_results = min(max_results, 10)
+    search_url = (
+        f"{_SEARXNG_URL}/search"
+        f"?q={urllib.parse.quote(q)}"
+        f"&format=json"
+        f"&language=zh-CN"
+    )
+
+    def _do_search():
+        req = urllib.request.Request(
+            search_url,
+            headers={"User-Agent": "goudan-agent/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode())
+
+    try:
+        data = await asyncio.to_thread(_do_search)
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"SearXNG 搜索失败（{_SEARXNG_URL}）：{e}。请确认已运行 docker compose up -d"
+        )
+
+    raw = data.get("results", [])[:max_results]
+    results = [
+        {
+            "title":   r.get("title", ""),
+            "url":     r.get("url", ""),
+            "snippet": r.get("content", ""),
+        }
+        for r in raw
+    ]
+    return {"query": q, "results": results}
+
+
+@app.post("/fetch", summary="抓取网页正文（trafilatura 提取纯文本）")
+async def fetch_page(req: FetchPageRequest):
+    """
+    抓取指定 URL 的网页内容，提取正文纯文本（去除广告、导航、脚本等噪音）。
+
+    - url:       目标网页 URL
+    - max_chars: 返回正文最大字符数（默认 3000，防止 token 爆炸）
+
+    返回格式：
+      {
+        "url": "...",
+        "content": "...",   # 提取的正文，可能为 null（提取失败时）
+        "ok": true
+      }
+    """
+    try:
+        import trafilatura
+    except ImportError:
+        raise HTTPException(status_code=503, detail="trafilatura 未安装，请运行：pip install trafilatura")
+
+    def _do_fetch():
+        html = trafilatura.fetch_url(req.url)
+        if html is None:
+            return None
+        return trafilatura.extract(html, include_comments=False, include_tables=True)
+
+    try:
+        content = await asyncio.to_thread(_do_fetch)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"抓取失败：{e}")
+
+    if content and len(content) > req.max_chars:
+        content = content[: req.max_chars] + "…（已截断）"
+
+    return {"url": req.url, "content": content, "ok": content is not None}
 
 
 # ── WebSocket — Spine 双向通道 ─────────────────────────────────────
