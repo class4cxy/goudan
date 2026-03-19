@@ -83,9 +83,10 @@ export interface ConversationInterestPayload {
 }
 
 export interface AudioSpeechEndPayload {
-  audio_b64: string             // base64 编码的原始 PCM 数据
-  sample_rate: number           // 采样率，固定 16000Hz
+  audio_b64: string              // base64 编码的原始 PCM 数据
+  sample_rate: number            // 采样率，固定 16000Hz
   duration_ms: number            // 语音时长（含尾部静音）
+  trace_id?: string              // Platform 生成的 8 位追踪 ID，贯穿整个 STT 流程
   platform_vad_flush_ms?: number // Platform 麦克风 VAD 质量门控耗时（可选）
 }
 

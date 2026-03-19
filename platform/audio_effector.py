@@ -38,12 +38,19 @@ class AudioEffector:
         )
 
     def _on_play_end(self) -> None:
-        """每句 TTS 播完后调用：先 unmute，再判断队列是否清空。"""
+        """每句 TTS 播完后调用：仅在全部句子播完（is_idle）时才 unmute + 安排 speak_end。
+
+        句间不 unmute，避免多句回复时扬声器混响被麦克风捕获形成回声循环。
+        """
+        if not self._speaker.is_idle():
+            # 还有后续句子即将入队/播放，保持静音，由下一句的 on_play_start 接管
+            return
+
         if self._audio_sensor:
             self._audio_sensor.unmute()
 
         # 为避免句间短暂空窗（LLM 下一句尚未入队）导致误判，增加短延迟二次确认。
-        if self._speaker.is_idle() and self._ws_manager and self._loop:
+        if self._ws_manager and self._loop:
             seq = self._speak_seq
             if self._idle_confirm_task and not self._idle_confirm_task.done():
                 self._idle_confirm_task.cancel()

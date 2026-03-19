@@ -66,12 +66,13 @@ export function startAudioThalamus(): void {
   Spine.subscribe<AudioSpeechEndPayload>(
     ['sense.audio.speech_end'],
     async (event: SpineEvent<AudioSpeechEndPayload>) => {
-      const { audio_b64, sample_rate, duration_ms, platform_vad_flush_ms } = event.payload
+      const { audio_b64, sample_rate, duration_ms, platform_vad_flush_ms, trace_id } = event.payload
+      const T = trace_id ? `[trace=${trace_id}] ` : ''
 
-      console.log(`[AudioThalamus] ← speech_end  时长=${duration_ms}ms  字节=${Math.round(audio_b64.length * 0.75 / 1024)}KB`)
+      console.log(`[AudioThalamus] ${T}← speech_end  时长=${duration_ms}ms  字节=${Math.round(audio_b64.length * 0.75 / 1024)}KB`)
 
       if (duration_ms < MIN_DURATION_MS) {
-        console.log(`[AudioThalamus] 时长过短（<${MIN_DURATION_MS}ms），丢弃`)
+        console.log(`[AudioThalamus] ${T}时长过短（<${MIN_DURATION_MS}ms），丢弃`)
         return
       }
 
@@ -82,12 +83,12 @@ export function startAudioThalamus(): void {
         }
         const t0 = Date.now()
 
-        console.log(`[AudioThalamus] → STT 请求中...`)
+        console.log(`[AudioThalamus] ${T}→ STT 请求中...`)
         const text = await transcribe(audio_b64, sample_rate, timings)
         timings['transcribe'] = Date.now() - t0
 
         if (!text?.trim()) {
-          console.log(`[AudioThalamus] STT 返回空，丢弃`)
+          console.log(`[AudioThalamus] ${T}STT 返回空，丢弃`)
           return
         }
 
@@ -96,11 +97,9 @@ export function startAudioThalamus(): void {
         timings['normalize'] = Date.now() - tNorm
         if (!normalized) {
           const totalMs = Date.now() - t0
-          const parts = Object.entries(timings)
-            .map(([k, v]) => `${k}=${v}ms`)
-            .join(' ')
-          console.log(`[AudioThalamus] STT 耗时统计（总=${totalMs}ms，丢弃弱信号）：${parts}`)
-          console.log('[AudioThalamus] STT 文本判定为弱信号/环境噪声，丢弃')
+          const parts = Object.entries(timings).map(([k, v]) => `${k}=${v}ms`).join(' ')
+          console.log(`[AudioThalamus] ${T}STT 耗时统计（总=${totalMs}ms，丢弃弱信号）：${parts}`)
+          console.log(`[AudioThalamus] ${T}STT 文本判定为弱信号/环境噪声，丢弃`)
           return
         }
 
@@ -110,16 +109,14 @@ export function startAudioThalamus(): void {
         timings['wakeword'] = Date.now() - tWake
 
         const totalMs = Date.now() - t0
-        const parts = Object.entries(timings)
-          .map(([k, v]) => `${k}=${v}ms`)
-          .join(' ')
+        const parts = Object.entries(timings).map(([k, v]) => `${k}=${v}ms`).join(' ')
         console.log(
-          `[AudioThalamus] STT 耗时统计（总=${totalMs}ms，音频=${duration_ms}ms，实时率=${(duration_ms / totalMs).toFixed(1)}x）：${parts}`
+          `[AudioThalamus] ${T}STT 耗时统计（总=${totalMs}ms，音频=${duration_ms}ms，实时率=${(duration_ms / totalMs).toFixed(1)}x）：${parts}`
         )
-        console.log(`[AudioThalamus] STT 结果："${normalized.slice(0, 60)}${normalized.length > 60 ? '…' : ''}"`)
+        console.log(`[AudioThalamus] ${T}STT 结果："${normalized.slice(0, 60)}${normalized.length > 60 ? '…' : ''}"`)
 
         if (hitWord) {
-          console.log(`[AudioThalamus] 唤醒词命中："${hitWord}"`)
+          console.log(`[AudioThalamus] ${T}唤醒词命中："${hitWord}"`)
           Spine.publish({
             type: 'sense.audio.keyword',
             priority: 'HIGH',
@@ -153,7 +150,7 @@ export function startAudioThalamus(): void {
           summary: `情绪：${emotion.emotion}（置信度 ${Math.round(emotion.confidence * 100)}%）`,
         })
       } catch (err) {
-        console.error('[AudioThalamus] 处理失败：', err)
+        console.error(`[AudioThalamus] ${T}处理失败：`, err)
       }
     }
   )

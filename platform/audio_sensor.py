@@ -15,6 +15,7 @@ AudioSensor — 应用层（音频输入桥接）
 
 import base64
 import logging
+from uuid import uuid4
 
 from devices import Microphone
 
@@ -54,11 +55,15 @@ class AudioSensor:
     async def _on_speech_end(
         self, raw_pcm: bytes, sample_rate: int, duration_ms: int, **kwargs
     ) -> None:
+        trace_id = uuid4().hex[:8]
         payload: dict = {
+            "trace_id": trace_id,
             "audio_b64": base64.b64encode(raw_pcm).decode(),
             "sample_rate": sample_rate,
             "duration_ms": duration_ms,
         }
         if "vad_flush_ms" in kwargs:
             payload["platform_vad_flush_ms"] = kwargs["vad_flush_ms"]
+        logger.info("[AudioSensor] → speech_end  trace=%s  时长=%dms  大小=%dKB",
+                    trace_id, duration_ms, len(raw_pcm) // 1024)
         await self._ws.broadcast({"type": "sense.audio.speech_end", "payload": payload})

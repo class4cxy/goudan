@@ -75,11 +75,21 @@ class ConnectionManager:
 
     async def broadcast(self, message: dict) -> None:
         """向所有连接广播消息（感官事件 → Spine）。"""
+        if not self.active:
+            msg_type = message.get("type", "unknown")
+            trace = message.get("payload", {}).get("trace_id", "")
+            logger.warning("[WS] broadcast 无活跃连接，消息丢弃：type=%s%s",
+                           msg_type, f"  trace={trace}" if trace else "")
+            return
         dead: list[WebSocket] = []
         for ws in self.active:
             try:
                 await ws.send_json(message)
-            except Exception:
+            except Exception as e:
+                msg_type = message.get("type", "unknown")
+                trace = message.get("payload", {}).get("trace_id", "")
+                logger.error("[WS] broadcast 发送失败：type=%s%s  error=%s",
+                             msg_type, f"  trace={trace}" if trace else "", e)
                 dead.append(ws)
         for ws in dead:
             self.active.remove(ws)

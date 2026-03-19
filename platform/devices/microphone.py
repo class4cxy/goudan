@@ -68,6 +68,8 @@ MAX_SPEECH_FRAMES = max(1, MAX_SPEECH_MS // FRAME_DURATION_MS)
 POST_VAD_ENABLED = os.environ.get("MIC_POST_VAD_ENABLED", "1") != "0"
 POST_VAD_AGGRESSIVENESS = int(os.environ.get("MIC_POST_VAD_AGGRESSIVENESS", "3"))
 POST_MIN_VOICED_RATIO = float(os.environ.get("MIC_POST_MIN_VOICED_RATIO", "0.2"))
+# unmute 后的混响保护期：该窗口内开始的语音片段被视为 TTS 混响丢弃（防止扬声器回声进入 STT）
+POST_UNMUTE_GRACE_MS = int(os.environ.get("MIC_POST_UNMUTE_GRACE_MS", "800"))
 
 # 采样率回退顺序：先尝试 16000Hz，若不支持则尝试 48000Hz（3:1 整数比，可无损降采样）
 _PROBE_RATES = [16000, 48000]
@@ -174,6 +176,8 @@ class Microphone:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._vad = None  # 延迟初始化，避免 import 时崩溃
         self._post_vad = None
+        self._unmute_at: float = 0.0       # monotonic 时间戳，上次 unmute() 的时刻
+        self._speech_start_at: float = 0.0 # monotonic 时间戳，当前语音段开始时刻
 
     # ─── 公共控制接口 ─────────────────────────────────────────────────
 
@@ -185,6 +189,7 @@ class Microphone:
     def unmute(self) -> None:
         """外放结束后恢复监听，同时清除静音期间可能残留的 VAD 脏状态。"""
         self._is_muted = False
+        self._unmute_at = time.monotonic()
         # 静音期间 VAD 状态机被冻结，若 _is_speaking 仍为 True 则说明有未 flush 的脏缓冲，
         # 直接丢弃，防止 TTS 回声数据被当作用户语音发给 STT。
         if self._is_speaking:
@@ -313,6 +318,7 @@ class Microphone:
         if is_speech:
             if not self._is_speaking:
                 self._is_speaking = True
+                self._speech_start_at = time.monotonic()
                 self._speech_buffer.clear()
                 self._silent_frames = 0
                 self._voiced_frames = 0
@@ -342,6 +348,19 @@ class Microphone:
         """打包语音块，通过 run_coroutine_threadsafe 提交 on_speech_end 回调，然后重置状态。"""
         t0 = time.perf_counter()
         self._is_speaking = False
+
+        # 混响保护：语音在 unmute 后 POST_UNMUTE_GRACE_MS 内开始的片段，视为 TTS 扬声器混响丢弃
+        if self._unmute_at > 0 and POST_UNMUTE_GRACE_MS > 0:
+            since_unmute_ms = (self._speech_start_at - self._unmute_at) * 1000
+            if 0 <= since_unmute_ms < POST_UNMUTE_GRACE_MS:
+                logger.warning(
+                    "[Microphone] 丢弃 unmute 后混响片段（语音起始距 unmute=%.0fms < %dms）",
+                    since_unmute_ms, POST_UNMUTE_GRACE_MS,
+                )
+                self._speech_buffer.clear()
+                self._silent_frames = 0
+                self._voiced_frames = 0
+                return
 
         if len(self._speech_buffer) < MIN_SPEECH_FRAMES:
             logger.debug("[Microphone] 语音过短，丢弃（%d 帧 < %d 帧）", len(self._speech_buffer), MIN_SPEECH_FRAMES)

@@ -136,6 +136,12 @@ class PlatformConnectorClass {
     const mapping = INBOUND_MAP[msg.type]
     if (!mapping) return
 
+    if (msg.type === 'sense.audio.speech_end') {
+      const trace = msg.payload.trace_id ?? ''
+      const dur = msg.payload.duration_ms ?? '?'
+      console.log(`[PlatformConnector] ← speech_end  trace=${trace}  时长=${dur}ms → Spine`)
+    }
+
     Spine.publish({
       type: mapping.type,
       priority: mapping.priority,
