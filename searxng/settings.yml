@@ -16,7 +16,7 @@ search:
     - json
 
 engines:
-  # 默认启用：bing / duckduckgo / google，其余保持官方默认
+  # 默认启用：bing / duckduckgo / google
   - name: bing
     disabled: false
   - name: duckduckgo
@@ -26,3 +26,8 @@ engines:
   # 百度（中文内容友好）
   - name: baidu
     disabled: false
+  # 禁用需访问境外 SPARQL/API 的引擎（国内网络易超时导致启动失败）
+  - name: wikidata
+    disabled: true
+  - name: wiby
+    disabled: true
