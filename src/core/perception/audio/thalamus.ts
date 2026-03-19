@@ -66,7 +66,7 @@ export function startAudioThalamus(): void {
   Spine.subscribe<AudioSpeechEndPayload>(
     ['sense.audio.speech_end'],
     async (event: SpineEvent<AudioSpeechEndPayload>) => {
-      const { audio_b64, sample_rate, duration_ms } = event.payload
+      const { audio_b64, sample_rate, duration_ms, platform_vad_flush_ms } = event.payload
 
       console.log(`[AudioThalamus] ← speech_end  时长=${duration_ms}ms  字节=${Math.round(audio_b64.length * 0.75 / 1024)}KB`)
 
@@ -76,27 +76,48 @@ export function startAudioThalamus(): void {
       }
 
       try {
+        const timings: Record<string, number> = {}
+        if (typeof platform_vad_flush_ms === 'number') {
+          timings['platform_vad_flush'] = platform_vad_flush_ms
+        }
+        const t0 = Date.now()
+
         console.log(`[AudioThalamus] → STT 请求中...`)
-        const sttStart = Date.now()
-        const text = await transcribe(audio_b64, sample_rate)
-        const sttMs = Date.now() - sttStart
-        console.log(`[AudioThalamus] STT 耗时=${sttMs}ms（音频=${duration_ms}ms，实时率=${(duration_ms/sttMs).toFixed(1)}x）`)
+        const text = await transcribe(audio_b64, sample_rate, timings)
+        timings['transcribe'] = Date.now() - t0
 
         if (!text?.trim()) {
           console.log(`[AudioThalamus] STT 返回空，丢弃`)
           return
         }
 
+        const tNorm = Date.now()
         const normalized = normalizeTranscript(text)
+        timings['normalize'] = Date.now() - tNorm
         if (!normalized) {
+          const totalMs = Date.now() - t0
+          const parts = Object.entries(timings)
+            .map(([k, v]) => `${k}=${v}ms`)
+            .join(' ')
+          console.log(`[AudioThalamus] STT 耗时统计（总=${totalMs}ms，丢弃弱信号）：${parts}`)
           console.log('[AudioThalamus] STT 文本判定为弱信号/环境噪声，丢弃')
           return
         }
 
-        console.log(`[AudioThalamus] STT 结果："${normalized.slice(0, 60)}${normalized.length > 60 ? '…' : ''}"`)
-
+        const tWake = Date.now()
         // 唤醒词检测：命中则走 sense.audio.keyword 路径，不再发 transcript
         const hitWord = detectWakeWord(normalized)
+        timings['wakeword'] = Date.now() - tWake
+
+        const totalMs = Date.now() - t0
+        const parts = Object.entries(timings)
+          .map(([k, v]) => `${k}=${v}ms`)
+          .join(' ')
+        console.log(
+          `[AudioThalamus] STT 耗时统计（总=${totalMs}ms，音频=${duration_ms}ms，实时率=${(duration_ms / totalMs).toFixed(1)}x）：${parts}`
+        )
+        console.log(`[AudioThalamus] STT 结果："${normalized.slice(0, 60)}${normalized.length > 60 ? '…' : ''}"`)
+
         if (hitWord) {
           console.log(`[AudioThalamus] 唤醒词命中："${hitWord}"`)
           Spine.publish({
@@ -177,7 +198,12 @@ function normalizeTranscript(rawText: string): string | null {
  *  网关批处理后端对超大音频容易返回 500，裁剪后只保留最近部分。 */
 const MAX_PCM_BYTES = 960_000
 
-async function transcribe(audio_b64: string, sampleRate: number): Promise<string> {
+async function transcribe(
+  audio_b64: string,
+  sampleRate: number,
+  timings?: Record<string, number>
+): Promise<string> {
+  const tPre = Date.now()
   // 超长音频统一截断（约 30s），防止 Whisper 静音幻觉 & 网关超时
   let pcmBuffer = Buffer.from(audio_b64, 'base64')
   if (pcmBuffer.length > MAX_PCM_BYTES) {
@@ -185,20 +211,16 @@ async function transcribe(audio_b64: string, sampleRate: number): Promise<string
     pcmBuffer = pcmBuffer.subarray(pcmBuffer.length - MAX_PCM_BYTES)
     audio_b64 = pcmBuffer.toString('base64')
   }
+  if (timings) timings['pcm_prepare'] = Date.now() - tPre
 
   // ── 本地 STT（已配置时专用，不降级云端）────────────────────────────────
   if (LOCAL_STT_URL) {
-    const t0 = Date.now()
     const text = await transcribeLocal(audio_b64, sampleRate)
-    console.log(`[AudioThalamus] 本地 STT 耗时=${Date.now()-t0}ms`)
     return text
   }
 
   // ── 云端 ASR（本地未配置时使用）─────────────────────────────────────────
-  const t0 = Date.now()
-  const text = await transcribeCloud(audio_b64, sampleRate)
-  console.log(`[AudioThalamus] 云端 ASR 耗时=${Date.now()-t0}ms`)
-  return text
+  return transcribeCloud(audio_b64, sampleRate, timings)
 }
 
 /** 调用本地 platform FastAPI /stt/transcribe。 */
@@ -223,7 +245,11 @@ async function transcribeLocal(audio_b64: string, sampleRate: number): Promise<s
 }
 
 /** 调用云端 Qwen ASR API（兼容 OpenAI audio 格式）。 */
-async function transcribeCloud(audio_b64: string, sampleRate: number): Promise<string> {
+async function transcribeCloud(
+  audio_b64: string,
+  sampleRate: number,
+  timings?: Record<string, number>
+): Promise<string> {
   const speechApiUrl = process.env.SPEECH_API_URL
   const speechApiKey = process.env.SPEECH_API_KEY
 
@@ -240,8 +266,10 @@ async function transcribeCloud(audio_b64: string, sampleRate: number): Promise<s
     pcmBuffer = pcmBuffer.subarray(pcmBuffer.length - MAX_PCM_BYTES)
   }
 
+  const tWav = Date.now()
   const wavBuffer = pcmToWav(pcmBuffer, sampleRate)
   const dataUri = `data:audio/wav;base64,${wavBuffer.toString('base64')}`
+  if (timings) timings['pcm2wav'] = Date.now() - tWav
 
   const body = JSON.stringify({
     model: ASR_MODEL,
@@ -262,6 +290,7 @@ async function transcribeCloud(audio_b64: string, sampleRate: number): Promise<s
       console.log(`[AudioThalamus] 云端 ASR 重试（第 ${attempt} 次）...`)
     }
 
+    const tFetch = Date.now()
     const res = await fetch(speechApiUrl, {
       method: 'POST',
       headers: {
@@ -271,8 +300,10 @@ async function transcribeCloud(audio_b64: string, sampleRate: number): Promise<s
       body,
       signal: AbortSignal.timeout(60_000),
     })
+    if (timings) timings['api_fetch'] = Date.now() - tFetch
 
     if (res.ok) {
+      const tParse = Date.now()
       const data = (await res.json().catch(() => null)) as {
         choices?: Array<{ message?: { content?: unknown } }>
       } | null
@@ -281,6 +312,7 @@ async function transcribeCloud(audio_b64: string, sampleRate: number): Promise<s
         typeof data?.choices?.[0]?.message?.content === 'string'
           ? data.choices[0].message.content
           : ''
+      if (timings) timings['api_parse'] = Date.now() - tParse
 
       return text
     }

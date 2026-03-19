@@ -51,12 +51,14 @@ class AudioSensor:
             "payload": {},
         })
 
-    async def _on_speech_end(self, raw_pcm: bytes, sample_rate: int, duration_ms: int) -> None:
-        await self._ws.broadcast({
-            "type": "sense.audio.speech_end",
-            "payload": {
-                "audio_b64": base64.b64encode(raw_pcm).decode(),
-                "sample_rate": sample_rate,
-                "duration_ms": duration_ms,
-            },
-        })
+    async def _on_speech_end(
+        self, raw_pcm: bytes, sample_rate: int, duration_ms: int, **kwargs
+    ) -> None:
+        payload: dict = {
+            "audio_b64": base64.b64encode(raw_pcm).decode(),
+            "sample_rate": sample_rate,
+            "duration_ms": duration_ms,
+        }
+        if "vad_flush_ms" in kwargs:
+            payload["platform_vad_flush_ms"] = kwargs["vad_flush_ms"]
+        await self._ws.broadcast({"type": "sense.audio.speech_end", "payload": payload})

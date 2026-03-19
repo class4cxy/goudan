@@ -33,6 +33,7 @@ Microphone — 麦克风硬件抽象层
 import asyncio
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable
 
 import numpy as np
@@ -145,7 +146,7 @@ class Microphone:
 
     Args:
         on_speech_start:    检测到语音开始时调用（异步）
-        on_speech_end:      语音结束时调用，参数为 (raw_pcm: bytes, sample_rate: int, duration_ms: int)
+        on_speech_end:      语音结束时调用，参数为 (raw_pcm, sample_rate, duration_ms, **kwargs)，可选 kwargs 含 vad_flush_ms
         vad_aggressiveness: webrtcvad 灵敏度，0=最宽松，3=最严格，默认 2
         device:             音频输入设备名或 None。
                             None 时先用 find_usb_audio_device() 自动检测 USB 设备，
@@ -155,7 +156,7 @@ class Microphone:
     def __init__(
         self,
         on_speech_start: Callable[[], Awaitable[None]] | None = None,
-        on_speech_end: Callable[[bytes, int, int], Awaitable[None]] | None = None,
+        on_speech_end: Callable[..., Awaitable[None]] | None = None,
         vad_aggressiveness: int = 1,
         device: str | None = DEFAULT_DEVICE,
     ):
@@ -339,6 +340,7 @@ class Microphone:
 
     def _flush_speech_sync(self) -> None:
         """打包语音块，通过 run_coroutine_threadsafe 提交 on_speech_end 回调，然后重置状态。"""
+        t0 = time.perf_counter()
         self._is_speaking = False
 
         if len(self._speech_buffer) < MIN_SPEECH_FRAMES:
@@ -390,9 +392,11 @@ class Microphone:
                 self._voiced_frames = 0
                 return
 
+        vad_flush_ms = int((time.perf_counter() - t0) * 1000)
         if self._on_speech_end and self._loop:
             asyncio.run_coroutine_threadsafe(
-                self._on_speech_end(raw_pcm, SAMPLE_RATE, duration_ms), self._loop
+                self._on_speech_end(raw_pcm, SAMPLE_RATE, duration_ms, vad_flush_ms=vad_flush_ms),
+                self._loop,
             )
 
         logger.info(
