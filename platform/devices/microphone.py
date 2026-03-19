@@ -66,7 +66,7 @@ MAX_SPEECH_MS = int(os.environ.get("MIC_MAX_SPEECH_MS", "9000"))
 MAX_SPEECH_FRAMES = max(1, MAX_SPEECH_MS // FRAME_DURATION_MS)
 POST_VAD_ENABLED = os.environ.get("MIC_POST_VAD_ENABLED", "1") != "0"
 POST_VAD_AGGRESSIVENESS = int(os.environ.get("MIC_POST_VAD_AGGRESSIVENESS", "3"))
-POST_MIN_VOICED_RATIO = float(os.environ.get("MIC_POST_MIN_VOICED_RATIO", "0.25"))
+POST_MIN_VOICED_RATIO = float(os.environ.get("MIC_POST_MIN_VOICED_RATIO", "0.2"))
 
 # 采样率回退顺序：先尝试 16000Hz，若不支持则尝试 48000Hz（3:1 整数比，可无损降采样）
 _PROBE_RATES = [16000, 48000]

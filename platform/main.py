@@ -24,7 +24,6 @@ from pydantic import BaseModel
 
 from audio_sensor import AudioSensor
 from audio_effector import AudioEffector
-from local_stt import LocalSTT
 from lidar_sensor import LidarSensor
 from slam import SlamEngine, SlamConfig
 from devices import (
@@ -92,7 +91,6 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 audio_sensor   = AudioSensor(ws_manager)
 audio_effector = AudioEffector(audio_sensor, ws_manager)
-local_stt      = LocalSTT()
 chassis = Chassis(DEFAULT_CONFIG)
 camera  = CameraMount(DEFAULT_CAMERA_CONFIG)
 
@@ -238,18 +236,6 @@ async def _startup():
     t_sensor.add_done_callback(_task_done_callback)
     t_effector.add_done_callback(_task_done_callback)
     logger.info("🎙 音频组件已启动")
-
-    # 后台加载本地 STT 模型（不阻塞端口监听）
-    async def _load_stt():
-        await asyncio.to_thread(local_stt.load)
-        if local_stt.is_available:
-            s = local_stt.status
-            logger.info(f"🧠 本地 STT 就绪（backend={s.get('backend')} model={s.get('model', s.get('model_dir', ''))}）")
-        else:
-            logger.warning("⚠️  本地 STT 不可用，将依赖云端 ASR（SPEECH_API_URL）")
-
-    t_stt = asyncio.create_task(_load_stt(), name="local_stt_load")
-    t_stt.add_done_callback(_task_done_callback)
 
     # 必须在进入 to_thread 前捕获事件循环，子线程中无法调用 asyncio.get_event_loop()（Python 3.10+）
     _loop = asyncio.get_running_loop()
@@ -458,29 +444,6 @@ async def health():
             "token_expired": TOKEN_FILE.with_suffix(".json.expired").exists(),
         },
     }
-
-
-# ── 本地 STT 接口 ──────────────────────────────────────────────────
-
-class STTRequest(BaseModel):
-    audio_b64:   str
-    sample_rate: int = 16000
-
-
-@app.get("/stt/status", summary="本地 STT 引擎状态")
-async def stt_status():
-    return local_stt.status
-
-
-@app.post("/stt/transcribe", summary="本地语音识别")
-async def stt_transcribe(req: STTRequest):
-    if not local_stt.is_available:
-        raise HTTPException(status_code=503, detail="本地 STT 不可用")
-    try:
-        text = await asyncio.to_thread(local_stt.transcribe, req.audio_b64, req.sample_rate)
-        return {"text": text, **local_stt.status}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── 音频模块接口 ───────────────────────────────────────────────────

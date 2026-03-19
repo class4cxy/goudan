@@ -18,12 +18,10 @@ const ASR_MODEL = 'qwen3-asr-flash'
 
 const MIN_DURATION_MS = 800  // 短于此时长的片段丢弃（环境噪声 / 过短无法识别）
 
-// 本地 STT 端点：优先用 LOCAL_STT_URL，留空时从 PLATFORM_URL 自动派生
-const LOCAL_STT_URL: string | null = (() => {
-  if (process.env.LOCAL_STT_URL) return process.env.LOCAL_STT_URL
-  if (process.env.PLATFORM_URL) return `${process.env.PLATFORM_URL.replace(/\/$/, '')}/stt/transcribe`
-  return null
-})()
+// 本地 STT 端点：STT_USE_CLOUD=1 时强制用云端；否则仅当 LOCAL_STT_URL 显式配置时使用本地
+// （platform 已移除 /stt 接口，不再从 PLATFORM_URL 派生）
+const USE_CLOUD_STT = process.env.STT_USE_CLOUD === '1'
+const LOCAL_STT_URL: string | null = USE_CLOUD_STT ? null : process.env.LOCAL_STT_URL || null
 
 // 唤醒词列表，逗号分隔，支持环境变量覆盖
 const WAKE_WORDS: string[] = (process.env.WAKE_WORDS ?? 'Aria,小豆,狗蛋,aria')
