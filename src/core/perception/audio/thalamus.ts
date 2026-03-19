@@ -188,19 +188,15 @@ async function transcribe(audio_b64: string, sampleRate: number): Promise<string
     audio_b64 = pcmBuffer.toString('base64')
   }
 
-  // ── 优先尝试本地 STT ──────────────────────────────────────────────────────
+  // ── 本地 STT（已配置时专用，不降级云端）────────────────────────────────
   if (LOCAL_STT_URL) {
-    try {
-      const t0 = Date.now()
-      const text = await transcribeLocal(audio_b64, sampleRate)
-      console.log(`[AudioThalamus] 本地 STT 耗时=${Date.now()-t0}ms`)
-      return text
-    } catch (err) {
-      console.warn(`[AudioThalamus] 本地 STT 失败，降级云端：${(err as Error).message}`)
-    }
+    const t0 = Date.now()
+    const text = await transcribeLocal(audio_b64, sampleRate)
+    console.log(`[AudioThalamus] 本地 STT 耗时=${Date.now()-t0}ms`)
+    return text
   }
 
-  // ── 云端 ASR（Qwen）———降级路径───────────────────────────────────────────
+  // ── 云端 ASR（本地未配置时使用）─────────────────────────────────────────
   const t0 = Date.now()
   const text = await transcribeCloud(audio_b64, sampleRate)
   console.log(`[AudioThalamus] 云端 ASR 耗时=${Date.now()-t0}ms`)

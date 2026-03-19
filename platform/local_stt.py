@@ -42,6 +42,28 @@ def _pcm_to_wav(pcm: bytes, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
+def _filter_whisper_prompt_hallucination(text: str) -> str:
+    """
+    过滤 Whisper 的 prompt 幻觉：当音频不清或静音时，模型可能输出 initial_prompt 内容。
+    若输出与常见幻觉片段高度相似，返回空字符串。
+    """
+    if not text:
+        return ""
+    t = text.strip()
+    # 常见 prompt 幻觉片段（含旧 prompt 的变体）
+    hallucination_patterns = [
+        "语音，使用简体中文输出",
+        "以下是普通话语音",
+        "使用简体中文输出",
+        "普通话语音",
+    ]
+    for pat in hallucination_patterns:
+        if pat in t and len(t) < 30:
+            logger.debug("[LocalSTT] 过滤 prompt 幻觉：%r", text)
+            return ""
+    return text
+
+
 # ─── Whisper 后端 ─────────────────────────────────────────────────────────────
 
 class _WhisperBackend:
@@ -79,12 +101,13 @@ class _WhisperBackend:
                 language="zh",
                 beam_size=5,
                 vad_filter=False,
-                initial_prompt="以下是普通话语音，使用简体中文输出。",
+                initial_prompt="普通话",
                 no_speech_threshold=0.6,
                 log_prob_threshold=-1.0,
                 compression_ratio_threshold=2.4,
             )
-            return "".join(seg.text for seg in segments).strip()
+            text = "".join(seg.text for seg in segments).strip()
+            return _filter_whisper_prompt_hallucination(text)
 
     @property
     def info(self) -> dict:
