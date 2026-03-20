@@ -67,7 +67,7 @@ MAX_SPEECH_MS = int(os.environ.get("MIC_MAX_SPEECH_MS", "9000"))
 MAX_SPEECH_FRAMES = max(1, MAX_SPEECH_MS // FRAME_DURATION_MS)
 POST_VAD_ENABLED = os.environ.get("MIC_POST_VAD_ENABLED", "1") != "0"
 POST_VAD_AGGRESSIVENESS = int(os.environ.get("MIC_POST_VAD_AGGRESSIVENESS", "3"))
-POST_MIN_VOICED_RATIO = float(os.environ.get("MIC_POST_MIN_VOICED_RATIO", "0.35"))
+POST_MIN_VOICED_RATIO = float(os.environ.get("MIC_POST_MIN_VOICED_RATIO", "0.2"))
 # unmute 后的混响保护期：该窗口内开始的语音片段被视为 TTS 混响丢弃（防止扬声器回声进入 STT）
 POST_UNMUTE_GRACE_MS = int(os.environ.get("MIC_POST_UNMUTE_GRACE_MS", "800"))
 # mute 超时：静音超过此时长强制 unmute，防止 Speaker 异常/卡死导致录音永久休眠
