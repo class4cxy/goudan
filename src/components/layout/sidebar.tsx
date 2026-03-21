@@ -223,29 +223,43 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* Thread List */}
-      <ThreadList
-        activeThreadId={activeThreadId}
-        onSelect={onSelectThread}
-        onNew={onNewThread}
-        refresh={threadRefresh}
-      />
-
-      {/* Voice Logs Entry */}
-      <div className="border-t border-border px-2 py-2 shrink-0">
+      {/* Nav Tabs — 文字对话 / 语音记录 */}
+      <div className="flex shrink-0 border-b border-border">
+        <button
+          onClick={() => onSelectThread(activeThreadId)}
+          className={cn(
+            "flex flex-1 items-center justify-center gap-1.5 py-2 text-[11px] font-medium transition-colors border-b-2",
+            !voiceLogsOpen
+              ? "border-primary text-primary"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          )}
+        >
+          <MessageSquareIcon className="h-3.5 w-3.5" />
+          文字对话
+        </button>
         <button
           onClick={onOpenVoiceLogs}
           className={cn(
-            "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors",
+            "flex flex-1 items-center justify-center gap-1.5 py-2 text-[11px] font-medium transition-colors border-b-2",
             voiceLogsOpen
-              ? "bg-primary/10 text-primary"
-              : "text-muted-foreground hover:bg-zinc-800 hover:text-foreground"
+              ? "border-primary text-primary"
+              : "border-transparent text-muted-foreground hover:text-foreground"
           )}
         >
-          <MicIcon className="h-3.5 w-3.5 shrink-0" />
-          <span>语音对话记录</span>
+          <MicIcon className="h-3.5 w-3.5" />
+          语音记录
         </button>
       </div>
+
+      {/* Thread List */}
+      {!voiceLogsOpen && (
+        <ThreadList
+          activeThreadId={activeThreadId}
+          onSelect={onSelectThread}
+          onNew={onNewThread}
+          refresh={threadRefresh}
+        />
+      )}
 
       {/* Status Panel */}
       <div className="border-t border-border p-3 space-y-3 shrink-0">

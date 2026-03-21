@@ -273,8 +273,10 @@ class Microphone:
         _overflow_count = [0]
         # 看门狗：记录最后一次回调的时间戳，主循环检测回调是否静默停止
         _last_callback_at = [time.monotonic()]
-        # 回调静默超过此时长（秒）视为 ALSA stream 死亡，触发重启
-        _CALLBACK_WATCHDOG_S = 10.0
+        # 回调静默超过此时长（秒）视为 ALSA stream 死亡，触发重启。
+        # 设为 5s（原 10s）：USB 声卡与扬声器共享 ALSA hw 设备时，播放结束后
+        # capture stream 可能被 PortAudio 内部 abort，早发现早重启减少监听盲窗。
+        _CALLBACK_WATCHDOG_S = 5.0
 
         def _sd_callback(indata: np.ndarray, frames: int, time_info, status):
             # 回调运行在 sounddevice 专用音频线程，必须快速返回。
