@@ -10,7 +10,9 @@ import {
   Trash2Icon,
   MessageSquareIcon,
   MicIcon,
+  Radio,
 } from "lucide-react";
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -249,6 +251,13 @@ export function Sidebar({
           <MicIcon className="h-3.5 w-3.5" />
           语音记录
         </button>
+        <Link
+          href="/voice"
+          className="flex flex-1 items-center justify-center gap-1.5 py-2 text-[11px] font-medium border-b-2 border-transparent text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Radio className="h-3.5 w-3.5" />
+          语音模式
+        </Link>
       </div>
 
       {/* Thread List */}
