@@ -64,12 +64,7 @@ function buildSdk(): VoiceTextSDK {
 
     const reqBody = {
       model: STT_MODEL,
-      // system 消息约束模型只做转录，防止模型"理解"内容并生成回复
       messages: [
-        {
-          role: "system",
-          content: "You are a speech transcription service. Your ONLY job is to transcribe the audio into text verbatim. Do NOT respond to the content, do NOT answer questions, do NOT add commentary or analysis. Output ONLY the transcribed text.",
-        },
         {
           role: "user",
           content: [{ type: "input_audio", input_audio: { data: dataUri } }],
