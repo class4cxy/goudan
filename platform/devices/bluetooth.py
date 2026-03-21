@@ -203,7 +203,8 @@ class BluetoothManager:
             name_m = re.search(r"Name:\s+(.+)$", info, re.MULTILINE)
             self._connected_name = name_m.group(1).strip() if name_m else mac
             logger.info("[BT] ✅ 已连接：%s (%s)", self._connected_name, mac)
-            await self._set_default_sink(mac)
+            # A2DP sink 注册需要 1-2s，稍等后再设置，最多重试 5 次
+            await self._set_default_sink_with_retry(mac)
         else:
             logger.warning("[BT] 连接失败，返回信息：%s", out[:300])
 
@@ -261,35 +262,54 @@ class BluetoothManager:
             logger.warning("[BT] 命令异常：%s → %s", " ".join(cmd), e)
             return ""
 
-    async def _set_default_sink(self, mac: str) -> None:
+    async def _set_default_sink_with_retry(
+        self, mac: str, max_retries: int = 5, interval_s: float = 1.5
+    ) -> bool:
         """
-        将蓝牙设备设为 PulseAudio/PipeWire 默认 sink。
+        等待 PipeWire 注册 A2DP sink 后将其设为默认输出，最多重试 max_retries 次。
 
-        PipeWire 在 RPi 5 Bookworm 上的 A2DP sink 名格式：
-            bluez_output.XX_XX_XX_XX_XX_XX.1
-        若格式不匹配（固件版本差异），降级打 warning 不阻断主流程。
+        A2DP profile 协商完成后，PipeWire 需要约 1-2s 才会注册 bluez_output sink，
+        立即调用 pactl set-default-sink 会因 sink 尚不存在而失败。
         """
+        mac_underscore = mac.replace(":", "_")
+        for attempt in range(1, max_retries + 1):
+            await asyncio.sleep(interval_s)
+            sink = await self._find_bt_sink(mac_underscore)
+            if not sink:
+                logger.debug("[BT] 第 %d/%d 次：sink 尚未注册，继续等待...", attempt, max_retries)
+                continue
+            out = await self._run_cmd(["pactl", "set-default-sink", sink])
+            if "Failure" not in out:
+                logger.info("[BT] ✅ PulseAudio 默认输出已设为：%s（第 %d 次尝试）", sink, attempt)
+                return True
+            logger.debug("[BT] 第 %d/%d 次 set-default-sink 失败：%s", attempt, max_retries, out.strip())
+
+        logger.warning(
+            "[BT] 设置默认 sink 失败（重试 %d 次），请手动运行：\n"
+            "       pactl list sinks short | grep bluez\n"
+            "       pactl set-default-sink <sink_name>",
+            max_retries,
+        )
+        return False
+
+    async def _find_bt_sink(self, mac_underscore: str) -> str | None:
+        """从 pactl list sinks short 中找到与 MAC 匹配的蓝牙 sink 名。"""
+        out = await self._run_cmd(["pactl", "list", "sinks", "short"])
+        mac_lower = mac_underscore.lower()
+        for line in out.splitlines():
+            line_lower = line.lower()
+            if mac_lower in line_lower or "bluez" in line_lower:
+                parts = line.split()
+                if len(parts) >= 2:
+                    return parts[1]
+        return None
+
+    async def _set_default_sink(self, mac: str) -> None:
+        """单次尝试设置默认 sink（不重试）。内部使用，外部调用请用 _set_default_sink_with_retry。"""
         mac_underscore = mac.replace(":", "_")
         sink_name = f"bluez_output.{mac_underscore}.1"
         out = await self._run_cmd(["pactl", "set-default-sink", sink_name])
         if "Failure" in out:
-            # 尝试从 pactl list sinks short 中查找真实 sink 名
-            logger.warning(
-                "[BT] 设置默认 sink 失败（%s），尝试自动查找 BT sink...", out.strip()
-            )
-            await self._auto_find_and_set_bt_sink(mac_underscore)
+            logger.warning("[BT] 设置默认 sink 失败（%s）", out.strip())
         else:
             logger.info("[BT] PulseAudio 默认输出已设为：%s", sink_name)
-
-    async def _auto_find_and_set_bt_sink(self, mac_underscore: str) -> None:
-        """从 pactl list sinks short 中自动匹配包含 MAC 的 sink 名并设为默认。"""
-        out = await self._run_cmd(["pactl", "list", "sinks", "short"])
-        for line in out.splitlines():
-            if mac_underscore.lower() in line.lower() or "bluez" in line.lower():
-                parts = line.split()
-                if len(parts) >= 2:
-                    sink_name = parts[1]
-                    await self._run_cmd(["pactl", "set-default-sink", sink_name])
-                    logger.info("[BT] 自动匹配 sink：%s", sink_name)
-                    return
-        logger.warning("[BT] 未能自动匹配蓝牙 sink，音频可能输出到非 BT 设备")

@@ -6,10 +6,18 @@ import {
   ComposerPrimitive,
   ActionBarPrimitive,
   BranchPickerPrimitive,
+  useAui,
   type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
-import { BotIcon, SendIcon, UserIcon, ChevronUpIcon, ChevronDownIcon, CopyIcon, RefreshCwIcon } from "lucide-react";
+import {
+  BotIcon, SendIcon, UserIcon,
+  ChevronUpIcon, ChevronDownIcon,
+  CopyIcon, RefreshCwIcon,
+  MicIcon, Volume2Icon, VolumeXIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { voiceModeStore } from "@/components/chat/voice-mode-store";
 import {
   RobotStatusToolUI,
   CleanRoomsToolUI,
@@ -29,6 +37,127 @@ import {
   GetMapStatusToolUI,
   GetMapImageToolUI,
 } from "@/components/chat/tool-uis";
+
+// ── Voice mode toggle ─────────────────────────────────────────────
+function VoiceModeToggle() {
+  const voiceMode = useSyncExternalStore(
+    voiceModeStore.subscribe,
+    voiceModeStore.getSnapshot,
+    voiceModeStore.getServerSnapshot,
+  );
+
+  return (
+    <button
+      onClick={() => voiceModeStore.toggle()}
+      title={voiceMode ? "关闭蓝牙外放" : "开启蓝牙外放"}
+      className={cn(
+        "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors",
+        voiceMode
+          ? "bg-primary/20 text-primary hover:bg-primary/30"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground",
+      )}
+    >
+      {voiceMode ? <Volume2Icon className="h-4 w-4" /> : <VolumeXIcon className="h-4 w-4" />}
+    </button>
+  );
+}
+
+// ── Microphone voice input ────────────────────────────────────────
+/**
+ * 使用浏览器 Web Speech API 录音，结果转成文字后填入 composer。
+ * 仅在支持的浏览器（Chrome / Edge / Safari）上显示。
+ */
+// Minimal type shim for Web Speech API (not in all TS lib versions)
+type AnyRecognition = {
+  lang: string;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  onresult: ((e: { results: { [i: number]: { [j: number]: { transcript: string } } } }) => void) | null;
+  start(): void;
+  stop(): void;
+};
+
+function MicButton() {
+  const aui = useAui();
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef<AnyRecognition | null>(null);
+
+  const isSupported =
+    typeof window !== "undefined" &&
+    ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
+
+  const startListening = useCallback(() => {
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+
+    const w = window as unknown as Record<string, unknown>;
+    const SR = (w["SpeechRecognition"] ?? w["webkitSpeechRecognition"]) as (new () => AnyRecognition) | undefined;
+    if (!SR) return;
+
+    const rec = new SR();
+    rec.lang = "zh-CN";
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+
+    rec.onstart = () => setListening(true);
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+
+    rec.onresult = (event) => {
+      const transcript = event.results[0]?.[0]?.transcript ?? "";
+      if (transcript) {
+        const prev = aui.composer().getState().text;
+        aui.composer().setText(prev.trim() ? `${prev} ${transcript}` : transcript);
+      }
+    };
+
+    recognitionRef.current = rec;
+    rec.start();
+  }, [listening, aui]);
+
+  // 组件卸载时停止录音
+  useEffect(() => () => recognitionRef.current?.stop(), []);
+
+  if (!isSupported) return null;
+
+  return (
+    <button
+      onClick={startListening}
+      title={listening ? "停止录音" : "语音输入（中文）"}
+      className={cn(
+        "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors",
+        listening
+          ? "bg-red-500/20 text-red-400 animate-pulse"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground",
+      )}
+    >
+      <MicIcon className="h-4 w-4" />
+    </button>
+  );
+}
+
+// ── Voice mode hint bar ───────────────────────────────────────────
+function VoiceModeHint() {
+  const voiceMode = useSyncExternalStore(
+    voiceModeStore.subscribe,
+    voiceModeStore.getSnapshot,
+    voiceModeStore.getServerSnapshot,
+  );
+
+  if (!voiceMode) return null;
+
+  return (
+    <p className="mt-1.5 flex items-center gap-1.5 px-1 text-xs text-primary/70">
+      <Volume2Icon className="h-3 w-3" />
+      外放模式已开启，AI 回复将通过蓝牙扬声器播出
+    </p>
+  );
+}
 
 // ── Generic tool fallback ─────────────────────────────────────────
 const FallbackToolUI: ToolCallMessagePartComponent = ({ toolName, status }) => {
@@ -197,12 +326,18 @@ export function ChatThread() {
               className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none max-h-40"
               rows={1}
             />
+            {/* 语音输入（麦克风） */}
+            <MicButton />
+            {/* 蓝牙外放模式开关 */}
+            <VoiceModeToggle />
             <ComposerPrimitive.Send asChild>
               <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:pointer-events-none transition-colors">
                 <SendIcon className="h-4 w-4" />
               </button>
             </ComposerPrimitive.Send>
           </ComposerPrimitive.Root>
+          {/* 状态提示行 */}
+          <VoiceModeHint />
         </div>
       </ThreadPrimitive.Root>
     </>
