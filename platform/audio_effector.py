@@ -5,6 +5,7 @@ AudioEffector — 应用层（音频输出桥接）
   - 实例化 Speaker 硬件层（aplay/pacat 后端，由 SPEAKER_BACKEND 环境变量决定）
   - 接收来自 WebSocket 的 action.speak 指令，转发给 Speaker 播放队列
   - 所有 TTS 句子播完后，向 Node.js 广播 sense.audio.speak_end 事件
+  - TTS 开始时通知 MusicPlayer 暂停（闪避），TTS 结束后恢复
 
 Chat 模式（蓝牙外放）：
   - 无麦克风接入，移除了 mute/unmute 回声保护逻辑
@@ -17,8 +18,12 @@ Chat 模式（蓝牙外放）：
 import asyncio
 import logging
 import os
+from typing import TYPE_CHECKING
 
 from devices import Speaker
+
+if TYPE_CHECKING:
+    from devices import MusicPlayer
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +31,9 @@ logger = logging.getLogger(__name__)
 class AudioEffector:
     """WebSocket 指令到 Speaker 的桥接层（应用层）。"""
 
-    def __init__(self, ws_manager=None):
+    def __init__(self, ws_manager=None, music_player: "MusicPlayer | None" = None):
         self._ws_manager = ws_manager
+        self._music_player = music_player
         self._loop: asyncio.AbstractEventLoop | None = None
         self._fallback_ms = int(os.environ.get("AUDIO_SPEAK_END_FALLBACK_MS", "15000"))
         self._idle_confirm_ms = int(os.environ.get("AUDIO_SPEAK_END_IDLE_CONFIRM_MS", "250"))
@@ -36,8 +42,21 @@ class AudioEffector:
         self._fallback_task: asyncio.Task | None = None
         self._idle_confirm_task: asyncio.Task | None = None
         self._speaker = Speaker(
+            on_play_start=self._on_play_start,
             on_play_end=self._on_play_end,
         )
+
+    def set_music_player(self, music_player: "MusicPlayer") -> None:
+        """注入 MusicPlayer 引用（在 main.py 中完成初始化后调用）。"""
+        self._music_player = music_player
+
+    def _on_play_start(self) -> None:
+        """TTS 第一句开始播放时调用：通知 MusicPlayer 暂停（闪避）。"""
+        if self._music_player and self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._music_player.pause_for_tts(),
+                self._loop,
+            )
 
     def _on_play_end(self) -> None:
         """每句 TTS 播完后调用：仅在全部句子播完（is_idle）时才安排 speak_end 广播。
@@ -91,6 +110,9 @@ class AudioEffector:
             self._last_emitted_seq = seq
             if self._fallback_task and not self._fallback_task.done():
                 self._fallback_task.cancel()
+            # TTS 全部结束后恢复音乐播放
+            if self._music_player:
+                await self._music_player.resume_after_tts()
         except asyncio.CancelledError:
             return
 

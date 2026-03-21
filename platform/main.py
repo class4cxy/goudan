@@ -34,6 +34,7 @@ from devices import (
     BluetoothManager,
     PowerSensor, PowerSensorConfig, PowerReading,
     Ultrasonic, UltrasonicConfig, UltrasonicReading,
+    MusicPlayer, MusicState,
 )
 
 from roborock.data import UserData
@@ -107,6 +108,26 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 audio_effector = AudioEffector(ws_manager=ws_manager)
 bluetooth_manager = BluetoothManager()
+
+
+def _on_music_state_change(state: MusicState, track) -> None:
+    """音乐播放状态变化时，向 Node.js 广播 sense.music.state 事件。"""
+    loop = _main_loop
+    if loop and loop.is_running():
+        asyncio.run_coroutine_threadsafe(
+            ws_manager.broadcast({
+                "type": "sense.music.state",
+                "payload": {
+                    "state": state.value,
+                    "current": track.to_dict() if track else None,
+                },
+            }),
+            loop,
+        )
+
+
+music_player = MusicPlayer(on_state_change=_on_music_state_change)
+audio_effector.set_music_player(music_player)
 chassis = Chassis(DEFAULT_CONFIG)
 camera  = CameraMount(DEFAULT_CAMERA_CONFIG)
 
@@ -253,6 +274,7 @@ async def _startup():
     t_effector = asyncio.create_task(audio_effector.start(), name="audio_effector")
     t_effector.add_done_callback(_task_done_callback)
     logger.info("🔊 AudioEffector（TTS 播放队列）已启动")
+    logger.info("🎵 MusicPlayer（音乐播放器）已就绪（ffplay 后端，yt-dlp 在线搜索）")
 
     # 探测蓝牙环境（bluetoothctl 是否可用）
     await bluetooth_manager.probe()
@@ -599,6 +621,118 @@ async def audio_verify():
         "ok":         tts_queued,
         "tts_queued": tts_queued,
         "bluetooth":  bluetooth_manager.status(),
+    }
+
+
+# ── 音乐播放器 ──────────────────────────────────────────────────────
+
+class MusicPlayRequest(BaseModel):
+    query: str
+    interrupt: bool = True
+
+
+class MusicVolumeRequest(BaseModel):
+    volume: float
+
+
+class MusicEnqueueRequest(BaseModel):
+    queries: list[str]
+
+
+@app.get("/music/status", summary="音乐播放状态")
+async def music_status():
+    """
+    获取当前音乐播放状态。
+
+    返回字段：
+      - state:         播放状态（idle/loading/playing/paused）
+      - current:       当前曲目信息（title/query/is_local）
+      - queue_length:  待播队列长度
+      - queue_preview: 待播队列前 5 首标题
+      - volume:        当前音量（0.0–2.0）
+    """
+    return music_player.status()
+
+
+@app.post("/music/play", summary="播放音乐（搜索词或本地文件名）")
+async def music_play(body: MusicPlayRequest):
+    """
+    播放音乐。
+
+    请求体：
+      - query:     搜索词（在线，如"周杰伦 晴天"）、本地文件名（如"song.mp3"）或 HTTP URL
+      - interrupt: True（默认）时打断当前播放，False 时加入队列末尾
+
+    音乐来源优先级：
+      1. 以 http:// 或 https:// 开头 → 直接播放 URL
+      2. 文件名存在于 MUSIC_DIR（默认 /home/pi/Music）→ 本地播放
+      3. 其他 → yt-dlp 在线搜索 YouTube（需安装 yt-dlp）
+    """
+    try:
+        result = await music_player.play(body.query, interrupt=body.interrupt)
+        return {"ok": True, **result}
+    except Exception as e:
+        logger.error("[music/play] 失败：%s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/music/enqueue", summary="批量加入播放队列")
+async def music_enqueue(body: MusicEnqueueRequest):
+    """将多首歌曲加入播放队列末尾，不打断当前播放。"""
+    try:
+        result = await music_player.enqueue(body.queries)
+        return {"ok": True, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/music/pause", summary="暂停音乐")
+async def music_pause():
+    """暂停当前播放（SIGSTOP）。"""
+    return await music_player.pause()
+
+
+@app.post("/music/resume", summary="恢复音乐")
+async def music_resume():
+    """恢复暂停的播放（SIGCONT）。"""
+    return await music_player.resume()
+
+
+@app.post("/music/stop", summary="停止音乐")
+async def music_stop():
+    """停止播放并清空队列。"""
+    return await music_player.stop()
+
+
+@app.post("/music/next", summary="下一曲")
+async def music_next():
+    """跳过当前曲目，播放队列中的下一首。"""
+    return await music_player.next()
+
+
+@app.post("/music/volume", summary="设置音量")
+async def music_volume(body: MusicVolumeRequest):
+    """
+    设置播放音量（0.0–2.0，1.0 为原始音量，1.5 为默认值）。
+
+    注意：音量变化对当前正在播放的曲目不生效，下一首开始时才会使用新音量。
+    """
+    return music_player.set_volume(body.volume)
+
+
+@app.get("/music/list", summary="列出本地音乐文件")
+async def music_list():
+    """
+    列出本地音乐目录（MUSIC_DIR，默认 /home/pi/Music）中的所有音频文件。
+
+    支持格式：MP3 / FLAC / WAV / AAC / OGG / M4A / OPUS
+    """
+    from devices.music_player import MUSIC_DIR
+    files = music_player.list_local()
+    return {
+        "music_dir": str(MUSIC_DIR),
+        "count": len(files),
+        "files": files,
     }
 
 

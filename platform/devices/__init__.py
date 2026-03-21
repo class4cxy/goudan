@@ -30,6 +30,10 @@ platform/devices — 机器车硬件抽象层
     Speaker            — TTS + 扬声器播放器，通过回调通知播放状态
                          （SPEAKER_BACKEND=pulseaudio 时通过蓝牙 A2DP 输出）
 
+  音乐播放器
+    MusicPlayer        — 异步音乐播放器，支持在线搜索（yt-dlp）和本地文件
+                         TTS 期间自动闪避（SIGSTOP），播放完成自动恢复
+
   蓝牙设备管理
     BluetoothManager   — 蓝牙设备扫描/配对/连接/断开，兼设 PulseAudio 默认 sink
 
@@ -47,6 +51,7 @@ from .servo import CameraMount, CameraConfig, DEFAULT_CAMERA_CONFIG, Servo, Serv
 from .camera import Camera, CaptureConfig, DEFAULT_CAPTURE_CONFIG
 from .microphone import Microphone
 from .speaker import Speaker
+from .music_player import MusicPlayer, MusicState, Track
 from .bluetooth import BluetoothManager
 from .lidar import Lidar, LidarConfig, DEFAULT_LIDAR_CONFIG, LidarScan, LidarPoint
 from .power_sensor import PowerSensor, PowerSensorConfig, DEFAULT_POWER_CONFIG, PowerReading
@@ -72,6 +77,9 @@ __all__ = [
     # 音频
     "Microphone",
     "Speaker",
+    "MusicPlayer",
+    "MusicState",
+    "Track",
     # 蓝牙
     "BluetoothManager",
     # 激光雷达

@@ -32,25 +32,18 @@ import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
-// ── Web Speech API shim ───────────────────────────────────────────
-type AnyRecognition = {
-  lang: string;
-  interimResults: boolean;
-  maxAlternatives: number;
-  continuous: boolean;
-  onstart: (() => void) | null;
-  onend: (() => void) | null;
-  onerror: ((e: { error: string }) => void) | null;
-  onresult: ((e: { results: { [i: number]: { [j: number]: { transcript: string }; isFinal: boolean } }; resultIndex: number }) => void) | null;
-  start(): void;
-  stop(): void;
-  abort(): void;
-};
-
-function getSR(): (new () => AnyRecognition) | null {
-  if (typeof window === "undefined") return null;
-  const w = window as unknown as Record<string, unknown>;
-  return (w["SpeechRecognition"] ?? w["webkitSpeechRecognition"]) as (new () => AnyRecognition) | null;
+// ── MediaRecorder helpers ─────────────────────────────────────────
+function getSupportedMimeType(): string {
+  const types = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/mp4",
+  ];
+  for (const t of types) {
+    if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return "";
 }
 
 // ── Tool fallback ─────────────────────────────────────────────────
@@ -144,109 +137,138 @@ function WelcomeScreen() {
 }
 
 // ── Hold-to-talk mic button ───────────────────────────────────────
-type RecordState = "idle" | "recording" | "processing";
+type RecordState = "idle" | "recording" | "transcribing" | "processing";
 
 function HoldMicButton() {
   const aui = useAui();
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const [state, setState] = useState<RecordState>("idle");
-  const recognitionRef = useRef<AnyRecognition | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
   const isHoldingRef = useRef(false);
-  const transcriptRef = useRef("");
 
-  const isSupported = !!getSR();
-
-  const startRecording = useCallback(() => {
-    const SR = getSR();
-    if (!SR || isHoldingRef.current) return;
+  const startRecording = useCallback(async () => {
+    if (isHoldingRef.current) return;
     isHoldingRef.current = true;
-    transcriptRef.current = "";
+    setError(null);
+    chunksRef.current = [];
 
-    const rec = new SR();
-    rec.lang = "zh-CN";
-    rec.interimResults = true;
-    rec.maxAlternatives = 1;
-    rec.continuous = true;
-
-    rec.onstart = () => setState("recording");
-    rec.onerror = (e) => {
-      console.warn("[Voice] 录音错误：", e.error);
-      isHoldingRef.current = false;
-      setState("idle");
-    };
-    rec.onend = () => {
-      // 录音结束后发送最终文字
-      const text = transcriptRef.current.trim();
-      if (text) {
-        setState("processing");
-        aui.thread().append({
-          content: [{ type: "text", text }],
-          runConfig: aui.composer().getState().runConfig,
-        });
-      }
-      setState((s) => s === "recording" ? "idle" : s);
-      isHoldingRef.current = false;
-    };
-    rec.onresult = (event) => {
-      // 累积最终识别结果
-      let finals = "";
-      for (let i = 0; i < Object.keys(event.results).length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) {
-          finals += result[0].transcript;
-        }
-      }
-      if (finals) transcriptRef.current = finals;
-    };
-
-    recognitionRef.current = rec;
     try {
-      rec.start();
-    } catch {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+
+      const mimeType = getSupportedMimeType();
+      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+
+      mr.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+
+      mr.onstop = async () => {
+        // 停止所有轨道，释放麦克风
+        stream.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+        isHoldingRef.current = false;
+
+        const blob = new Blob(chunksRef.current, { type: mr.mimeType || "audio/webm" });
+        if (blob.size < 1000) {
+          // 录音太短（< 1KB），忽略
+          setState("idle");
+          return;
+        }
+
+        setState("transcribing");
+
+        // 上传到 /api/transcribe
+        try {
+          const form = new FormData();
+          form.append("audio", blob, `recording.${mr.mimeType?.split("/")[1]?.split(";")[0] ?? "webm"}`);
+          const resp = await fetch("/api/transcribe", { method: "POST", body: form });
+          const data = await resp.json() as { text?: string; error?: string };
+
+          if (!resp.ok || data.error) {
+            setError(data.error ?? "转录失败");
+            setState("idle");
+            return;
+          }
+
+          const text = (data.text ?? "").trim();
+          if (!text) {
+            setState("idle");
+            return;
+          }
+
+          // 直接发送到对话
+          setState("processing");
+          aui.thread().append({
+            content: [{ type: "text", text }],
+            runConfig: aui.composer().getState().runConfig,
+          });
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "网络错误");
+          setState("idle");
+        }
+      };
+
+      mr.start();
+      mediaRecorderRef.current = mr;
+      setState("recording");
+    } catch (e) {
       isHoldingRef.current = false;
+      const msg = e instanceof Error ? e.message : "麦克风权限被拒绝";
+      setError(msg);
+      setState("idle");
     }
   }, [aui]);
 
   const stopRecording = useCallback(() => {
-    if (!isHoldingRef.current) return;
-    recognitionRef.current?.stop();
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop();
+    }
   }, []);
 
-  // 防止页面滚动/上下文菜单
+  // 防止页面滚动 / iOS 长按上下文菜单
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    startRecording();
+    void startRecording();
   }, [startRecording]);
 
   const handlePointerUp = useCallback(() => {
     stopRecording();
   }, [stopRecording]);
 
-  // AI 回复结束（isRunning: true → false）时切回 idle
+  // AI 回复结束后切回 idle
   useEffect(() => {
     if (!isRunning && state === "processing") {
       setState("idle");
     }
   }, [isRunning, state]);
 
-  if (!isSupported) {
-    return (
-      <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">
-        <MicIcon className="h-8 w-8" />
-        <p>当前浏览器不支持语音输入</p>
-        <p className="text-xs">请使用 Chrome 或 Safari</p>
-      </div>
-    );
-  }
+  // 组件卸载时清理麦克风流
+  useEffect(() => () => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+  }, []);
+
+  const disabled = state === "transcribing" || state === "processing";
+
+  const statusText: Record<RecordState, string> = {
+    idle: "",
+    recording: "正在录音，松开发送…",
+    transcribing: "正在转录…",
+    processing: "正在思考…",
+  };
 
   return (
     <div className="flex flex-col items-center gap-3">
+      {/* 错误提示 */}
+      {error && (
+        <p className="text-xs text-red-400 text-center px-4">{error}</p>
+      )}
       {/* 状态文字 */}
-      <p className="text-xs text-muted-foreground h-4">
-        {state === "recording" && "正在录音，松开发送…"}
-        {state === "processing" && "正在思考…"}
-      </p>
+      <p className="text-xs text-muted-foreground h-4">{statusText[state]}</p>
 
       {/* 外圈脉冲 */}
       <div className="relative flex items-center justify-center">
@@ -256,18 +278,21 @@ function HoldMicButton() {
             <span className="absolute h-24 w-24 rounded-full bg-primary/10 animate-pulse" />
           </>
         )}
+        {(state === "transcribing" || state === "processing") && (
+          <span className="absolute h-24 w-24 rounded-full bg-zinc-700/40 animate-pulse" />
+        )}
 
         {/* 主按钮 */}
         <button
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
-          disabled={state === "processing"}
+          disabled={disabled}
           className={cn(
             "relative z-10 flex h-20 w-20 select-none touch-none items-center justify-center rounded-full transition-all duration-150 shadow-lg",
             state === "idle" && "bg-primary text-primary-foreground active:scale-95",
             state === "recording" && "bg-red-500 text-white scale-110",
-            state === "processing" && "bg-zinc-700 text-zinc-400 cursor-not-allowed",
+            (state === "transcribing" || state === "processing") && "bg-zinc-700 text-zinc-400 cursor-not-allowed",
           )}
         >
           <MicIcon className={cn("h-8 w-8", state === "recording" && "animate-pulse")} />
@@ -276,9 +301,7 @@ function HoldMicButton() {
 
       {/* 操作提示 */}
       <p className="text-xs text-muted-foreground">
-        {state === "idle" && "按住说话"}
-        {state === "recording" && " "}
-        {state === "processing" && " "}
+        {state === "idle" ? "按住说话" : " "}
       </p>
     </div>
   );
@@ -305,10 +328,11 @@ function ThinkingDots() {
 // ── Main ──────────────────────────────────────────────────────────
 export function VoiceThread() {
   return (
-    <ThreadPrimitive.Root className="flex h-full flex-col bg-zinc-950">
+    // relative 给 ScrollToBottom 绝对定位用，overflow-hidden 防止整体溢出
+    <ThreadPrimitive.Root className="relative flex h-full flex-col overflow-hidden bg-zinc-950">
 
-      {/* 顶部导航栏 */}
-      <header className="flex items-center justify-between border-b border-border px-4 py-3 shrink-0">
+      {/* 顶部导航栏 — 固定高度，不参与 flex 拉伸 */}
+      <header className="shrink-0 flex items-center justify-between border-b border-border px-4 py-3">
         <Link
           href="/"
           className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
@@ -326,8 +350,8 @@ export function VoiceThread() {
         </div>
       </header>
 
-      {/* 消息区 */}
-      <ThreadPrimitive.Viewport className="flex-1 overflow-y-auto py-3 space-y-0.5">
+      {/* 消息区 — min-h-0 必须加，否则内容会撑开父容器引发整页滚动 */}
+      <ThreadPrimitive.Viewport className="min-h-0 flex-1 overflow-y-auto py-3">
         <WelcomeScreen />
         <ThreadPrimitive.Messages
           components={{ UserMessage, AssistantMessage }}
@@ -337,13 +361,13 @@ export function VoiceThread() {
 
       {/* 滚动到底部 */}
       <ThreadPrimitive.ScrollToBottom asChild>
-        <button className="absolute bottom-48 right-4 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-zinc-900 shadow-lg opacity-0 transition-opacity data-[visible]:opacity-100 hover:bg-zinc-800">
+        <button className="absolute right-4 bottom-44 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-zinc-900 shadow-lg opacity-0 transition-opacity data-[visible]:opacity-100 hover:bg-zinc-800">
           <ScrollDownIcon className="h-4 w-4" />
         </button>
       </ThreadPrimitive.ScrollToBottom>
 
-      {/* 底部麦克风区 */}
-      <div className="shrink-0 border-t border-border bg-zinc-950 pb-safe pt-6 pb-10 flex flex-col items-center">
+      {/* 底部麦克风区 — shrink-0 固定高度，不被消息区压缩 */}
+      <div className="shrink-0 border-t border-border bg-zinc-950 flex flex-col items-center pt-6 pb-10">
         <HoldMicButton />
       </div>
 

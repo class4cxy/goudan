@@ -23,7 +23,7 @@ export default function VoicePage() {
   }, []);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-zinc-950">
+    <div className="h-screen overflow-hidden">
       <Providers threadId={threadId} onAssistantReply={handleAssistantReply}>
         <VoiceThread />
       </Providers>

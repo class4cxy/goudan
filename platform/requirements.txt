@@ -42,3 +42,8 @@ pi-ina219>=1.3.0
 # trafilatura：网页正文提取（去广告/导航/噪音），供 Agent fetchWebPage 工具使用
 # 搜索引擎由 SearXNG Docker 容器提供（见 docker-compose.yml / README），Platform 通过 HTTP 调用
 trafilatura>=1.12.0
+
+# 音乐播放器 (MusicPlayer)
+# yt-dlp：YouTube/B站等平台音频流 URL 解析 + 标题获取
+# ⚠️  系统依赖：sudo apt install ffmpeg（ffplay 播放后端）
+yt-dlp>=2024.1.0
