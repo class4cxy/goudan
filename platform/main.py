@@ -260,6 +260,27 @@ async def _startup():
         logger.warning("⚠️  蓝牙以模拟模式运行（bluetoothctl 不可用，开发机环境）")
     else:
         logger.info("🔵 蓝牙模块已就绪（RPi 5 内置 BT5.0）")
+        # 检测实际蓝牙音频输出状态（查询 bluetoothctl + pactl，不依赖内存）
+        audio_state = await bluetooth_manager.detect_audio_output()
+        if audio_state["bt_connected"]:
+            logger.info(
+                "🎵 蓝牙设备已连接：%s (%s)",
+                audio_state["bt_name"], audio_state["bt_mac"],
+            )
+        else:
+            logger.warning("⚠️  未检测到已连接的蓝牙设备，TTS 将无法通过蓝牙外放")
+            logger.warning("   → 请先运行：python3 connect_speaker.py <MAC>")
+
+        if audio_state["sink_is_bt"]:
+            logger.info("🔊 音频输出：%s（蓝牙 A2DP）", audio_state["default_sink"])
+        elif audio_state["default_sink"]:
+            logger.warning(
+                "⚠️  默认音频 sink 不是蓝牙设备：%s", audio_state["default_sink"]
+            )
+            logger.warning("   → TTS 音频将输出到此设备而非蓝牙音箱")
+            logger.warning("   → 手动修复：pactl set-default-sink <bluez_sink_name>")
+        else:
+            logger.warning("⚠️  无法获取 PulseAudio/PipeWire 默认 sink（pactl 是否已安装？）")
 
     # 必须在进入 to_thread 前捕获事件循环，子线程中无法调用 asyncio.get_event_loop()（Python 3.10+）
     _loop = asyncio.get_running_loop()

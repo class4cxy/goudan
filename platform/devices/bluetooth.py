@@ -240,6 +240,59 @@ class BluetoothManager:
             "simulation": self._simulation,
         }
 
+    async def detect_audio_output(self) -> dict:
+        """
+        查询系统实际蓝牙音频状态（不依赖内存状态），启动时调用。
+
+        返回：
+            {
+                "bt_connected": bool,        # bluetoothctl 检测到已连接设备
+                "bt_mac": str | None,        # 已连接设备 MAC
+                "bt_name": str | None,       # 已连接设备名称
+                "default_sink": str | None,  # PulseAudio/PipeWire 当前默认 sink
+                "sink_is_bt": bool,          # 默认 sink 是否为蓝牙设备
+            }
+        """
+        if self._simulation:
+            return {
+                "bt_connected": False, "bt_mac": None, "bt_name": None,
+                "default_sink": None, "sink_is_bt": False,
+            }
+
+        # 1. 查询已连接设备（bluetoothctl devices Connected）
+        bt_mac: str | None = None
+        bt_name: str | None = None
+        out = await self._run_cmd(["bluetoothctl", "devices", "Connected"])
+        for line in out.splitlines():
+            # 格式: "Device AA:BB:CC:DD:EE:FF DeviceName"
+            m = _MAC_RE.search(line)
+            if m:
+                bt_mac = m.group(0).upper()
+                parts = line.strip().split(" ", 2)
+                bt_name = parts[2] if len(parts) >= 3 else bt_mac
+                # 同步到内存状态
+                self._connected_mac = bt_mac
+                self._connected_name = bt_name
+                break
+
+        # 2. 查询 PulseAudio/PipeWire 默认 sink
+        default_sink: str | None = None
+        sink_is_bt = False
+        sink_out = await self._run_cmd(["pactl", "info"])
+        for line in sink_out.splitlines():
+            if "Default Sink:" in line:
+                default_sink = line.split("Default Sink:", 1)[1].strip()
+                sink_is_bt = "bluez" in default_sink.lower()
+                break
+
+        return {
+            "bt_connected": bt_mac is not None,
+            "bt_mac": bt_mac,
+            "bt_name": bt_name,
+            "default_sink": default_sink,
+            "sink_is_bt": sink_is_bt,
+        }
+
     # ─── 内部工具 ──────────────────────────────────────────────────────
 
     async def _run_cmd(self, cmd: list[str], timeout_s: float = 10.0) -> str:

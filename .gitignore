@@ -26,3 +26,6 @@ dist/
 
 # lg GPIO 库运行时创建的 FIFO 管道（树莓派等）
 .lgd-nfy*
+
+# HTTPS 本地证书（mkcert 生成，不提交）
+certs/

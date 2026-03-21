@@ -64,7 +64,8 @@ export async function POST(req: Request) {
     onChunk: voiceMode
       ? ({ chunk }) => {
           if (chunk.type === "text-delta" && ttsBuf) {
-            const delta = (chunk as { type: "text-delta"; delta: string }).delta;
+            // AI SDK v5: text-delta chunk 的字段是 text，不是旧版 textDelta / delta
+            const delta = (chunk as unknown as { text: string }).text;
             if (delta) {
               const sentences = ttsBuf.push(delta);
               for (const s of sentences) sendTtsChunk(s);
