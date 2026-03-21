@@ -27,7 +27,7 @@ platform/devices — 机器车硬件抽象层
                          （蓝牙 Chat 模式下不使用，录音由手机端负责）
 
   扬声器（TTS 播放）
-    Speaker            — TTS + 扬声器播放器，通过回调通知播放状态
+    Speaker            — TTS + 扬声器播放器（edge-tts 或 Piper，见 SPEAKER_TTS_ENGINE）
                          （SPEAKER_BACKEND=pulseaudio 时通过蓝牙 A2DP 输出）
 
   蓝牙设备管理

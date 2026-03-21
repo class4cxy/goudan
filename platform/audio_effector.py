@@ -12,6 +12,8 @@ Chat 模式（蓝牙外放）：
 
 不包含任何 TTS / 播放逻辑，仅做 WebSocket 指令 → Speaker 的路由。
 硬件层详见 devices/speaker.py。
+
+speak_end：`AUDIO_SPEAK_END_FALLBACK_MS` 默认 45s；每句播完若 Speaker 仍 busy 会重置兜底计时，避免多句总时长超过旧 15s 窗口时误发 forced speak_end。
 """
 
 import asyncio
@@ -34,7 +36,8 @@ class AudioEffector:
     def __init__(self, ws_manager=None):
         self._ws_manager = ws_manager
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._fallback_ms = int(os.environ.get("AUDIO_SPEAK_END_FALLBACK_MS", "15000"))
+        # 仅在「长时间无播放进度」时强制 speak_end；中间句播完会重置计时（见 _on_play_end）
+        self._fallback_ms = int(os.environ.get("AUDIO_SPEAK_END_FALLBACK_MS", "45000"))
         self._idle_confirm_ms = int(os.environ.get("AUDIO_SPEAK_END_IDLE_CONFIRM_MS", "250"))
         self._speak_seq = 0
         self._last_emitted_seq = 0
@@ -48,8 +51,11 @@ class AudioEffector:
         """每句 TTS 播完后调用：仅在全部句子播完（is_idle）时才安排 speak_end 广播。
 
         句间有短暂空窗（LLM 下一句尚未入队），通过二次确认避免误判。
+        若仍有后续句在合成/排队/播放，向后推迟强制 speak_end 的兜底计时，避免「多句快速入队但总播放很长」时误触发。
         """
         if not self._speaker.is_idle():
+            if self._loop:
+                self._schedule_fallback(self._speak_seq)
             return
 
         # 为避免句间短暂空窗（LLM 下一句尚未入队）导致误判，增加短延迟二次确认。

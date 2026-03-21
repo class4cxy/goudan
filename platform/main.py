@@ -568,11 +568,12 @@ async def audio_status():
       - speaker.busy:      是否正在 TTS 播放
       - bluetooth:         蓝牙连接状态（见 /bluetooth/status）
     """
-    from devices.speaker import SPEAKER_BACKEND
+    from devices.speaker import SPEAKER_BACKEND, SPEAKER_TTS_ENGINE
     return {
         "speaker": {
-            "backend": SPEAKER_BACKEND,
-            "busy":    audio_effector._speaker.is_busy(),
+            "backend":    SPEAKER_BACKEND,
+            "busy":       audio_effector._speaker.is_busy(),
+            "tts_engine": SPEAKER_TTS_ENGINE,
         },
         "bluetooth": bluetooth_manager.status(),
     }

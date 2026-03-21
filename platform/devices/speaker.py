@@ -2,8 +2,8 @@
 Speaker — 扬声器硬件抽象层
 ============================
 职责：
-  1. TTS 文字转音频（edge-tts，支持中文 Neural 声音）
-  2. 通过扬声器播放（sounddevice + soundfile 解码 MP3）
+  1. TTS 文字转音频（edge-tts 云端，或 Piper 本地 ONNX，由 SPEAKER_TTS_ENGINE 选择）
+  2. 通过扬声器播放（soundfile 解码 MP3/WAV → PCM）
   3. 双队列流水线（文本队列 → 已合成音频队列），实现“边播边合成”
   4. interrupt 中断清空（取消当前播放 + 取消当前合成 + 丢弃旧队列）
   5. 通过回调通知上层播放开始/结束（用于防回声 mute 联动）
@@ -16,7 +16,7 @@ Speaker — 扬声器硬件抽象层
   PortAudio 在流的 open/close 生命周期中会对共享 ALSA card 调用
   alsa_snd_pcm_drop，误伤 capture stream，导致麦克风回调静默死亡。
 
-  现改为：soundfile 在内存中解码 MP3 → asyncio 子进程运行 aplay 播放原始 PCM。
+  现改为：soundfile 在内存中解码 MP3 或 WAV → asyncio 子进程运行 aplay/pacat 播放原始 PCM。
   aplay 是独立 ALSA 客户端进程，与 Python 进程的 PortAudio 上下文完全隔离；
   USB audio class 设备的 ALSA 驱动天然支持全双工，input/output 在 ALSA 层互不干扰。
   中断时通过 proc.kill() 立即停止 aplay，无须等待音频播完。
@@ -28,14 +28,18 @@ Speaker — 扬声器硬件抽象层
   RPi 5 蓝牙外放时选 pulseaudio：先用 BluetoothManager.connect() 连接蓝牙音箱
   并设为默认 sink，之后 pacat 写入 default sink 时自动路由到蓝牙扬声器。
 
-依赖：edge-tts, soundfile, numpy, aplay（alsa-utils）或 pacat（pulseaudio-utils）
-      树莓派 OS Bookworm 默认均已安装
+依赖：
+  - edge-tts（SPEAKER_TTS_ENGINE=edge-tts，需联网）
+  - piper-tts + onnxruntime（SPEAKER_TTS_ENGINE=piper）；中文等语音常需系统安装 espeak-ng（phonemize）
+  - soundfile, numpy, aplay（alsa-utils）或 pacat（pulseaudio-utils）
 """
 
 import asyncio
 import io
 import logging
 import os
+import threading
+import wave
 from collections.abc import Callable
 from datetime import datetime, timezone
 
@@ -51,6 +55,12 @@ DEFAULT_RATE = "+0%"
 DEFAULT_VOLUME = "+100%"   # edge-tts 最大输出音量
 SOFTWARE_GAIN = float(os.environ.get("SPEAKER_SOFTWARE_GAIN", "2"))  # 软件增益倍数，USB 声卡输出偏小时补偿；超过 1.0 会 clip 削波
 
+# TTS 引擎：edge-tts（默认，Azure 神经语音，需联网）| piper（本地 ONNX，见 SPEAKER_PIPER_MODEL）
+_SPEAKER_TTS_RAW = os.environ.get("SPEAKER_TTS_ENGINE", "edge-tts").strip().lower().replace("_", "-")
+SPEAKER_TTS_ENGINE = _SPEAKER_TTS_RAW if _SPEAKER_TTS_RAW in ("edge-tts", "piper") else "edge-tts"
+if _SPEAKER_TTS_RAW not in ("edge-tts", "piper"):
+    logger.warning("[Speaker] 未知 SPEAKER_TTS_ENGINE=%r，使用 edge-tts", _SPEAKER_TTS_RAW)
+
 # 播放后端：alsa（aplay，USB声卡默认）| pulseaudio（pacat，蓝牙/PipeWire）
 SPEAKER_BACKEND = os.environ.get("SPEAKER_BACKEND", "pulseaudio").lower()
 
@@ -63,6 +73,8 @@ ALSA_DEVICE = os.environ.get("SPEAKER_ALSA_DEVICE", "default")
 PLAY_TIMEOUT_S = float(os.environ.get("SPEAKER_PLAY_TIMEOUT_S", "27"))
 # TTS 合成网络请求超时（秒）：edge-tts 依赖 Microsoft 服务器，网络抖动时需兜底
 TTS_TIMEOUT_S = float(os.environ.get("SPEAKER_TTS_TIMEOUT_S", "15"))
+# Piper 本地合成超时（秒）：长句在弱 CPU 上可能较慢
+PIPER_TIMEOUT_S = float(os.environ.get("SPEAKER_PIPER_TIMEOUT_S", "120"))
 
 
 class Speaker:
@@ -93,6 +105,9 @@ class Speaker:
         self._on_play_start = on_play_start
         self._on_play_end = on_play_end
 
+        self._piper_voice = None
+        self._piper_load_lock = threading.Lock()
+
         self._queue: asyncio.Queue[dict] = asyncio.Queue()
         self._ready_queue: asyncio.Queue[dict] = asyncio.Queue()
         self._current_task: asyncio.Task | None = None
@@ -104,7 +119,11 @@ class Speaker:
 
     async def start(self) -> None:
         """启动双阶段流水线（阻塞，应在独立 task 中运行）。"""
-        logger.info(f"[Speaker] 播放队列已启动（声音：{self._voice}）")
+        if SPEAKER_TTS_ENGINE == "piper":
+            pm = os.environ.get("SPEAKER_PIPER_MODEL", "").strip() or "(未设置 SPEAKER_PIPER_MODEL)"
+            logger.info("[Speaker] 播放队列已启动（TTS=Piper，模型：%s）", pm)
+        else:
+            logger.info("[Speaker] 播放队列已启动（TTS=edge-tts，声音：%s）", self._voice)
         tts_worker = asyncio.create_task(self._synthesis_loop(), name="speaker_tts_worker")
         play_worker = asyncio.create_task(self._playback_loop(), name="speaker_play_worker")
         await asyncio.gather(tts_worker, play_worker)
@@ -198,7 +217,7 @@ class Speaker:
                     continue
                 if audio_data:
                     logger.info(
-                        "[Speaker] tts_ready ts=%s mp3_bytes=%d",
+                        "[Speaker] tts_ready ts=%s audio_bytes=%d",
                         _utc_iso_ms(),
                         len(audio_data),
                     )
@@ -227,7 +246,7 @@ class Speaker:
                     continue
 
                 logger.info(
-                    "[Speaker] play_dequeue ts=%s mp3_bytes=%d",
+                    "[Speaker] play_dequeue ts=%s audio_bytes=%d",
                     _utc_iso_ms(),
                     len(audio_data),
                 )
@@ -248,12 +267,37 @@ class Speaker:
                     self._on_play_end()
                 self._ready_queue.task_done()
 
-    async def _tts(self, text: str) -> bytes | None:
-        """调用 edge-tts 生成音频，返回 MP3 字节。
+    def _ensure_piper_voice(self):
+        """懒加载 Piper ONNX（线程安全；首次合成时加载）。"""
+        with self._piper_load_lock:
+            if self._piper_voice is not None:
+                return self._piper_voice
+            try:
+                from piper.voice import PiperVoice
+            except ImportError:
+                try:
+                    from piper import PiperVoice
+                except ImportError:
+                    logger.error("[Speaker] 缺少依赖：piper-tts，请 pip install piper-tts onnxruntime")
+                    return None
+            model_path = os.environ.get("SPEAKER_PIPER_MODEL", "").strip()
+            if not model_path:
+                logger.error("[Speaker] Piper 已启用但未设置 SPEAKER_PIPER_MODEL（.onnx 路径）")
+                return None
+            cfg = os.environ.get("SPEAKER_PIPER_CONFIG", "").strip() or None
+            use_cuda = os.environ.get("SPEAKER_PIPER_CUDA", "").lower() in ("1", "true", "yes")
+            self._piper_voice = PiperVoice.load(model_path, config_path=cfg, use_cuda=use_cuda)
+            logger.info("[Speaker] Piper 模型已加载：%s", model_path)
+            return self._piper_voice
 
-        edge-tts 依赖 Microsoft Azure 语音服务，网络异常时 stream() 可能长时间阻塞；
-        用 asyncio.wait_for 兜底，超时后让上层合成循环继续处理下一句，而非永久卡住。
-        """
+    async def _tts(self, text: str) -> bytes | None:
+        """按 SPEAKER_TTS_ENGINE 调用 edge-tts 或 Piper，返回压缩音频字节（MP3 或 WAV）。"""
+        if SPEAKER_TTS_ENGINE == "piper":
+            return await self._tts_piper(text)
+        return await self._tts_edge(text)
+
+    async def _tts_edge(self, text: str) -> bytes | None:
+        """edge-tts → MP3。网络阻塞用 wait_for 兜底。"""
         try:
             import edge_tts
         except ImportError:
@@ -279,14 +323,41 @@ class Speaker:
             logger.error(f"[Speaker] TTS 失败：{e}")
             return None
 
+    async def _tts_piper(self, text: str) -> bytes | None:
+        """Piper 本地合成 → WAV 容器字节（soundfile 可读）。"""
+        loop = asyncio.get_event_loop()
+        ls_env = os.environ.get("SPEAKER_PIPER_LENGTH_SCALE", "").strip()
+        length_scale = float(ls_env) if ls_env else None
+
+        def _run() -> bytes | None:
+            voice = self._ensure_piper_voice()
+            if voice is None:
+                return None
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wav_file:
+                voice.synthesize(text, wav_file, length_scale=length_scale)
+            return buf.getvalue()
+
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, _run),
+                timeout=PIPER_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.error("[Speaker] Piper 合成超时（%.0fs），跳过本句：%s", PIPER_TIMEOUT_S, text[:30])
+            return None
+        except Exception as e:
+            logger.error("[Speaker] Piper TTS 失败：%s", e)
+            return None
+
     async def _play(self, mp3_data: bytes) -> None:
-        """解码 MP3 并通过子进程播放。
+        """解码 MP3/WAV 并通过子进程播放。
 
         根据 SPEAKER_BACKEND 环境变量选择播放后端：
           - alsa（默认）：aplay，纯 ALSA 路径，适合 USB 声卡直连
           - pulseaudio：pacat，通过 PulseAudio/PipeWire 路由，适合蓝牙 A2DP
 
-        两种后端均先将 MP3 在内存中解码为 S16_LE PCM（soundfile），
+        两种后端均先将音频在内存中解码为 S16_LE PCM（soundfile），
         再通过对应命令的 stdin 管道送入播放器，中断时直接 proc.kill()。
         """
         try:
@@ -299,7 +370,7 @@ class Speaker:
         loop = asyncio.get_event_loop()
 
         def _decode_to_pcm() -> tuple[bytes, int, int]:
-            """在 executor 线程中解码 MP3 → S16_LE PCM（CPU 密集，不阻塞事件循环）。"""
+            """在 executor 线程中解码 MP3/WAV → S16_LE PCM（CPU 密集，不阻塞事件循环）。"""
             with io.BytesIO(mp3_data) as buf:
                 data, sample_rate = sf.read(buf, dtype="float32")
             if SOFTWARE_GAIN != 1.0:
@@ -311,7 +382,7 @@ class Speaker:
         try:
             pcm_bytes, sample_rate, channels = await loop.run_in_executor(None, _decode_to_pcm)
         except Exception as e:
-            logger.error("[Speaker] MP3 解码失败：%s", e)
+            logger.error("[Speaker] 音频解码失败：%s", e)
             return
 
         est_play_s = len(pcm_bytes) / float(sample_rate * max(channels, 1) * 2)
