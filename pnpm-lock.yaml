@@ -69,8 +69,8 @@ importers:
         specifier: ^2.6.0
         version: 2.6.1
       typeless-sdk:
-        specifier: latest
-        version: 0.2.1
+        specifier: ^0.2.2
+        version: 0.2.2
       ws:
         specifier: ^8.19.0
         version: 8.19.0
@@ -2031,8 +2031,8 @@ packages:
   tunnel-agent@0.6.0:
     resolution: {integrity: sha512-McnNiV1l8RYeY8tBgEpuodCC1mLUdbSN+CYBL7kJsJNInOP8UjDDEwdk6Mw60vdLLrr5NHKZhMAOSrR2NZuQ+w==}
 
-  typeless-sdk@0.2.1:
-    resolution: {integrity: sha512-Ecw9KzraA4y6AGZpOSNxVAsN14tE+Bb0ih5UNuYkgZSJeWlyyMKEH2ONnY3JEzn2p/WpkHvrG1A7sNhxcsKtXg==}
+  typeless-sdk@0.2.2:
+    resolution: {integrity: sha512-AVMDvhZ7YvJb5SZl4UibfBRoXuJYiPbUd36fPqZMjNSqrAw6Wyb+wzP82vetlux6ZO8wz/06uWsOAfhXZPKd/g==}
     engines: {node: '>=18.0.0'}
 
   typescript@5.9.3:
@@ -4030,7 +4030,7 @@ snapshots:
     dependencies:
       safe-buffer: 5.2.1
 
-  typeless-sdk@0.2.1: {}
+  typeless-sdk@0.2.2: {}
 
   typescript@5.9.3: {}
 
