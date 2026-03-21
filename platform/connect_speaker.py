@@ -263,7 +263,7 @@ async def do_disconnect():
     from bluetooth import BluetoothManager
     bt = BluetoothManager()
 
-    macs = re.findall(r"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", r.stdout)
+    macs = re.findall(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", r.stdout)
     for mac in macs:
         mac = mac.rstrip(":").upper()
         bt._connected_mac = mac

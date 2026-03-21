@@ -407,7 +407,8 @@ async def test_disconnect():
     connected_mac = None
     if rc == 0 and out.strip():
         import re
-        m = re.search(r"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", out)
+        # group(0) 是完整 MAC（group(1) 是最后捕获的分组）
+        m = re.search(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", out)
         if m:
             connected_mac = m.group(0).upper()
 

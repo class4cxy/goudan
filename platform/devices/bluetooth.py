@@ -58,8 +58,13 @@ class BluetoothManager:
         """
         扫描附近蓝牙设备，返回 [{mac, name}] 列表。
 
-        通过启动 `bluetoothctl scan on` 并监听其输出来采集设备；
-        到达 timeout_s 后停止扫描并返回已发现的设备列表。
+        实现方式：以 stdin 管道交互模式启动 bluetoothctl，发送 "scan on" 命令后
+        持续读取 stdout 中的设备发现事件，到达 timeout_s 后发送 "scan off\\nquit"
+        并返回结果。
+
+        注意：`bluetoothctl scan on` 作为独立子进程（无 stdin 管道）时，打印
+        "Discovery started" 后 stdout 即关闭，无法接收后续设备事件——必须走
+        交互模式（stdin pipe）才能收到 [NEW] Device 行。
         """
         if self._simulation:
             return [{"mac": "00:11:22:33:44:55", "name": "模拟蓝牙音箱（simulation）"}]
@@ -67,44 +72,89 @@ class BluetoothManager:
         logger.info("[BT] 开始扫描（%ds）...", timeout_s)
         found: dict[str, str] = {}
 
+        # 以交互模式（stdin pipe）运行 bluetoothctl，保持进程存活接收事件
         proc = await asyncio.create_subprocess_exec(
-            "bluetoothctl", "scan", "on",
+            "bluetoothctl",
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
+
+        # 发送 scan on 命令
+        try:
+            assert proc.stdin
+            proc.stdin.write(b"scan on\n")
+            await proc.stdin.drain()
+        except Exception as e:
+            logger.warning("[BT] 发送 scan on 失败：%s", e)
 
         async def _read() -> None:
             assert proc.stdout
             async for line in proc.stdout:
                 text = line.decode(errors="replace").strip()
+                # 过滤控制字符（bluetoothctl 输出含 ANSI 颜色码）
+                text = re.sub(r"\x1b\[[0-9;]*m|\x1b\[K", "", text)
                 m = _MAC_RE.search(text)
                 if not m:
                     continue
                 mac = m.group(0).upper()
-                name_m = re.search(r"Device\s+\S+\s+(.+)$", text)
-                name = name_m.group(1).strip() if name_m else mac
-                if name and name != mac:
+                name_m = re.search(r"Device\s+[\dA-Fa-f:]+\s+(.+)$", text)
+                name = name_m.group(1).strip() if name_m else ""
+                if name and not name.startswith("#"):
                     found[mac] = name
                 elif mac not in found:
                     found[mac] = mac
+                logger.debug("[BT] 发现设备：%s  %s", mac, found.get(mac, ""))
 
         try:
             await asyncio.wait_for(_read(), timeout=timeout_s)
         except asyncio.TimeoutError:
             pass
         finally:
+            # 先礼貌退出，再强杀
+            try:
+                assert proc.stdin
+                proc.stdin.write(b"scan off\nquit\n")
+                await proc.stdin.drain()
+            except Exception:
+                pass
+            await asyncio.sleep(0.3)
             try:
                 proc.kill()
             except Exception:
                 pass
             try:
-                await proc.wait()
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
             except Exception:
                 pass
+
+        # 补充：将 bluetoothctl devices 的缓存结果合并进来
+        # （scan 期间发现的无名设备，可能在 devices 列表里有名字）
+        cached = await self._get_cached_devices()
+        for d in cached:
+            mac = d["mac"]
+            if mac not in found:
+                found[mac] = d["name"]
+            elif found[mac] == mac and d["name"] != mac:
+                found[mac] = d["name"]
 
         result = [{"mac": mac, "name": name} for mac, name in found.items()]
         logger.info("[BT] 扫描完成，发现 %d 台设备", len(result))
         return result
+
+    async def _get_cached_devices(self) -> list[dict]:
+        """从 bluetoothctl devices 获取 BlueZ 缓存的设备列表（无需扫描）。"""
+        out = await self._run_cmd(["bluetoothctl", "devices"])
+        devices = []
+        for line in out.splitlines():
+            m = _MAC_RE.search(line)
+            if not m:
+                continue
+            mac = m.group(0).upper()
+            name_m = re.search(r"Device\s+[\dA-Fa-f:]+\s+(.+)$", line)
+            name = name_m.group(1).strip() if name_m else mac
+            devices.append({"mac": mac, "name": name})
+        return devices
 
     async def get_paired_devices(self) -> list[dict]:
         """返回已配对设备列表 [{mac, name}]。"""
