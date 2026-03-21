@@ -329,7 +329,7 @@ function ThinkingDots() {
 export function VoiceThread() {
   return (
     // relative 给 ScrollToBottom 绝对定位用，overflow-hidden 防止整体溢出
-    <ThreadPrimitive.Root className="relative flex h-full flex-col overflow-hidden bg-zinc-950">
+    <ThreadPrimitive.Root className="relative flex h-full w-full flex-col overflow-hidden bg-zinc-950">
 
       {/* 顶部导航栏 — 固定高度，不参与 flex 拉伸 */}
       <header className="shrink-0 flex items-center justify-between border-b border-border px-4 py-3">

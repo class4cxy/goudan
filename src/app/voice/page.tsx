@@ -23,7 +23,7 @@ export default function VoicePage() {
   }, []);
 
   return (
-    <div className="h-screen overflow-hidden">
+    <div className="fixed inset-0 overflow-hidden">
       <Providers threadId={threadId} onAssistantReply={handleAssistantReply}>
         <VoiceThread />
       </Providers>
