@@ -18,6 +18,25 @@ import {
   type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
 import {
+  RobotStatusToolUI,
+  CleanRoomsToolUI,
+  FullCleanToolUI,
+  PauseToolUI,
+  ResumeToolUI,
+  ReturnHomeToolUI,
+  GetRoomsToolUI,
+  AddTaskToolUI,
+  ListTasksToolUI,
+  CleaningHistoryToolUI,
+  TakeRobotPhotoToolUI,
+  MoveCameraMountToolUI,
+  CenterCameraMountToolUI,
+  StartExploringToolUI,
+  StopExploringToolUI,
+  GetMapStatusToolUI,
+  GetMapImageToolUI,
+} from "@/components/chat/tool-uis";
+import {
   BotIcon,
   UserIcon,
   ChevronUpIcon,
@@ -357,8 +376,28 @@ function ThinkingDots() {
 // ── Main ──────────────────────────────────────────────────────────
 export function VoiceThread() {
   return (
-    // relative 给 ScrollToBottom 绝对定位用，overflow-hidden 防止整体溢出
-    <ThreadPrimitive.Root className="relative flex h-full w-full flex-col overflow-hidden bg-zinc-950">
+    <>
+      {/* 注册自定义工具 UI，与主聊天页一致，确保拍照、地图等结果能正确展示 */}
+      <RobotStatusToolUI />
+      <CleanRoomsToolUI />
+      <FullCleanToolUI />
+      <PauseToolUI />
+      <ResumeToolUI />
+      <ReturnHomeToolUI />
+      <GetRoomsToolUI />
+      <TakeRobotPhotoToolUI />
+      <MoveCameraMountToolUI />
+      <CenterCameraMountToolUI />
+      <AddTaskToolUI />
+      <ListTasksToolUI />
+      <CleaningHistoryToolUI />
+      <StartExploringToolUI />
+      <StopExploringToolUI />
+      <GetMapStatusToolUI />
+      <GetMapImageToolUI />
+
+      {/* relative 给 ScrollToBottom 绝对定位用，overflow-hidden 防止整体溢出 */}
+      <ThreadPrimitive.Root className="relative flex h-full w-full flex-col overflow-hidden bg-zinc-950">
 
       {/* 顶部导航栏 — 固定高度，不参与 flex 拉伸 */}
       <header className="shrink-0 flex items-center justify-between border-b border-border px-4 py-3">
@@ -401,5 +440,6 @@ export function VoiceThread() {
       </div>
 
     </ThreadPrimitive.Root>
+    </>
   );
 }
