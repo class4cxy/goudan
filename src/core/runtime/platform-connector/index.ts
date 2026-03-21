@@ -7,6 +7,11 @@
  *   - Node.js → Bridge：订阅 Spine 的 action.* 事件，转发给 Bridge 执行
  *
  * 单例，通过 PlatformConnector.start() 启动，自动重连。
+ *
+ * Chat 模式变更（蓝牙外放）：
+ *   - 移除了 sense.audio.speech_start / speech_end 映射（录音由手机端负责）
+ *   - 保留 sense.audio.speak_end（TTS 播完通知，供 ConversationManager 使用）
+ *   - 保留 sense.power.low_battery（低电量告警）
  */
 
 import WebSocket from 'ws'
@@ -26,23 +31,13 @@ interface EventMapping {
 }
 
 const INBOUND_MAP: Record<string, EventMapping> = {
-  'sense.audio.speech_start': {
-    type: 'sense.audio.speech_start',
-    priority: 'LOW',
-    summary: () => '检测到有人开始说话',
-  },
-  'sense.audio.speech_end': {
-    type: 'sense.audio.speech_end',
-    priority: 'MEDIUM',
-    summary: (p) => `说话结束，时长 ${p.duration_ms ?? '?'}ms，等待丘脑转写`,
-  },
-  // TTS 全部句子播放完毕，通知 ConvManager 重新进入 LISTENING
+  // TTS 全部句子播放完毕，通知 ConvManager Chat 回复已播完
   'sense.audio.speak_end': {
     type: 'sense.audio.speak_end',
     priority: 'LOW',
-    summary: () => 'TTS 播放完毕',
+    summary: () => 'TTS 蓝牙播放完毕',
   },
-  // 低电量告警：充电中不触发，由 PowerSensor 节流（最多每 60s 一次）
+  // 低电量告警：由 PowerSensor 节流（最多每 60s 一次）
   'sense.power.low_battery': {
     type: 'sense.system.battery',
     priority: 'HIGH',
@@ -135,12 +130,6 @@ class PlatformConnectorClass {
   private _handleInbound(msg: { type: string; payload: Record<string, unknown> }): void {
     const mapping = INBOUND_MAP[msg.type]
     if (!mapping) return
-
-    if (msg.type === 'sense.audio.speech_end') {
-      const trace = msg.payload.trace_id ?? ''
-      const dur = msg.payload.duration_ms ?? '?'
-      console.log(`[PlatformConnector] ← speech_end  trace=${trace}  时长=${dur}ms → Spine`)
-    }
 
     Spine.publish({
       type: mapping.type,

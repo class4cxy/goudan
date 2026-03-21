@@ -24,7 +24,6 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from audio_sensor import AudioSensor
 from audio_effector import AudioEffector
 from lidar_sensor import LidarSensor
 from slam import SlamEngine, SlamConfig
@@ -32,6 +31,7 @@ from devices import (
     Chassis, DEFAULT_CONFIG,
     CameraMount, DEFAULT_CAMERA_CONFIG,
     Camera, CaptureConfig,
+    BluetoothManager,
     PowerSensor, PowerSensorConfig, PowerReading,
     Ultrasonic, UltrasonicConfig, UltrasonicReading,
 )
@@ -105,8 +105,8 @@ class ConnectionManager:
 
 
 ws_manager = ConnectionManager()
-audio_sensor   = AudioSensor(ws_manager)
-audio_effector = AudioEffector(audio_sensor, ws_manager)
+audio_effector = AudioEffector(ws_manager=ws_manager)
+bluetooth_manager = BluetoothManager()
 chassis = Chassis(DEFAULT_CONFIG)
 camera  = CameraMount(DEFAULT_CAMERA_CONFIG)
 
@@ -245,18 +245,21 @@ def _task_done_callback(task: asyncio.Task) -> None:
     elif task.exception():
         logger.error(f"[Task] {task.get_name()} 异常退出", exc_info=task.exception())
 
-    # audio_effector 退出时强制 unmute，防止 Speaker 异常导致麦克风永久静音
     if task.get_name() == "audio_effector":
-        audio_sensor.unmute()
-        logger.warning("[Startup] audio_effector 已退出，强制 unmute 麦克风，避免录音休眠")
+        logger.warning("[Startup] audio_effector 已意外退出")
 
 
 async def _startup():
-    t_sensor = asyncio.create_task(audio_sensor.start(), name="audio_sensor")
     t_effector = asyncio.create_task(audio_effector.start(), name="audio_effector")
-    t_sensor.add_done_callback(_task_done_callback)
     t_effector.add_done_callback(_task_done_callback)
-    logger.info("🎙 音频组件已启动")
+    logger.info("🔊 AudioEffector（TTS 播放队列）已启动")
+
+    # 探测蓝牙环境（bluetoothctl 是否可用）
+    await bluetooth_manager.probe()
+    if bluetooth_manager.is_simulation:
+        logger.warning("⚠️  蓝牙以模拟模式运行（bluetoothctl 不可用，开发机环境）")
+    else:
+        logger.info("🔵 蓝牙模块已就绪（RPi 5 内置 BT5.0）")
 
     # 必须在进入 to_thread 前捕获事件循环，子线程中无法调用 asyncio.get_event_loop()（Python 3.10+）
     _loop = asyncio.get_running_loop()
@@ -437,6 +440,12 @@ class CameraMoveRequest(BaseModel):
     axis:  str    # pan | tilt
     delta: float  # 相对偏移量（度），正=右/上，负=左/下
 
+class BluetoothConnectRequest(BaseModel):
+    mac: str      # 设备 MAC 地址，格式 XX:XX:XX:XX:XX:XX
+
+class BluetoothScanRequest(BaseModel):
+    timeout_s: int = 10  # 扫描超时（秒）
+
 
 # ── 辅助函数 ──────────────────────────────────────────────────────
 def require_device() -> RoborockDevice:
@@ -469,61 +478,96 @@ async def health():
 
 # ── 音频模块接口 ───────────────────────────────────────────────────
 
-@app.get("/audio/status", summary="音频模块状态")
-async def audio_status():
+# ── 蓝牙设备管理 ──────────────────────────────────────────────────
+
+@app.get("/bluetooth/status", summary="蓝牙连接状态")
+async def bluetooth_status():
     """
-    查询麦克风 + 扬声器当前状态。
+    返回当前蓝牙连接状态。
 
     返回字段：
-      - microphone.muted:     麦克风是否处于静音（防回声）状态
-      - microphone.speaking:  VAD 是否正在检测到语音
+      - connected:    是否已连接蓝牙设备
+      - mac:          已连接设备 MAC 地址（未连接时为 null）
+      - name:         已连接设备名称（未连接时为 null）
+      - simulation:   是否为模拟模式（开发机 / bluetoothctl 不可用）
     """
+    return bluetooth_manager.status()
+
+
+@app.get("/bluetooth/devices", summary="已配对蓝牙设备列表")
+async def bluetooth_devices():
+    """返回已配对（曾连接过）的蓝牙设备列表 [{mac, name}]。"""
+    devices = await bluetooth_manager.get_paired_devices()
+    return {"devices": devices, "count": len(devices)}
+
+
+@app.post("/bluetooth/scan", summary="扫描附近蓝牙设备")
+async def bluetooth_scan(req: BluetoothScanRequest):
+    """
+    扫描附近蓝牙设备（默认 10 秒）。
+
+    注意：扫描期间会阻塞请求，建议 timeout_s 不超过 15 秒。
+    返回格式：[{mac, name}]
+    """
+    devices = await bluetooth_manager.scan(timeout_s=req.timeout_s)
+    return {"devices": devices, "count": len(devices)}
+
+
+@app.post("/bluetooth/connect", summary="连接蓝牙设备（配对→信任→连接→设为默认 sink）")
+async def bluetooth_connect(req: BluetoothConnectRequest):
+    """
+    连接指定 MAC 的蓝牙设备（A2DP 音频输出模式）。
+
+    流程：pair → trust → connect → pactl set-default-sink
+    成功后 TTS 音频将通过该蓝牙设备播放（需同时设置 SPEAKER_BACKEND=pulseaudio）。
+
+    返回字段：
+      - ok:      是否连接成功
+      - status:  连接后的蓝牙状态快照
+    """
+    ok = await bluetooth_manager.connect(req.mac)
+    return {"ok": ok, "status": bluetooth_manager.status()}
+
+
+@app.post("/bluetooth/disconnect", summary="断开蓝牙设备")
+async def bluetooth_disconnect():
+    """断开当前已连接的蓝牙设备。"""
+    ok = await bluetooth_manager.disconnect()
+    return {"ok": ok, "status": bluetooth_manager.status()}
+
+
+@app.get("/audio/status", summary="音频输出状态（蓝牙 Chat 模式）")
+async def audio_status():
+    """
+    查询扬声器与蓝牙连接状态（Chat 模式下麦克风已移除，录音由手机端负责）。
+
+    返回字段：
+      - speaker.backend:   播放后端（alsa / pulseaudio）
+      - speaker.busy:      是否正在 TTS 播放
+      - bluetooth:         蓝牙连接状态（见 /bluetooth/status）
+    """
+    from devices.speaker import SPEAKER_BACKEND
     return {
-        "microphone": {
-            "muted":    audio_sensor._mic.is_muted,
-            "speaking": audio_sensor._mic._is_speaking,
+        "speaker": {
+            "backend": SPEAKER_BACKEND,
+            "busy":    audio_effector._speaker.is_busy(),
         },
+        "bluetooth": bluetooth_manager.status(),
     }
 
 
-@app.post("/audio/verify", summary="音频硬件验证（麦克风 + 扬声器）")
+@app.post("/audio/verify", summary="扬声器验证（播放测试 TTS）")
 async def audio_verify():
     """
-    一键验证音频硬件。
-
-    步骤：
-      1. 枚举 sounddevice 设备列表，检测 USB 音频输入设备
-      2. 通过扬声器播放一段测试语音：「音频硬件验证通过，麦克风和扬声器工作正常。」
-      3. 返回检测结果
+    通过扬声器播放一段测试语音，验证 TTS + 蓝牙/ALSA 链路是否正常。
 
     返回字段：
-      - mic_device:   检测到的麦克风设备名（None = 未检测到 USB 声卡，使用 ALSA 默认）
-      - all_devices:  所有可用输入设备列表（含序号、名称、声道数、采样率）
-      - tts_queued:   测试音是否已成功入队播放
+      - tts_queued:  测试音是否已成功入队播放
+      - bluetooth:   当前蓝牙连接状态（若未连接蓝牙音箱声音输出到默认 ALSA 设备）
     """
-    # 1. 枚举音频输入设备
-    all_input_devices: list[dict] = []
-    mic_device: str | None = None
-    try:
-        import sounddevice as sd
-        from devices.microphone import find_usb_audio_device
-        mic_device = find_usb_audio_device()
-        for i, dev in enumerate(sd.query_devices()):
-            if dev["max_input_channels"] > 0:
-                all_input_devices.append({
-                    "index":       i,
-                    "name":        dev["name"],
-                    "channels":    dev["max_input_channels"],
-                    "sample_rate": int(dev["default_samplerate"]),
-                    "is_usb_auto": dev["name"] == mic_device,
-                })
-    except Exception as e:
-        logger.warning(f"[audio/verify] 设备枚举失败：{e}")
-
-    # 2. 通过扬声器播放验证音
     tts_queued = False
     try:
-        verify_text = "音频硬件验证通过，麦克风和扬声器工作正常。"
+        verify_text = "语音输出验证通过，扬声器工作正常。"
         await audio_effector.enqueue(verify_text, interrupt=False)
         tts_queued = True
         logger.info("[audio/verify] 验证音已入队播放")
@@ -531,11 +575,9 @@ async def audio_verify():
         logger.error(f"[audio/verify] TTS 入队失败：{e}")
 
     return {
-        "ok":          tts_queued,
-        "mic_device":  mic_device,
-        "all_devices": all_input_devices,
-        "tts_queued":  tts_queued,
-        "hint":        None if mic_device else "未自动检测到 USB 声卡，将使用 ALSA 默认设备，若无声音请检查 lsusb / arecord -l",
+        "ok":         tts_queued,
+        "tts_queued": tts_queued,
+        "bluetooth":  bluetooth_manager.status(),
     }
 
 
@@ -1293,10 +1335,6 @@ async def _handle_action(message: dict) -> None:
         interrupt = payload.get("interrupt_current", False)
         if text:
             await audio_effector.enqueue(text, interrupt=interrupt)
-    elif msg_type == "action.mute":
-        audio_sensor.mute()
-    elif msg_type == "action.unmute":
-        audio_sensor.unmute()
 
     elif msg_type == "action.motor":
         command = payload.get("command", "stop")

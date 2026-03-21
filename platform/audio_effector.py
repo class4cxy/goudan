@@ -2,9 +2,13 @@
 AudioEffector — 应用层（音频输出桥接）
 =======================================
 职责：
-  - 实例化 Speaker 硬件层，注入防回声回调（mute/unmute）
+  - 实例化 Speaker 硬件层（aplay/pacat 后端，由 SPEAKER_BACKEND 环境变量决定）
   - 接收来自 WebSocket 的 action.speak 指令，转发给 Speaker 播放队列
   - 所有 TTS 句子播完后，向 Node.js 广播 sense.audio.speak_end 事件
+
+Chat 模式（蓝牙外放）：
+  - 无麦克风接入，移除了 mute/unmute 回声保护逻辑
+  - Speaker 输出通过 pacat 路由到蓝牙 A2DP sink（SPEAKER_BACKEND=pulseaudio）
 
 不包含任何 TTS / 播放逻辑，仅做 WebSocket 指令 → Speaker 的路由。
 硬件层详见 devices/speaker.py。
@@ -22,8 +26,7 @@ logger = logging.getLogger(__name__)
 class AudioEffector:
     """WebSocket 指令到 Speaker 的桥接层（应用层）。"""
 
-    def __init__(self, audio_sensor: "AudioSensor | None" = None, ws_manager=None):
-        self._audio_sensor = audio_sensor
+    def __init__(self, ws_manager=None):
         self._ws_manager = ws_manager
         self._loop: asyncio.AbstractEventLoop | None = None
         self._fallback_ms = int(os.environ.get("AUDIO_SPEAK_END_FALLBACK_MS", "15000"))
@@ -33,21 +36,16 @@ class AudioEffector:
         self._fallback_task: asyncio.Task | None = None
         self._idle_confirm_task: asyncio.Task | None = None
         self._speaker = Speaker(
-            on_play_start=audio_sensor.mute if audio_sensor else None,
             on_play_end=self._on_play_end,
         )
 
     def _on_play_end(self) -> None:
-        """每句 TTS 播完后调用：仅在全部句子播完（is_idle）时才 unmute + 安排 speak_end。
+        """每句 TTS 播完后调用：仅在全部句子播完（is_idle）时才安排 speak_end 广播。
 
-        句间不 unmute，避免多句回复时扬声器混响被麦克风捕获形成回声循环。
+        句间有短暂空窗（LLM 下一句尚未入队），通过二次确认避免误判。
         """
         if not self._speaker.is_idle():
-            # 还有后续句子即将入队/播放，保持静音，由下一句的 on_play_start 接管
             return
-
-        if self._audio_sensor:
-            self._audio_sensor.unmute()
 
         # 为避免句间短暂空窗（LLM 下一句尚未入队）导致误判，增加短延迟二次确认。
         if self._ws_manager and self._loop:
@@ -115,8 +113,6 @@ class AudioEffector:
             if self._speaker.is_idle():
                 return
 
-            if self._audio_sensor:
-                self._audio_sensor.unmute()
             await self._emit_speak_end(forced=True, reason="fallback_timeout")
             self._last_emitted_seq = seq
         except asyncio.CancelledError:

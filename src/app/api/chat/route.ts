@@ -4,6 +4,8 @@ import { AGENT_MODEL, ALL_TOOLS } from "@/core/cognition/tools";
 import { buildSystemPrompt } from "@/core/cognition/tools/prompts";
 import { queries } from "@/lib/db";
 import { ConversationBuffer } from "@/core/cognition/memory/conversation-buffer";
+import { notifyChatInput, notifyChatComplete } from "@/core/perception/chat";
+import { PlatformConnector } from "@/core/runtime/platform-connector";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -16,12 +18,26 @@ function firstText(msg: UIMessage): string | null {
   return null;
 }
 
+/** Collect all text segments from all steps into a single string for TTS. */
+function extractFullText(steps: Parameters<Parameters<typeof streamText>[0]['onFinish']>[0]['steps']): string {
+  return steps
+    .map((s) => s.text ?? '')
+    .join('')
+    .trim()
+}
+
 
 export async function POST(req: Request) {
-  const { messages, threadId } = (await req.json()) as {
+  const { messages, threadId, voiceMode } = (await req.json()) as {
     messages: UIMessage[];
     threadId?: string;
+    /** 为 true 时，AI 回复完成后通过蓝牙扬声器朗读全文（action.speak → Platform TTS） */
+    voiceMode?: boolean;
   };
+
+  // 通知 Spine：文字对话开始（侧链事件，供 ConversationManager 状态同步）
+  const userText = firstText(messages[messages.length - 1]) ?? '';
+  notifyChatInput(userText, threadId);
 
   // ── ConversationBuffer：历史摘要注入 + rawTail 裁剪 ──────────────────────
   const buffer = threadId ? new ConversationBuffer(threadId) : null
@@ -42,6 +58,20 @@ export async function POST(req: Request) {
       }
     },
     onFinish: async ({ steps }) => {
+      // 通知 Spine：文字对话轮次完成
+      notifyChatComplete(threadId);
+
+      // voiceMode：将 AI 回复全文发送到 Platform 通过蓝牙朗读
+      if (voiceMode) {
+        const fullText = extractFullText(steps);
+        if (fullText) {
+          PlatformConnector.send({
+            type: 'action.speak',
+            payload: { text: fullText, interrupt_current: true },
+          });
+        }
+      }
+
       if (!threadId) return;
 
       // Build assistant UIMessage parts from all steps

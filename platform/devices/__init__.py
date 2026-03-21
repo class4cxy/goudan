@@ -22,11 +22,16 @@ platform/devices — 机器车硬件抽象层
     CaptureConfig      — 采集参数配置数据类
     DEFAULT_CAPTURE_CONFIG — 默认配置（USB /dev/video0，640×480）
 
-  麦克风（VAD 采集）
+  麦克风（VAD 采集，可选模块）
     Microphone         — 麦克风 VAD 采集器，通过回调推送语音事件
+                         （蓝牙 Chat 模式下不使用，录音由手机端负责）
 
   扬声器（TTS 播放）
     Speaker            — TTS + 扬声器播放器，通过回调通知播放状态
+                         （SPEAKER_BACKEND=pulseaudio 时通过蓝牙 A2DP 输出）
+
+  蓝牙设备管理
+    BluetoothManager   — 蓝牙设备扫描/配对/连接/断开，兼设 PulseAudio 默认 sink
 
   激光雷达（LD06，CP2102 USB-TTL 串口）
     Lidar              — LD06 激光雷达控制器，通过回调推送完整圈扫描数据
@@ -42,6 +47,7 @@ from .servo import CameraMount, CameraConfig, DEFAULT_CAMERA_CONFIG, Servo, Serv
 from .camera import Camera, CaptureConfig, DEFAULT_CAPTURE_CONFIG
 from .microphone import Microphone
 from .speaker import Speaker
+from .bluetooth import BluetoothManager
 from .lidar import Lidar, LidarConfig, DEFAULT_LIDAR_CONFIG, LidarScan, LidarPoint
 from .power_sensor import PowerSensor, PowerSensorConfig, DEFAULT_POWER_CONFIG, PowerReading
 from .ultrasonic import Ultrasonic, UltrasonicConfig, DEFAULT_ULTRASONIC_CONFIG, UltrasonicReading
@@ -66,6 +72,8 @@ __all__ = [
     # 音频
     "Microphone",
     "Speaker",
+    # 蓝牙
+    "BluetoothManager",
     # 激光雷达
     "Lidar",
     "LidarConfig",

@@ -1,0 +1,245 @@
+"""
+BluetoothManager — 蓝牙设备管理
+================================
+职责：
+  - 通过 bluetoothctl 子进程管理蓝牙设备的配对、信任与连接/断开
+  - 提供设备扫描（asyncio 超时控制）与状态查询接口
+  - 连接成功后通过 pactl 将蓝牙 sink 设为 PulseAudio/PipeWire 默认输出设备
+    （使得 pacat 写入 default sink 时自动路由到蓝牙扬声器）
+
+RPi 5 注意事项（Bookworm / PipeWire）：
+  - 蓝牙 sink 名通常为 bluez_output.XX_XX_XX_XX_XX_XX.1
+  - PipeWire 兼容 PulseAudio API，pactl / pacat 均可正常使用
+  - A2DP 立体声问题（仅出现单声道）的修复方式见 docs/HARDWARE.md
+
+依赖：bluetoothctl（bluez），pactl（pulseaudio-utils/pipewire-pulse）
+      树莓派 OS Bookworm 默认均已安装；开发机（非 RPi）会降级为模拟模式。
+"""
+
+import asyncio
+import logging
+import re
+
+logger = logging.getLogger(__name__)
+
+_MAC_RE = re.compile(r"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")
+
+
+class BluetoothManager:
+    """
+    蓝牙设备管理器（bluetoothctl / pactl 封装）。
+
+    所有操作均为异步，通过 asyncio.create_subprocess_exec 调用系统命令，
+    无需常驻守护进程。当系统缺少 bluetoothctl 时自动进入模拟模式，
+    所有操作返回安全的降级结果。
+    """
+
+    def __init__(self) -> None:
+        self._connected_mac: str | None = None
+        self._connected_name: str | None = None
+        self._simulation = False  # 开发机无 bluetoothctl 时设为 True
+
+    # ─── 公共接口 ──────────────────────────────────────────────────────
+
+    async def probe(self) -> None:
+        """检测 bluetoothctl 是否可用，不可用时进入模拟模式。"""
+        out = await self._run_cmd(["bluetoothctl", "--version"])
+        if not out:
+            self._simulation = True
+            logger.warning("[BT] bluetoothctl 不可用，进入模拟模式（开发机环境）")
+        else:
+            logger.info("[BT] bluetoothctl 已就绪：%s", out.strip())
+
+    @property
+    def is_simulation(self) -> bool:
+        return self._simulation
+
+    async def scan(self, timeout_s: int = 10) -> list[dict]:
+        """
+        扫描附近蓝牙设备，返回 [{mac, name}] 列表。
+
+        通过启动 `bluetoothctl scan on` 并监听其输出来采集设备；
+        到达 timeout_s 后停止扫描并返回已发现的设备列表。
+        """
+        if self._simulation:
+            return [{"mac": "00:11:22:33:44:55", "name": "模拟蓝牙音箱（simulation）"}]
+
+        logger.info("[BT] 开始扫描（%ds）...", timeout_s)
+        found: dict[str, str] = {}
+
+        proc = await asyncio.create_subprocess_exec(
+            "bluetoothctl", "scan", "on",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+
+        async def _read() -> None:
+            assert proc.stdout
+            async for line in proc.stdout:
+                text = line.decode(errors="replace").strip()
+                m = _MAC_RE.search(text)
+                if not m:
+                    continue
+                mac = m.group(0).upper()
+                name_m = re.search(r"Device\s+\S+\s+(.+)$", text)
+                name = name_m.group(1).strip() if name_m else mac
+                if name and name != mac:
+                    found[mac] = name
+                elif mac not in found:
+                    found[mac] = mac
+
+        try:
+            await asyncio.wait_for(_read(), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+
+        result = [{"mac": mac, "name": name} for mac, name in found.items()]
+        logger.info("[BT] 扫描完成，发现 %d 台设备", len(result))
+        return result
+
+    async def get_paired_devices(self) -> list[dict]:
+        """返回已配对设备列表 [{mac, name}]。"""
+        if self._simulation:
+            return []
+        out = await self._run_cmd(["bluetoothctl", "paired-devices"])
+        devices = []
+        for line in out.splitlines():
+            m = _MAC_RE.search(line)
+            if not m:
+                continue
+            mac = m.group(0).upper()
+            name_m = re.search(r"Device\s+\S+\s+(.+)$", line)
+            name = name_m.group(1).strip() if name_m else mac
+            devices.append({"mac": mac, "name": name})
+        return devices
+
+    async def connect(self, mac: str) -> bool:
+        """
+        配对 → 信任 → 连接，成功后将蓝牙设备设为默认 PulseAudio sink。
+
+        若设备已配对则跳过配对步骤；失败返回 False，不抛出异常。
+        """
+        if self._simulation:
+            self._connected_mac = mac.upper()
+            self._connected_name = "模拟音箱"
+            logger.info("[BT][sim] 模拟连接：%s", mac)
+            return True
+
+        mac = mac.upper()
+        logger.info("[BT] 正在连接：%s", mac)
+
+        await self._run_cmd(["bluetoothctl", "pair", mac])
+        await self._run_cmd(["bluetoothctl", "trust", mac])
+        out = await self._run_cmd(["bluetoothctl", "connect", mac], timeout_s=15.0)
+
+        success = (
+            "Connection successful" in out
+            or "already connected" in out.lower()
+        )
+
+        if success:
+            self._connected_mac = mac
+            # 获取设备名
+            info = await self._run_cmd(["bluetoothctl", "info", mac])
+            name_m = re.search(r"Name:\s+(.+)$", info, re.MULTILINE)
+            self._connected_name = name_m.group(1).strip() if name_m else mac
+            logger.info("[BT] ✅ 已连接：%s (%s)", self._connected_name, mac)
+            await self._set_default_sink(mac)
+        else:
+            logger.warning("[BT] 连接失败，返回信息：%s", out[:300])
+
+        return success
+
+    async def disconnect(self, mac: str | None = None) -> bool:
+        """断开指定设备（默认断开当前已连接设备）。"""
+        target = (mac or self._connected_mac or "").upper()
+        if not target:
+            logger.warning("[BT] 无已连接设备可断开")
+            return False
+
+        if self._simulation:
+            self._connected_mac = None
+            self._connected_name = None
+            logger.info("[BT][sim] 模拟断开")
+            return True
+
+        out = await self._run_cmd(["bluetoothctl", "disconnect", target])
+        success = "Successful disconnected" in out or "not connected" in out.lower()
+        if success and target == self._connected_mac:
+            self._connected_mac = None
+            self._connected_name = None
+        logger.info("[BT] 断开 %s：%s", target, "成功" if success else "失败（%s）" % out[:100])
+        return success
+
+    def status(self) -> dict:
+        """返回当前连接状态快照。"""
+        return {
+            "connected": self._connected_mac is not None,
+            "mac": self._connected_mac,
+            "name": self._connected_name,
+            "simulation": self._simulation,
+        }
+
+    # ─── 内部工具 ──────────────────────────────────────────────────────
+
+    async def _run_cmd(self, cmd: list[str], timeout_s: float = 10.0) -> str:
+        """运行系统命令，返回 stdout 文本；超时或命令不存在时返回空字符串。"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+            return stdout.decode(errors="replace")
+        except asyncio.TimeoutError:
+            logger.warning("[BT] 命令超时（%.0fs）：%s", timeout_s, " ".join(cmd))
+            return ""
+        except FileNotFoundError:
+            logger.debug("[BT] 命令不存在：%s", cmd[0])
+            return ""
+        except Exception as e:
+            logger.warning("[BT] 命令异常：%s → %s", " ".join(cmd), e)
+            return ""
+
+    async def _set_default_sink(self, mac: str) -> None:
+        """
+        将蓝牙设备设为 PulseAudio/PipeWire 默认 sink。
+
+        PipeWire 在 RPi 5 Bookworm 上的 A2DP sink 名格式：
+            bluez_output.XX_XX_XX_XX_XX_XX.1
+        若格式不匹配（固件版本差异），降级打 warning 不阻断主流程。
+        """
+        mac_underscore = mac.replace(":", "_")
+        sink_name = f"bluez_output.{mac_underscore}.1"
+        out = await self._run_cmd(["pactl", "set-default-sink", sink_name])
+        if "Failure" in out:
+            # 尝试从 pactl list sinks short 中查找真实 sink 名
+            logger.warning(
+                "[BT] 设置默认 sink 失败（%s），尝试自动查找 BT sink...", out.strip()
+            )
+            await self._auto_find_and_set_bt_sink(mac_underscore)
+        else:
+            logger.info("[BT] PulseAudio 默认输出已设为：%s", sink_name)
+
+    async def _auto_find_and_set_bt_sink(self, mac_underscore: str) -> None:
+        """从 pactl list sinks short 中自动匹配包含 MAC 的 sink 名并设为默认。"""
+        out = await self._run_cmd(["pactl", "list", "sinks", "short"])
+        for line in out.splitlines():
+            if mac_underscore.lower() in line.lower() or "bluez" in line.lower():
+                parts = line.split()
+                if len(parts) >= 2:
+                    sink_name = parts[1]
+                    await self._run_cmd(["pactl", "set-default-sink", sink_name])
+                    logger.info("[BT] 自动匹配 sink：%s", sink_name)
+                    return
+        logger.warning("[BT] 未能自动匹配蓝牙 sink，音频可能输出到非 BT 设备")
