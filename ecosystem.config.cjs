@@ -6,7 +6,8 @@
  *   pnpm build
  *   pm2 start ecosystem.config.cjs
  *
- * 访问：https://<设备IP>:3443（HTTPS_PORT）；HTTP :3000 会 301 跳到 HTTPS。
+ * 访问：https://<设备IP>:3000（HTTPS_PORT 默认与 next start 同端口）。
+ * 可选：在 env 里设 HTTP_REDIRECT_PORT=3080，则 http://<IP>:3080 会 301 到 HTTPS。
  *
  * 开机自启：pm2 save && pm2 startup
  *
@@ -27,10 +28,8 @@ module.exports = {
       min_uptime: '10s',
       env: {
         NODE_ENV: 'production',
-        /** HTTP：仅做跳转到 HTTPS，与 server-https.mjs 一致 */
-        PORT: 3000,
-        /** HTTPS：实际站点端口（防火墙需放行 TCP 3000 + 本端口） */
-        HTTPS_PORT: 3443,
+        /** 与原先 HTTP next start 同端口，避免防火墙只放行 3000 时 HTTPS 在 3443 进不来 */
+        HTTPS_PORT: 3000,
       },
       error_file: path.join(projectRoot, 'logs', 'home-agent-err.log'),
       out_file: path.join(projectRoot, 'logs', 'home-agent-out.log'),
