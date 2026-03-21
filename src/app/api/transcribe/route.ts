@@ -62,6 +62,24 @@ function buildSdk(): VoiceTextSDK {
     const blob = new Blob([new Uint8Array(audio)], { type: contentType });
     const dataUri = await toDataUri(blob, contentType);
 
+    const reqBody = {
+      model: STT_MODEL,
+      // system 消息约束模型只做转录，防止模型"理解"内容并生成回复
+      messages: [
+        {
+          role: "system",
+          content: "You are a speech transcription service. Your ONLY job is to transcribe the audio into text verbatim. Do NOT respond to the content, do NOT answer questions, do NOT add commentary or analysis. Output ONLY the transcribed text.",
+        },
+        {
+          role: "user",
+          content: [{ type: "input_audio", input_audio: { data: dataUri } }],
+        },
+      ],
+      stream: false,
+    };
+
+    console.log(`[STT] → model=${STT_MODEL} audioSize=${(dataUri.length / 1024).toFixed(1)}KB`);
+
     const res = await fetch(speechApiUrl, {
       method: "POST",
       headers: {
@@ -69,16 +87,7 @@ function buildSdk(): VoiceTextSDK {
         "Content-Type": "application/json",
       },
       signal: AbortSignal.timeout(60_000),
-      body: JSON.stringify({
-        model: STT_MODEL,
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "input_audio", input_audio: { data: dataUri } }],
-          },
-        ],
-        stream: false,
-      }),
+      body: JSON.stringify(reqBody),
     });
 
     if (!res.ok) {
@@ -89,7 +98,9 @@ function buildSdk(): VoiceTextSDK {
     const data = await res.json() as {
       choices?: Array<{ message?: { content?: string } }>;
     };
-    return (data.choices?.[0]?.message?.content ?? "").trim();
+    const result = (data.choices?.[0]?.message?.content ?? "").trim();
+    console.log(`[STT] ← "${result}"`);
+    return result;
   };
 
   // LLM 仅在 polish 模式下使用，key 缺失时降级到纯 STT
@@ -165,12 +176,13 @@ export async function POST(req: Request) {
 
     // Step 2: LLM 润色（去口头禅、添加标点，appType=general 纯整理不生成回复）
     const vocabulary = getVocabulary();
+    console.log(`[polish] → input="${transcript}"`);
     const text = await sdk.polish(transcript, { appType: "general", vocabulary })
       .catch((err: unknown) => {
-        console.warn("[transcribe] LLM 润色失败，回退原始转录：", err);
+        console.warn("[polish] LLM 润色失败，回退原始转录：", err);
         return transcript;
       });
-    console.log(`[transcribe] polish → "${text}"`);
+    console.log(`[polish] ← "${text}"`);
 
     return Response.json({ text, transcript });
   } catch (e) {
