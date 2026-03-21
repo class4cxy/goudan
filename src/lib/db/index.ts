@@ -152,6 +152,29 @@ export interface InspectionRecord {
   action_taken?: string;
 }
 
+export interface VoiceLogDay {
+  day: string;           // e.g. "2026-03-21"
+  session_count: number;
+  message_count: number;
+  first_ts: number;
+  last_ts: number;
+}
+
+export interface VoiceLogSession {
+  session_id: string;
+  started_at: number;
+  ended_at: number;
+  message_count: number;
+}
+
+export interface VoiceLogMessage {
+  id: number;
+  session_id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: number;
+}
+
 // ── Queries ──────────────────────────────────────────────────────
 export const queries = {
   insertConversation: db.prepare(
@@ -161,6 +184,39 @@ export const queries = {
     "SELECT * FROM conversations WHERE session_id = ? ORDER BY created_at ASC LIMIT 50"
   ),
   clearConversations: db.prepare("DELETE FROM conversations WHERE session_id = ?"),
+
+  // Voice log queries — returns sessions grouped by calendar day (UTC+8)
+  listVoiceLogDays: db.prepare(`
+    SELECT
+      date(created_at, 'unixepoch', '+8 hours') AS day,
+      COUNT(DISTINCT session_id) AS session_count,
+      COUNT(*) AS message_count,
+      MIN(created_at) AS first_ts,
+      MAX(created_at) AS last_ts
+    FROM conversations
+    WHERE role IN ('user','assistant')
+    GROUP BY day
+    ORDER BY day DESC
+    LIMIT 90
+  `),
+  listVoiceSessionsByDay: db.prepare(`
+    SELECT
+      session_id,
+      MIN(created_at) AS started_at,
+      MAX(created_at) AS ended_at,
+      COUNT(*) AS message_count
+    FROM conversations
+    WHERE role IN ('user','assistant')
+      AND date(created_at, 'unixepoch', '+8 hours') = ?
+    GROUP BY session_id
+    ORDER BY started_at ASC
+  `),
+  getVoiceSession: db.prepare(`
+    SELECT id, session_id, role, content, created_at
+    FROM conversations
+    WHERE session_id = ? AND role IN ('user','assistant')
+    ORDER BY created_at ASC
+  `),
 
   insertCleaningRecord: db.prepare(
     "INSERT INTO cleaning_records (rooms, mode, triggered_by, duration_s, area_m2) VALUES (?, ?, ?, ?, ?)"

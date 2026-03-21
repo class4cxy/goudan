@@ -77,6 +77,18 @@ class ConversationManagerClass {
 
   private responseTimer: NodeJS.Timeout | null = null
   private listenTimer: NodeJS.Timeout | null = null
+  /**
+   * LLM 流仍在运行（包含工具调用阶段）时为 true。
+   * speak_end 到达时若此标志为 true，说明当前播完的只是中间句（LLM 还在调工具）；
+   * 暂存该事件，待流结束后补触发 LISTENING，避免状态机提前结束当前轮次。
+   */
+  private isStreaming = false
+
+  /**
+   * 流式期间到达的 speak_end 被跳过时标记为 true，
+   * 流结束后补触发 LISTENING，而非等 30s 兜底计时器。
+   */
+  private pendingSpeakEnd = false
 
   // ─── 启动（由 conversation/index.ts 调用） ───────────────────────────────
 
@@ -110,12 +122,18 @@ class ConversationManagerClass {
       this.pendingEmotion = e.payload.emotion
     })
 
-    // TTS 全部句子播完 → 立即回 LISTENING，等用户继续说
+    // TTS 全部句子播完 → 若 LLM 流已结束则进 LISTENING；否则暂存，等流结束后补触发
     Spine.subscribe<AudioSpeakEndPayload>(['sense.audio.speak_end'], () => {
       if (this.state === 'SPEAKING') {
-        console.log('[ConvManager] TTS 播完，→ LISTENING（等待用户继续）')
-        this._clearResponseTimer()
-        this._startListeningAfterSpeak()
+        if (this.isStreaming) {
+          // LLM 仍在运行（工具调用轮次未完），此 speak_end 可能是中间句子播完，暂存
+          console.log('[ConvManager] TTS 中间句播完，LLM 仍在流式输出，暂存 speak_end')
+          this.pendingSpeakEnd = true
+        } else {
+          console.log('[ConvManager] TTS 播完，→ LISTENING（等待用户继续）')
+          this._clearResponseTimer()
+          this._startListeningAfterSpeak()
+        }
       }
     })
 
@@ -215,6 +233,9 @@ class ConversationManagerClass {
     this.queue = []
     this.context.reset()
     this.pendingEmotion = 'calm'
+    // 唤醒打断时，丢弃上一轮 LLM 的流状态，防止旧流的 .then() 干扰新会话
+    this.isStreaming = false
+    this.pendingSpeakEnd = false
 
     if (this.state === 'SPEAKING') {
       // 打断当前 TTS，先说一句应答让用户感知到
@@ -257,6 +278,7 @@ class ConversationManagerClass {
   private _startThinking(userText: string, interruptCurrent = false): void {
     resetIdleTimer()
     this.state = 'THINKING'
+    this.isStreaming = true
     console.log(`[ConvManager] → THINKING，用户：${userText.slice(0, 40)}`)
 
     const emotion = this.pendingEmotion
@@ -275,16 +297,26 @@ class ConversationManagerClass {
         summary: `语音回复第 ${sentenceCount} 句："${sentence.slice(0, 40)}"`,
       })
     }, undefined, ALL_TOOLS).then((fullText) => {
+      this.isStreaming = false
       this.context.addAssistant(fullText)
       if (this.state === 'SPEAKING') {
-        // 正常路径：等 Platform 的 speak_end 事件，此处只启动兜底计时器
-        this._startResponseWait()
+        if (this.pendingSpeakEnd) {
+          // 流式期间 speak_end 被暂存（最后一句 TTS 已播完），直接进 LISTENING
+          console.log('[ConvManager] 流结束，补处理暂存的 speak_end → LISTENING')
+          this.pendingSpeakEnd = false
+          this._clearResponseTimer()
+          this._startListeningAfterSpeak()
+        } else {
+          // TTS 还在播，等待 speak_end 或兜底计时器
+          this._startResponseWait()
+        }
       } else {
         // LLM 只调了工具没有生成口语回复（state 仍为 THINKING）→ 直接回 IDLE
         console.log('[ConvManager] LLM 仅工具调用，无口语输出，→ IDLE')
         this._toIdle()
       }
     }).catch((err) => {
+      this.isStreaming = false
       console.error('[ConvManager] LLM 出错：', err)
       this._toIdle()
     })
@@ -317,6 +349,7 @@ class ConversationManagerClass {
 
   private _speakActiveLLM(req: ConvRequest): void {
     this.state = 'THINKING'
+    this.isStreaming = true
     console.log(`[ConvManager] → THINKING（主动 LLM），source=${req.source}`)
 
     let sentenceCount = 0
@@ -331,11 +364,13 @@ class ConversationManagerClass {
         summary: `主动发言 LLM 第 ${sentenceCount} 句（${req.source}）："${sentence.slice(0, 40)}"`,
       })
     }, req.triggerNote, ALL_TOOLS).then((fullText) => {
+      this.isStreaming = false
       if (fullText) this.context.addAssistant(fullText)
       if (this.state === 'SPEAKING') {
         this._startResponseWait()
       }
     }).catch((err) => {
+      this.isStreaming = false
       console.error('[ConvManager] 主动 LLM 出错：', err)
       this._toIdle()
     })

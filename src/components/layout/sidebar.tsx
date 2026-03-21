@@ -9,6 +9,7 @@ import {
   PlusIcon,
   Trash2Icon,
   MessageSquareIcon,
+  MicIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -187,6 +188,8 @@ interface SidebarProps {
   onSelectThread: (id: string) => void;
   onNewThread: () => void;
   threadRefresh: number;
+  onOpenVoiceLogs: () => void;
+  voiceLogsOpen: boolean;
 }
 
 export function Sidebar({
@@ -194,6 +197,8 @@ export function Sidebar({
   onSelectThread,
   onNewThread,
   threadRefresh,
+  onOpenVoiceLogs,
+  voiceLogsOpen,
 }: SidebarProps) {
   const { data, loading, refresh } = useRobotStatus();
   const platformOk = data?.platform_ok ?? false;
@@ -225,6 +230,22 @@ export function Sidebar({
         onNew={onNewThread}
         refresh={threadRefresh}
       />
+
+      {/* Voice Logs Entry */}
+      <div className="border-t border-border px-2 py-2 shrink-0">
+        <button
+          onClick={onOpenVoiceLogs}
+          className={cn(
+            "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors",
+            voiceLogsOpen
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:bg-zinc-800 hover:text-foreground"
+          )}
+        >
+          <MicIcon className="h-3.5 w-3.5 shrink-0" />
+          <span>语音对话记录</span>
+        </button>
+      </div>
 
       {/* Status Panel */}
       <div className="border-t border-border p-3 space-y-3 shrink-0">

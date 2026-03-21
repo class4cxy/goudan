@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { ChatThread } from "@/components/chat/thread";
 import { Providers } from "@/components/providers";
+import { VoiceLogsPanel } from "@/components/voice-logs/panel";
 
 function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -12,17 +13,19 @@ function genId(): string {
 export default function HomePage() {
   const [activeThreadId, setActiveThreadId] = useState<string>(genId);
   const [threadRefresh, setThreadRefresh] = useState(0);
+  const [showVoiceLogs, setShowVoiceLogs] = useState(false);
 
   const handleNewThread = useCallback(() => {
     setActiveThreadId(genId());
     setThreadRefresh((n) => n + 1);
+    setShowVoiceLogs(false);
   }, []);
 
   const handleSelectThread = useCallback((id: string) => {
     setActiveThreadId(id);
+    setShowVoiceLogs(false);
   }, []);
 
-  // AI 回复完成后触发一次侧边栏刷新（更新会话标题）
   const handleAssistantReply = useCallback(() => {
     setThreadRefresh((n) => n + 1);
   }, []);
@@ -34,11 +37,17 @@ export default function HomePage() {
         onSelectThread={handleSelectThread}
         onNewThread={handleNewThread}
         threadRefresh={threadRefresh}
+        onOpenVoiceLogs={() => setShowVoiceLogs(true)}
+        voiceLogsOpen={showVoiceLogs}
       />
       <main className="flex flex-1 flex-col overflow-hidden">
-        <Providers threadId={activeThreadId} onAssistantReply={handleAssistantReply}>
-          <ChatThread />
-        </Providers>
+        {showVoiceLogs ? (
+          <VoiceLogsPanel onClose={() => setShowVoiceLogs(false)} />
+        ) : (
+          <Providers threadId={activeThreadId} onAssistantReply={handleAssistantReply}>
+            <ChatThread />
+          </Providers>
+        )}
       </main>
     </div>
   );

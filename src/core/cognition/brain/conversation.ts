@@ -56,7 +56,9 @@ export async function generateVoiceResponse(
     system: systemPrompt,
     messages,
     // 语音场景允许长回答（如讲故事），不对输出 token 做硬上限。
-    ...(hasTools ? { tools, stopWhen: stepCountIs(5) } : {}),
+    // 新闻/天气等场景需要多轮 searchWeb + fetchWebPage，5 步不够用会截断最终文本生成；
+    // 10 步兼顾安全上限与实际搜索深度（2~4 次搜索 + 2~4 次抓页 + 1 次生成文本）。
+    ...(hasTools ? { tools, stopWhen: stepCountIs(10) } : {}),
   } as Parameters<typeof streamText>[0])
 
   let buffer = ''
