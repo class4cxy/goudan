@@ -14,6 +14,7 @@ import {
   ActionBarPrimitive,
   BranchPickerPrimitive,
   useAui,
+  useAuiState,
   type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
 import {
@@ -147,6 +148,7 @@ type RecordState = "idle" | "recording" | "processing";
 
 function HoldMicButton() {
   const aui = useAui();
+  const isRunning = useAuiState((s) => s.thread.isRunning);
   const [state, setState] = useState<RecordState>("idle");
   const recognitionRef = useRef<AnyRecognition | null>(null);
   const isHoldingRef = useRef(false);
@@ -221,12 +223,12 @@ function HoldMicButton() {
     stopRecording();
   }, [stopRecording]);
 
-  // AI 回复结束后切回 idle
+  // AI 回复结束（isRunning: true → false）时切回 idle
   useEffect(() => {
-    return aui.thread().unstable_on("run-start", () => {
-      setState("processing");
-    });
-  }, [aui]);
+    if (!isRunning && state === "processing") {
+      setState("idle");
+    }
+  }, [isRunning, state]);
 
   if (!isSupported) {
     return (
