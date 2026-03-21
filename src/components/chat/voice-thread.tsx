@@ -46,6 +46,13 @@ function getSupportedMimeType(): string {
   return "";
 }
 
+/** 若仍有 live 的音频轨则复用，避免同页反复 getUserMedia（家庭内网可减少授权打扰） */
+function reuseLiveMicStream(existing: MediaStream | null): MediaStream | null {
+  if (!existing) return null;
+  const live = existing.getAudioTracks().filter((t) => t.readyState === "live");
+  return live.length > 0 ? existing : null;
+}
+
 // ── Tool fallback ─────────────────────────────────────────────────
 const FallbackToolUI: ToolCallMessagePartComponent = ({ toolName, status }) => {
   const running = status.type === "running" || status.type === "requires-action";
@@ -148,6 +155,8 @@ function HoldMicButton() {
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
   const isHoldingRef = useRef(false);
+  /** 手指仍按住（含 await getUserMedia 期间）；false 表示已松开，不应再启动本轮录制 */
+  const pointerDownRef = useRef(false);
 
   const startRecording = useCallback(async () => {
     if (isHoldingRef.current) return;
@@ -156,8 +165,24 @@ function HoldMicButton() {
     chunksRef.current = [];
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
+      let acquiredFreshStream = false;
+      let stream = reuseLiveMicStream(streamRef.current);
+      if (!stream) {
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = stream;
+        acquiredFreshStream = true;
+      }
+
+      if (!pointerDownRef.current) {
+        isHoldingRef.current = false;
+        if (acquiredFreshStream) {
+          stream.getTracks().forEach((t) => t.stop());
+          streamRef.current = null;
+        }
+        return;
+      }
 
       const mimeType = getSupportedMimeType();
       const mr = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
@@ -167,10 +192,9 @@ function HoldMicButton() {
       };
 
       mr.onstop = async () => {
-        // 停止所有轨道，释放麦克风
-        stream.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
         isHoldingRef.current = false;
+        mediaRecorderRef.current = null;
+        // 不 stop 轨道：同页会话内复用麦克风流，离开页面时在 effect 里统一释放
 
         const blob = new Blob(chunksRef.current, { type: mr.mimeType || "audio/webm" });
         if (blob.size < 1000) {
@@ -232,11 +256,13 @@ function HoldMicButton() {
   // 防止页面滚动 / iOS 长按上下文菜单
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
+    pointerDownRef.current = true;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     void startRecording();
   }, [startRecording]);
 
   const handlePointerUp = useCallback(() => {
+    pointerDownRef.current = false;
     stopRecording();
   }, [stopRecording]);
 
@@ -302,6 +328,9 @@ function HoldMicButton() {
       {/* 操作提示 */}
       <p className="text-xs text-muted-foreground">
         {state === "idle" ? "按住说话" : " "}
+      </p>
+      <p className="text-[11px] leading-snug text-muted-foreground/80 text-center max-w-[280px] px-2">
+        家庭使用：在浏览器「网站设置 → 麦克风」中将本站设为「允许」；本页首次授权后会保持连接，无需每次再点允许。
       </p>
     </div>
   );
