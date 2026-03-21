@@ -70,10 +70,23 @@ function ProvidersInner({
   initialMessages?: UIMessage[];
   onAssistantReply?: () => void;
 }) {
+  // voiceMode 用 ref 持有最新值，避免重建 transport
+  const voiceMode = useSyncExternalStore(
+    voiceModeStore.subscribe,
+    voiceModeStore.getSnapshot,
+    voiceModeStore.getServerSnapshot,
+  );
+  const voiceModeRef = useRef(voiceMode);
+  useEffect(() => { voiceModeRef.current = voiceMode; }, [voiceMode]);
+
+  // body 为函数形式（Resolvable），每次请求时动态读取最新 voiceMode
   const transport = useMemo(
-    () => new AssistantChatTransport({ api: "/api/chat", body: { threadId } }),
+    () => new AssistantChatTransport({
+      api: "/api/chat",
+      body: () => ({ threadId, voiceMode: voiceModeRef.current }),
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
+    [threadId]
   );
 
   const runtime = useChatRuntime({
@@ -81,78 +94,20 @@ function ProvidersInner({
     ...(initialMessages ? { messages: initialMessages } : {}),
   });
 
-  // 订阅 runtime 线程状态变化：当 AI 回复完成（status 从 running → idle）时
-  // 主动调标题生成接口，拿到结果后再通知外层刷新侧边栏，确保标题已就绪
-  const voiceMode = useSyncExternalStore(
-    voiceModeStore.subscribe,
-    voiceModeStore.getSnapshot,
-    voiceModeStore.getServerSnapshot,
-  );
-
+  // 订阅 runtime 线程状态变化：当 AI 回复完成（running→idle）时触发标题生成
   const prevRunning = useRef(false);
   useEffect(() => {
+    if (!onAssistantReply) return;
     return runtime.thread.subscribe(() => {
       const isRunning = runtime.thread.getState().isRunning;
       const wasRunning = prevRunning.current;
       prevRunning.current = isRunning;
-
-      if (!wasRunning || isRunning) return; // 只处理 running→idle 的边沿
-
-      // 触发标题生成 + 外层回调
-      if (onAssistantReply) {
+      if (wasRunning && !isRunning) {
         fetch(`/api/threads/${threadId}/title`, { method: "POST" })
-          .finally(() => onAssistantReply());
+          .finally(() => onAssistantReply!());
       }
-
-      // ── 外放模式：将最新 assistant 消息全文发送到 Platform TTS ──
-      console.log("[VoiceMode] 回复完成，voiceMode =", voiceMode);
-      if (!voiceMode) return;
-
-      const threadState = runtime.thread.getState();
-      const messages = threadState.messages as Array<{
-        role: string;
-        content?: Array<{ type: string; text?: string }>;
-        // assistant-ui 不同版本可能用 parts 而非 content
-        parts?: Array<{ type: string; text?: string }>;
-      }>;
-      console.log("[VoiceMode] 消息总数：", messages.length);
-
-      const lastMsg = [...messages].reverse().find((m) => m.role === "assistant");
-      console.log("[VoiceMode] 最新 assistant 消息：", JSON.stringify(lastMsg, null, 2));
-
-      if (!lastMsg) {
-        console.warn("[VoiceMode] 未找到 assistant 消息，跳过 speak");
-        return;
-      }
-
-      // 兼容 content 和 parts 两种结构
-      const parts = lastMsg.content ?? lastMsg.parts ?? [];
-      const text = parts
-        .filter((p) => p.type === "text" && typeof p.text === "string")
-        .map((p) => p.text as string)
-        .join("")
-        .trim();
-
-      console.log("[VoiceMode] 提取到文字：", JSON.stringify(text));
-
-      if (!text) {
-        console.warn("[VoiceMode] 提取文字为空，跳过 speak");
-        return;
-      }
-
-      fetch("/api/speak", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      })
-        .then((r) => {
-          console.log("[VoiceMode] /api/speak 响应：", r.status);
-          return r.json();
-        })
-        .then((data) => console.log("[VoiceMode] /api/speak 结果：", data))
-        .catch((err) => console.error("[VoiceMode] speak fetch 失败：", err));
     });
-  }, [runtime, threadId, onAssistantReply, voiceMode]);
+  }, [runtime, threadId, onAssistantReply]);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
