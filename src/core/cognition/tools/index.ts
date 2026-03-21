@@ -16,7 +16,6 @@ import { navigateTo } from "@/core/cognition/tools/motor";
 import { getPowerStatus } from "@/core/cognition/tools/power";
 import { startExploring, stopExploring, getMapStatus, getMapImage } from "@/core/cognition/tools/slam";
 import { searchWeb, fetchWebPage } from "@/core/cognition/tools/search";
-import { playMusic, controlMusic, getMusicStatus, listLocalMusic } from "@/core/cognition/tools/music";
 import type { ScheduledTask } from "@/lib/db";
 
 export const ALL_TOOLS = {
@@ -41,10 +40,6 @@ export const ALL_TOOLS = {
   getMapImage,
   searchWeb,
   fetchWebPage,
-  playMusic,
-  controlMusic,
-  getMusicStatus,
-  listLocalMusic,
 };
 
 /** 将 tools 注入 brain/task，由 scheduler 调用 */
