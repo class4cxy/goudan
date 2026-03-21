@@ -1,11 +1,15 @@
 /**
  * server-https.mjs — 生产环境 HTTPS 服务器
  * ==========================================
- * 用 Node.js https 模块包装 Next.js，让 `next start` 支持 HTTPS。
+ * 用 Node.js https 模块包装 Next.js（与 `next build` 产物配合，等同带 TLS 的 `next start`）。
  *
- * 使用前提：已运行 npm run setup:https 生成 certs/cert.pem 和 certs/key.pem。
+ * 证书：pnpm setup:https → certs/key.pem、certs/cert.pem（与 dev:https 共用）。
  *
- * 启动：npm run start:https
+ * 启动：
+ *   - 手动：pnpm build && pnpm start:https
+ *   - PM2：pnpm build && pm2 start ecosystem.config.cjs（home-agent 即本脚本）
+ *
+ * 端口：PORT（默认 3000）仅 HTTP→HTTPS 301；HTTPS_PORT（默认 3443）为站点入口。
  */
 
 import https from "https";
@@ -32,7 +36,7 @@ createServer((req, res) => {
   const host = req.headers.host?.replace(/:\d+$/, "") ?? "localhost";
   res.writeHead(301, { Location: `https://${host}:${HTTPS_PORT}${req.url}` });
   res.end();
-}).listen(PORT, () => {
+}).listen(PORT, "0.0.0.0", () => {
   console.log(`[HTTPS Server] HTTP :${PORT} → HTTPS :${HTTPS_PORT} 重定向已启动`);
 });
 
