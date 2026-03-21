@@ -307,50 +307,43 @@ function HoldMicButton() {
   };
 
   return (
-    <div className="flex flex-col items-center gap-3">
+    <div className="flex flex-col items-center gap-1.5">
       {/* 错误提示 */}
       {error && (
-        <p className="text-xs text-red-400 text-center px-4">{error}</p>
+        <p className="text-xs text-red-400 text-center px-2">{error}</p>
       )}
-      {/* 状态文字 */}
-      <p className="text-xs text-muted-foreground h-4">{statusText[state]}</p>
+      {/* 状态文字 + 操作提示合并为一行，节省垂直空间 */}
+      <p className="text-xs text-muted-foreground h-4">
+        {state === "idle" ? "按住说话" : statusText[state]}
+      </p>
 
-      {/* 外圈脉冲 */}
+      {/* 外圈脉冲 + 主按钮 */}
       <div className="relative flex items-center justify-center">
         {state === "recording" && (
           <>
-            <span className="absolute h-28 w-28 rounded-full bg-primary/20 animate-ping" />
-            <span className="absolute h-24 w-24 rounded-full bg-primary/10 animate-pulse" />
+            <span className="absolute h-20 w-20 rounded-full bg-primary/20 animate-ping" />
+            <span className="absolute h-16 w-16 rounded-full bg-primary/10 animate-pulse" />
           </>
         )}
         {(state === "transcribing" || state === "processing") && (
-          <span className="absolute h-24 w-24 rounded-full bg-zinc-700/40 animate-pulse" />
+          <span className="absolute h-16 w-16 rounded-full bg-zinc-700/40 animate-pulse" />
         )}
 
-        {/* 主按钮 */}
         <button
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
           disabled={disabled}
           className={cn(
-            "relative z-10 flex h-20 w-20 select-none touch-none items-center justify-center rounded-full transition-all duration-150 shadow-lg",
+            "relative z-10 flex h-14 w-14 select-none touch-none items-center justify-center rounded-full transition-all duration-150 shadow-lg",
             state === "idle" && "bg-primary text-primary-foreground active:scale-95",
             state === "recording" && "bg-red-500 text-white scale-110",
             (state === "transcribing" || state === "processing") && "bg-zinc-700 text-zinc-400 cursor-not-allowed",
           )}
         >
-          <MicIcon className={cn("h-8 w-8", state === "recording" && "animate-pulse")} />
+          <MicIcon className={cn("h-6 w-6", state === "recording" && "animate-pulse")} />
         </button>
       </div>
-
-      {/* 操作提示 */}
-      <p className="text-xs text-muted-foreground">
-        {state === "idle" ? "按住说话" : " "}
-      </p>
-      <p className="text-[11px] leading-snug text-muted-foreground/80 text-center max-w-[280px] px-2">
-        家庭使用：在浏览器「网站设置 → 麦克风」中将本站设为「允许」；本页首次授权后会保持连接，无需每次再点允许。
-      </p>
     </div>
   );
 }
@@ -429,13 +422,13 @@ export function VoiceThread() {
 
       {/* 滚动到底部 */}
       <ThreadPrimitive.ScrollToBottom asChild>
-        <button className="absolute right-4 bottom-44 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-zinc-900 shadow-lg opacity-0 transition-opacity data-[visible]:opacity-100 hover:bg-zinc-800">
+        <button className="absolute right-4 bottom-28 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-zinc-900 shadow-lg opacity-0 transition-opacity data-[visible]:opacity-100 hover:bg-zinc-800">
           <ScrollDownIcon className="h-4 w-4" />
         </button>
       </ThreadPrimitive.ScrollToBottom>
 
-      {/* 底部麦克风区 — shrink-0 固定高度，不被消息区压缩 */}
-      <div className="shrink-0 border-t border-border bg-zinc-950 flex flex-col items-center pt-6 pb-10">
+      {/* 底部麦克风区 — 紧凑布局，为聊天区留出更多空间 */}
+      <div className="shrink-0 border-t border-border bg-zinc-950 flex flex-col items-center py-3 pb-6">
         <HoldMicButton />
       </div>
 
