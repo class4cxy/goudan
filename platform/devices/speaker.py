@@ -46,7 +46,7 @@ DEFAULT_VOLUME = "+100%"   # edge-tts 最大输出音量
 SOFTWARE_GAIN = float(os.environ.get("SPEAKER_SOFTWARE_GAIN", "2"))  # 软件增益倍数，USB 声卡输出偏小时补偿；超过 1.0 会 clip 削波
 
 # 播放后端：alsa（aplay，USB声卡默认）| pulseaudio（pacat，蓝牙/PipeWire）
-SPEAKER_BACKEND = os.environ.get("SPEAKER_BACKEND", "alsa").lower()
+SPEAKER_BACKEND = os.environ.get("SPEAKER_BACKEND", "pulseaudio").lower()
 
 # ALSA 后端：aplay 输出设备（SPEAKER_BACKEND=alsa 时生效）
 ALSA_DEVICE = os.environ.get("SPEAKER_ALSA_DEVICE", "default")
