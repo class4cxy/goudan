@@ -211,7 +211,7 @@ class Microphone:
     # ─── 启动 ─────────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        """启动持续采集循环（阻塞，应在独立 task 中运行）。"""
+        """启动持续采集循环（阻塞，应在独立 task 中运行）。自动重启，防止 ALSA xrun 后 stream 静默死亡。"""
         logger.info("[Microphone] start() 被调用")
         try:
             import sounddevice as sd
@@ -220,10 +220,21 @@ class Microphone:
             logger.error(f"[Microphone] 缺少依赖或系统库：{e}，请安装 sounddevice/webrtcvad 及 libportaudio2")
             return
 
-        try:
-            await self._run(sd, webrtcvad)
-        except Exception as e:
-            logger.error(f"[Microphone] 采集任务异常退出：{e}", exc_info=True)
+        restart_delay = 3.0
+        while True:
+            try:
+                await self._run(sd, webrtcvad)
+                # _run 正常返回（理论上不应发生，加日志便于排查）
+                logger.warning("[Microphone] 采集循环意外退出，%.0fs 后重启...", restart_delay)
+            except Exception as e:
+                logger.error(f"[Microphone] 采集任务异常退出：{e}", exc_info=True)
+                logger.warning("[Microphone] %.0fs 后自动重启...", restart_delay)
+            # 重启前重置 VAD 状态，防止脏状态带入新 stream
+            self._is_speaking = False
+            self._speech_buffer.clear()
+            self._silent_frames = 0
+            self._voiced_frames = 0
+            await asyncio.sleep(restart_delay)
 
     async def _run(self, sd, webrtcvad) -> None:
         """实际采集逻辑（从 start 分离，方便统一捕获异常）。"""
@@ -260,10 +271,15 @@ class Microphone:
 
         # 用于在回调线程积累 overflow 计数，每秒最多打印一次，避免 I/O 卡回调
         _overflow_count = [0]
+        # 看门狗：记录最后一次回调的时间戳，主循环检测回调是否静默停止
+        _last_callback_at = [time.monotonic()]
+        # 回调静默超过此时长（秒）视为 ALSA stream 死亡，触发重启
+        _CALLBACK_WATCHDOG_S = 10.0
 
-        def _sd_callback(indata: np.ndarray, frames: int, time, status):
+        def _sd_callback(indata: np.ndarray, frames: int, time_info, status):
             # 回调运行在 sounddevice 专用音频线程，必须快速返回。
             # 仅累计 overflow 计数；VAD 状态机同步完成；只在语音事件时才跨线程通知 asyncio。
+            _last_callback_at[0] = time.monotonic()
             if status and status.input_overflow:
                 _overflow_count[0] += 1
 
@@ -297,6 +313,14 @@ class Microphone:
             while True:
                 await asyncio.sleep(5)
                 _flush_overflow_log()
+                # 看门狗：检测回调是否静默停止（ALSA xrun 恢复失败后 stream 死亡）
+                since_last_cb = time.monotonic() - _last_callback_at[0]
+                if since_last_cb > _CALLBACK_WATCHDOG_S:
+                    logger.error(
+                        "[Microphone] 回调静默 %.0fs，ALSA stream 可能已死亡，触发重启",
+                        since_last_cb,
+                    )
+                    return  # 退出 _run，由 start() 的重启循环接管
                 # mute 超时兜底：防止 Speaker 异常导致麦克风永久静音
                 if self._is_muted and self._muted_at > 0 and MUTE_TIMEOUT_S > 0:
                     elapsed = time.monotonic() - self._muted_at

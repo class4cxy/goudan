@@ -95,6 +95,10 @@ class ConnectionManager:
                 dead.append(ws)
         for ws in dead:
             self.active.remove(ws)
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     async def send(self, ws: WebSocket, message: dict) -> None:
         await ws.send_json(message)
@@ -1270,6 +1274,13 @@ async def websocket_spine(ws: WebSocket):
             await _handle_action(data)
     except WebSocketDisconnect:
         ws_manager.disconnect(ws)
+    except Exception as e:
+        logger.warning("[WS] 连接异常退出：%s", e)
+        ws_manager.disconnect(ws)
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
 
 async def _handle_action(message: dict) -> None:

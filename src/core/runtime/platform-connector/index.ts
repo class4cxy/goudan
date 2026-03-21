@@ -114,6 +114,7 @@ class PlatformConnectorClass {
 
     this.ws.on('message', (raw: WebSocket.RawData) => {
       try {
+        console.log('[PlatformConnector] 收到消息：', raw.toString())
         const msg = JSON.parse(raw.toString()) as { type: string; payload: Record<string, unknown> }
         this._handleInbound(msg)
       } catch (e) {
