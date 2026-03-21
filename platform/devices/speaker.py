@@ -67,10 +67,10 @@ SPEAKER_BACKEND = os.environ.get("SPEAKER_BACKEND", "pulseaudio").lower()
 # ALSA 后端：aplay 输出设备（SPEAKER_BACKEND=alsa 时生效）
 ALSA_DEVICE = os.environ.get("SPEAKER_ALSA_DEVICE", "default")
 
-# 单句播放超时（秒）：包裹 pacat/aplay 的 proc.communicate（写 stdin 并等进程退出）。
-# 若蓝牙/PipeWire 阻塞、子进程僵死，超过此时长则 kill。应大于「本句 PCM 实际播放时长」；
-# 长段落可调大 SPEAKER_PLAY_TIMEOUT_S。与 AudioEffector 的 speak_end 兜底（AUDIO_SPEAK_END_FALLBACK_MS）相互独立。
+# 单句播放超时基准（秒）：实际等待时间为 max(本值, est_pcm_时长 + SPEAKER_PLAY_TIMEOUT_MARGIN_S)，
+# 避免长句 est>27s 时被误杀；短句仍以本值为上限检测 pacat 卡死。
 PLAY_TIMEOUT_S = float(os.environ.get("SPEAKER_PLAY_TIMEOUT_S", "27"))
+PLAY_TIMEOUT_MARGIN_S = float(os.environ.get("SPEAKER_PLAY_TIMEOUT_MARGIN_S", "8"))
 # TTS 合成网络请求超时（秒）：edge-tts 依赖 Microsoft 服务器，网络抖动时需兜底
 TTS_TIMEOUT_S = float(os.environ.get("SPEAKER_TTS_TIMEOUT_S", "15"))
 # Piper 本地合成超时（秒）：长句在弱 CPU 上可能较慢
@@ -415,12 +415,16 @@ class Speaker:
             ]
             backend_label = "aplay"
 
+        play_wait_s = max(PLAY_TIMEOUT_S, est_play_s + PLAY_TIMEOUT_MARGIN_S)
+
         logger.info(
-            "[Speaker] play_subproc ts=%s backend=%s est_audio_s=%.2f timeout_cap_s=%.0f",
+            "[Speaker] play_subproc ts=%s backend=%s est_audio_s=%.2f wait_cap_s=%.1f (floor=%.0f+margin=%.0f)",
             _utc_iso_ms(),
             backend_label,
             est_play_s,
+            play_wait_s,
             PLAY_TIMEOUT_S,
+            PLAY_TIMEOUT_MARGIN_S,
         )
 
         proc: asyncio.subprocess.Process | None = None
@@ -432,7 +436,7 @@ class Speaker:
             )
             _, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(input=pcm_bytes),
-                timeout=PLAY_TIMEOUT_S,
+                timeout=play_wait_s,
             )
             if proc.returncode != 0:
                 logger.warning(
@@ -452,9 +456,9 @@ class Speaker:
             if proc:
                 proc.kill()
             logger.error(
-                "[Speaker] %s 播放超时（cap=%.0fs，本句 PCM 估算 %.2fs），已强制终止",
+                "[Speaker] %s 播放超时（wait_cap=%.1fs，本句 PCM 估算 %.2fs），已强制终止",
                 backend_label,
-                PLAY_TIMEOUT_S,
+                play_wait_s,
                 est_play_s,
             )
         except asyncio.CancelledError:
