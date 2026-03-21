@@ -37,8 +37,14 @@ import io
 import logging
 import os
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_iso_ms() -> str:
+    """UTC 时间戳（毫秒），与 Node `new Date().toISOString()` 对齐便于对日志。"""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"  # 微软 Azure 晓晓，自然中文女声
 DEFAULT_RATE = "+0%"
@@ -51,7 +57,9 @@ SPEAKER_BACKEND = os.environ.get("SPEAKER_BACKEND", "pulseaudio").lower()
 # ALSA 后端：aplay 输出设备（SPEAKER_BACKEND=alsa 时生效）
 ALSA_DEVICE = os.environ.get("SPEAKER_ALSA_DEVICE", "default")
 
-# 单句播放超时（秒）：播放进程若超时将被 kill()，比 AudioEffector fallback 短 3s 以便日志定位
+# 单句播放超时（秒）：包裹 pacat/aplay 的 proc.communicate（写 stdin 并等进程退出）。
+# 若蓝牙/PipeWire 阻塞、子进程僵死，超过此时长则 kill。应大于「本句 PCM 实际播放时长」；
+# 长段落可调大 SPEAKER_PLAY_TIMEOUT_S。与 AudioEffector 的 speak_end 兜底（AUDIO_SPEAK_END_FALLBACK_MS）相互独立。
 PLAY_TIMEOUT_S = float(os.environ.get("SPEAKER_PLAY_TIMEOUT_S", "27"))
 # TTS 合成网络请求超时（秒）：edge-tts 依赖 Microsoft 服务器，网络抖动时需兜底
 TTS_TIMEOUT_S = float(os.environ.get("SPEAKER_TTS_TIMEOUT_S", "15"))
@@ -169,6 +177,12 @@ class Speaker:
                 if generation != self._generation:
                     continue
 
+                logger.info(
+                    "[Speaker] tts_start ts=%s chars=%d preview=%s",
+                    _utc_iso_ms(),
+                    len(text),
+                    (text[:36] + "…") if len(text) > 36 else text,
+                )
                 self._current_tts_task = asyncio.create_task(self._tts(text))
                 try:
                     audio_data = await self._current_tts_task
@@ -183,6 +197,11 @@ class Speaker:
                 if generation != self._generation:
                     continue
                 if audio_data:
+                    logger.info(
+                        "[Speaker] tts_ready ts=%s mp3_bytes=%d",
+                        _utc_iso_ms(),
+                        len(audio_data),
+                    )
                     await self._ready_queue.put({
                         "audio_data": audio_data,
                         "generation": generation,
@@ -206,6 +225,12 @@ class Speaker:
                     continue
                 if not isinstance(audio_data, (bytes, bytearray)) or len(audio_data) == 0:
                     continue
+
+                logger.info(
+                    "[Speaker] play_dequeue ts=%s mp3_bytes=%d",
+                    _utc_iso_ms(),
+                    len(audio_data),
+                )
 
                 if self._on_play_start:
                     self._on_play_start()
@@ -289,6 +314,8 @@ class Speaker:
             logger.error("[Speaker] MP3 解码失败：%s", e)
             return
 
+        est_play_s = len(pcm_bytes) / float(sample_rate * max(channels, 1) * 2)
+
         if SPEAKER_BACKEND == "pulseaudio":
             # pacat —— PulseAudio/PipeWire 兼容层
             # 写入 default sink；蓝牙连接后 BluetoothManager 已将其设为 BT sink
@@ -316,6 +343,14 @@ class Speaker:
                 "-",
             ]
             backend_label = "aplay"
+
+        logger.info(
+            "[Speaker] play_subproc ts=%s backend=%s est_audio_s=%.2f timeout_cap_s=%.0f",
+            _utc_iso_ms(),
+            backend_label,
+            est_play_s,
+            PLAY_TIMEOUT_S,
+        )
 
         proc: asyncio.subprocess.Process | None = None
         try:
@@ -345,7 +380,12 @@ class Speaker:
         except asyncio.TimeoutError:
             if proc:
                 proc.kill()
-            logger.error("[Speaker] %s 播放超时（%.0fs），已强制终止", backend_label, PLAY_TIMEOUT_S)
+            logger.error(
+                "[Speaker] %s 播放超时（cap=%.0fs，本句 PCM 估算 %.2fs），已强制终止",
+                backend_label,
+                PLAY_TIMEOUT_S,
+                est_play_s,
+            )
         except asyncio.CancelledError:
             if proc:
                 proc.kill()

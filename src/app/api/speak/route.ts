@@ -1,6 +1,5 @@
 import { PlatformConnector } from "@/core/runtime/platform-connector";
 import { stripMarkdown } from "@/lib/strip-markdown";
-import { stripMarkdown } from "@/lib/strip-markdown";
 
 export const runtime = "nodejs";
 
@@ -25,7 +24,10 @@ export async function POST(req: Request) {
   }
 
   const connected = PlatformConnector.isConnected;
-  console.log(`[/api/speak] isConnected=${connected}，发送 TTS："${plainText.slice(0, 80)}${plainText.length > 80 ? "…" : ""}"`);
+  const ts = new Date().toISOString();
+  console.log(
+    `[/api/speak] ${ts} isConnected=${connected}，发送 TTS："${plainText.slice(0, 80)}${plainText.length > 80 ? "…" : ""}"`,
+  );
 
   PlatformConnector.send({
     type: "action.speak",

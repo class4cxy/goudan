@@ -16,6 +16,7 @@ import os
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1355,6 +1356,15 @@ async def _handle_action(message: dict) -> None:
         text = payload.get("text", "")
         interrupt = payload.get("interrupt_current", False)
         if text:
+            ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            prev = (text[:48] + "…") if len(text) > 48 else text
+            logger.info(
+                "[WS] action.speak recv ts=%s chars=%d interrupt=%s preview=%s",
+                ts,
+                len(text),
+                interrupt,
+                prev,
+            )
             await audio_effector.enqueue(text, interrupt=interrupt)
 
     elif msg_type == "action.motor":

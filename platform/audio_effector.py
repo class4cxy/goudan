@@ -17,10 +17,15 @@ Chat 模式（蓝牙外放）：
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 
 from devices import Speaker
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_iso_ms() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class AudioEffector:
@@ -63,6 +68,15 @@ class AudioEffector:
         """将播放指令加入队列（委托给 Speaker）。"""
         await self._speaker.enqueue(text, interrupt)
         self._speak_seq += 1
+        t = text.strip()
+        logger.info(
+            "[AudioEffector] speak_enqueued ts=%s seq=%d chars=%d interrupt=%s preview=%s",
+            _utc_iso_ms(),
+            self._speak_seq,
+            len(t),
+            interrupt,
+            (t[:36] + "…") if len(t) > 36 else t,
+        )
         if self._idle_confirm_task and not self._idle_confirm_task.done():
             self._idle_confirm_task.cancel()
         self._schedule_fallback(self._speak_seq)

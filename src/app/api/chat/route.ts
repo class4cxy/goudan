@@ -23,7 +23,10 @@ function firstText(msg: UIMessage): string | null {
 function sendTtsChunk(text: string, interrupt = false): void {
   const trimmed = text.trim();
   if (!trimmed) return;
-  console.log(`[TTS] 推送句子（${trimmed.length}字）："${trimmed.slice(0, 40)}${trimmed.length > 40 ? "…" : ""}"`);
+  const ts = new Date().toISOString();
+  console.log(
+    `[TTS] ${ts} 推送句子（${trimmed.length}字）："${trimmed.slice(0, 40)}${trimmed.length > 40 ? "…" : ""}"`,
+  );
   PlatformConnector.send({
     type: "action.speak",
     payload: { text: trimmed, interrupt_current: interrupt },
