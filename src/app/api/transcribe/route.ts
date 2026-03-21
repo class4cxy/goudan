@@ -2,23 +2,21 @@
  * POST /api/transcribe
  * ====================
  * 接收前端录制的音频 Blob（multipart form-data，字段名 "audio"），
- * 通过 typeless-sdk 完成：
- *   1. STT  — 复用项目已有的 SPEECH_API_URL / SPEECH_API_KEY（Qwen ASR 风格）
- *   2. LLM  — 复用项目已有的 DEEPSEEK_API_KEY 进行润色
+ * 调用 SPEECH_API_URL / SPEECH_API_KEY（Qwen ASR 风格）完成 STT。
  *
- * 无需额外配置，所有凭据均来自项目已有环境变量。
+ * 默认只做 STT，返回原始转录文本。
+ * 设置 STT_POLISH=true 才会额外用 LLM（DEEPSEEK_API_KEY）润色。
  *
- * 返回：{ text: string; transcript: string; polishedText: string }
+ * 返回：{ text: string; transcript: string }
  */
 
 import { type SttAdapter, VoiceTextSDK } from "typeless-sdk";
 
 export const runtime = "nodejs";
 
-// ── STT 模型（可通过 SPEECH_STT_MODEL 覆盖） ─────────────────────
 const STT_MODEL = process.env.SPEECH_STT_MODEL ?? "qwen3-asr-flash";
 
-// ── 音频 MIME → 扩展名 ────────────────────────────────────────────
+// ── 音频 MIME 工具 ────────────────────────────────────────────────
 function mimeToExt(mimeType: string): string {
   const m = mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
   if (m.includes("webm")) return "webm";
@@ -26,7 +24,7 @@ function mimeToExt(mimeType: string): string {
   if (m.includes("mp4") || m.includes("m4a")) return "m4a";
   if (m.includes("wav"))  return "wav";
   if (m.includes("mpeg") || m.includes("mp3")) return "mp3";
-  return "webm"; // 浏览器默认 MediaRecorder 格式
+  return "webm";
 }
 
 function normMime(mimeType: string): string {
@@ -37,7 +35,6 @@ function normMime(mimeType: string): string {
   return "audio/webm";
 }
 
-// ── Blob → base64 data URI ────────────────────────────────────────
 async function toDataUri(blob: Blob, contentType: string): Promise<string> {
   const buf = await blob.arrayBuffer();
   const bytes = new Uint8Array(buf);
@@ -46,30 +43,20 @@ async function toDataUri(blob: Blob, contentType: string): Promise<string> {
   return `data:${contentType};base64,${btoa(binary)}`;
 }
 
-// ── 单例 SDK ──────────────────────────────────────────────────────
+// ── SDK 单例 ──────────────────────────────────────────────────────
 function buildSdk(): VoiceTextSDK {
   const speechApiUrl = process.env.SPEECH_API_URL;
   const speechApiKey = process.env.SPEECH_API_KEY;
-  const deepseekKey  = process.env.DEEPSEEK_API_KEY;
-  const deepseekBase = process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
 
   if (!speechApiUrl || !speechApiKey) {
-    throw new Error(
-      "[/api/transcribe] 缺少 SPEECH_API_URL 或 SPEECH_API_KEY，请在 .env 中配置"
-    );
-  }
-  if (!deepseekKey) {
-    throw new Error(
-      "[/api/transcribe] 缺少 DEEPSEEK_API_KEY，请在 .env 中配置"
-    );
+    throw new Error("[transcribe] 缺少 SPEECH_API_URL 或 SPEECH_API_KEY");
   }
 
-  // 自定义 STT adapter：Qwen ASR 风格（base64 audio via chat/completions）
+  // 自定义 STT adapter：Qwen ASR 风格（base64 via chat/completions）
   const stt: SttAdapter = async (audio, filename = "audio.webm") => {
     if (typeof audio === "string") {
-      throw new Error("file-path input is not supported in server context");
+      throw new Error("file-path 不支持");
     }
-
     const ext = filename.split(".").pop()?.toLowerCase() ?? "webm";
     const contentType = normMime(`audio/${ext}`);
     const blob = new Blob([new Uint8Array(audio)], { type: contentType });
@@ -105,6 +92,10 @@ function buildSdk(): VoiceTextSDK {
     return (data.choices?.[0]?.message?.content ?? "").trim();
   };
 
+  // LLM 仅在 polish 模式下使用，key 缺失时降级到纯 STT
+  const deepseekKey  = process.env.DEEPSEEK_API_KEY ?? "";
+  const deepseekBase = process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
+
   return new VoiceTextSDK({
     stt,
     llm: {
@@ -126,7 +117,6 @@ function getSdk(): VoiceTextSDK {
   return globalThis.__typelessSdk;
 }
 
-// ── 词库 ─────────────────────────────────────────────────────────
 function getVocabulary(): string[] {
   try {
     return JSON.parse(process.env.STT_VOCABULARY ?? "[]") as string[];
@@ -161,25 +151,31 @@ export async function POST(req: Request) {
   const ext      = mimeToExt(audioField.type || "audio/webm");
   const filename = `recording.${ext}`;
   const buffer   = Buffer.from(await audioField.arrayBuffer());
-  const polish   = process.env.STT_POLISH !== "false";
-  const vocabulary = getVocabulary();
 
-  console.log(
-    `[/api/transcribe] ${(buffer.byteLength / 1024).toFixed(1)}KB (${audioField.type}) polish=${polish} vocab=${vocabulary.length}`
-  );
+  console.log(`[transcribe] ${(buffer.byteLength / 1024).toFixed(1)}KB (${audioField.type})`);
 
   try {
-    const { transcript, polishedText } = await sdk.process(buffer, {
-      vocabulary,
-      appType: "chat",
-      polish,
-    } as Parameters<typeof sdk.process>[1] & { filename?: string });
+    // Step 1: STT
+    const transcript = await sdk.transcribe(buffer, filename);
+    console.log(`[transcribe] STT → "${transcript}"`);
 
-    console.log(`[/api/transcribe] "${transcript}" → "${polishedText}"`);
-    return Response.json({ text: polish ? polishedText : transcript, transcript, polishedText });
+    if (!transcript) {
+      return Response.json({ error: "转录结果为空" }, { status: 422 });
+    }
+
+    // Step 2: LLM 润色（去口头禅、添加标点，appType=general 纯整理不生成回复）
+    const vocabulary = getVocabulary();
+    const text = await sdk.polish(transcript, { appType: "general", vocabulary })
+      .catch((err: unknown) => {
+        console.warn("[transcribe] LLM 润色失败，回退原始转录：", err);
+        return transcript;
+      });
+    console.log(`[transcribe] polish → "${text}"`);
+
+    return Response.json({ text, transcript });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[/api/transcribe] 失败：", msg);
+    console.error("[transcribe] 失败：", msg);
     return Response.json({ error: msg }, { status: 500 });
   }
 }
