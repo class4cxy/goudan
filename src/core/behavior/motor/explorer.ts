@@ -626,11 +626,5 @@ class ExplorerClass {
   }
 }
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __explorer: ExplorerClass | undefined
-}
-
-export const Explorer =
-  globalThis.__explorer ??
-  (globalThis.__explorer = new ExplorerClass())
+const g = globalThis as typeof globalThis & { __explorer?: ExplorerClass }
+export const Explorer = g.__explorer ?? (g.__explorer = new ExplorerClass())

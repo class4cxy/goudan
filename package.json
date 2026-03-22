@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "dev:https": "next dev --experimental-https --experimental-https-key ./certs/key.pem --experimental-https-cert ./certs/cert.pem",
-    "build": "next build",
+    "build": "rm -fr build && next build",
     "start": "next start",
     "start:https": "node server-https.mjs",
     "platform": "cd platform && python3 -m uvicorn main:app --host 0.0.0.0 --port 8001 --reload",
