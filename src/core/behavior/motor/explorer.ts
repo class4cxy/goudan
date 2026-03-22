@@ -162,8 +162,8 @@ interface ExplorerLogRecord {
 
 // ── Explorer 单例 ─────────────────────────────────────────────────
 
-/** 大角度逃脱旋转时长（秒）：约 90°，用于振荡时跳出障碍物簇 */
-const ESCAPE_ROTATE_DURATION = Number(process.env.EXPLORER_ESCAPE_ROTATE_DURATION ?? '1.75')
+/** 脱困转向时长（秒）：小角度累计（3×TURN_STEP），用户反馈足以脱困，不再用大角度 */
+const ESCAPE_TURN_DURATION = TURN_STEP_DURATION * 3
 
 /** 雷达装在车身最高处时设为 1，启用保守前进（缩短步长、降速、更早停车） */
 const HIGH_LIDAR = process.env.EXPLORER_HIGH_LIDAR === '1'
@@ -388,8 +388,8 @@ class ExplorerClass {
         this._lastEmergencySide = side
 
         if (this._oscillationCount >= 2) {
-          // ── 振荡确认：大角度旋转 + 长距离后退跳出障碍物簇 ─────
-          console.warn(`[Explorer] 振荡检测（${this._oscillationCount} 次交替），执行大角度逃脱`)
+          // ── 振荡检测：不再执行大角度逃脱，仅重置后走正常小角度 _turnUntilClear ────
+          console.warn(`[Explorer] 振荡检测（${this._oscillationCount} 次交替），改用小角度脱困`)
           if (LOG_DATA || LOG_VERBOSE) {
             this._logRecord({
               ev: 'emergency_oscillation',
@@ -399,30 +399,12 @@ class ExplorerClass {
               frontLeft,
               frontRight,
               side,
-              motor: side === 'left' ? 'turn_right' : 'turn_left',
-              motorDuration: ESCAPE_ROTATE_DURATION,
+              motor: 'turnUntilClear',
+              motorDuration: ESCAPE_TURN_DURATION,
             })
           }
           this._oscillationCount = 0
           this._lastEmergencySide = null
-          this._motor('stop')
-          await this._sleep(150)
-          // 先大角度旋转（约 120°）彻底改变方向
-          const escapeDir = side === 'left' ? 'turn_right' : 'turn_left'
-          this._motor(escapeDir, TURN_SPEED, ESCAPE_ROTATE_DURATION)
-          await this._sleep(ESCAPE_ROTATE_DURATION * 1000 + 150)
-          if (ALLOW_REVERSE) {
-            // 可选：保留后退能力（默认关闭）
-            this._motor('backward', this._forwardSpeed(), BIG_REVERSE_DURATION)
-            await this._sleep(BIG_REVERSE_DURATION * 1000 + 150)
-          } else {
-            // 默认：仅停+转，不后退
-            this._motor('stop')
-            await this._sleep(120)
-          }
-          this._noProgressBursts = 0
-          this._inplaceTurnStreak = 0
-          continue
         }
 
         this._motor('stop')
@@ -463,8 +445,8 @@ class ExplorerClass {
             await this._sleep(reverseDur * 1000 + 150)
           } else {
             const forceDir = sideLeft >= sideRight ? 'turn_left' : 'turn_right'
-            this._motor(forceDir, TURN_SPEED, ESCAPE_ROTATE_DURATION)
-            await this._sleep(ESCAPE_ROTATE_DURATION * 1000 + 120)
+            this._motor(forceDir, TURN_SPEED, ESCAPE_TURN_DURATION)
+            await this._sleep(ESCAPE_TURN_DURATION * 1000 + 120)
           }
           if (this._stuckCount >= 2) this._stuckCount = 0
           this._noProgressBursts = 0
@@ -505,15 +487,15 @@ class ExplorerClass {
           this._inplaceTurnStreak = 0
         }
         if (this._inplaceTurnStreak >= MAX_INPLACE_TURNS * 2) {
-          // 仍在原地转：执行“后退+大角度换向”强脱困，避免 SLAM 在原地发散。
+          // 仍在原地转：执行“后退+换向”强脱困，避免 SLAM 在原地发散。
           console.warn('[Explorer] 连续原地转向未脱困，执行强制换向脱困')
           const escapeDir = turnDir === 'turn_left' ? 'turn_right' : 'turn_left'
           if (ALLOW_REVERSE) {
             this._motor('backward', this._forwardSpeed(), REVERSE_DURATION)
             await this._sleep(REVERSE_DURATION * 1000 + 120)
           }
-          this._motor(escapeDir, TURN_SPEED, ESCAPE_ROTATE_DURATION)
-          await this._sleep(ESCAPE_ROTATE_DURATION * 1000 + 120)
+          this._motor(escapeDir, TURN_SPEED, ESCAPE_TURN_DURATION)
+          await this._sleep(ESCAPE_TURN_DURATION * 1000 + 120)
           this._inplaceTurnStreak = 0
           this._lastTurnDir = escapeDir
         }
@@ -561,8 +543,8 @@ class ExplorerClass {
             await this._sleep(BIG_REVERSE_DURATION * 1000 + 150)
           }
           const hardTurnDir = sideLeft >= sideRight ? 'turn_left' : 'turn_right'
-          this._motor(hardTurnDir, TURN_SPEED, ESCAPE_ROTATE_DURATION)
-          await this._sleep(ESCAPE_ROTATE_DURATION * 1000 + 150)
+          this._motor(hardTurnDir, TURN_SPEED, ESCAPE_TURN_DURATION)
+          await this._sleep(ESCAPE_TURN_DURATION * 1000 + 150)
           this._noProgressBursts = 0
         }
       }

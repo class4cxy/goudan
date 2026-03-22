@@ -24,6 +24,7 @@ breezyslam 原理：RMHC（随机重启爬山）+ 扫描匹配，无需里程计
 import base64
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -73,15 +74,16 @@ def _make_ld06_laser():
 
 @dataclass
 class SlamConfig:
-    # 地图尺寸
-    map_size_pixels: int   = 500     # 地图分辨率（正方形边长，像素）
-    map_size_meters: float = 10.0    # 地图覆盖的物理范围（米），决定精度
+    # 地图尺寸（增大可减轻轮廓消失：小地图易被新扫描覆盖）
+    map_size_pixels: int   = 1000    # 地图分辨率（正方形边长，像素），原 500
+    map_size_meters: float = 20.0    # 地图覆盖的物理范围（米），原 10
 
     # breezyslam 算法参数
     map_quality: int       = 50      # 地图更新强度 0–255，越大越快但越噪
     hole_width_mm: float   = 320.0   # 最小可通行孔宽（mm）；机器车宽约 300mm，加 20mm 余量
     sigma_xy_mm: float     = 100.0   # 位置不确定度（mm），值越大探索越激进
     sigma_theta_deg: float = 20.0    # 角度不确定度（度）
+    max_search_iter: int   = 1500    # RMHC 搜索迭代上限，默认 1000，提高可增强定位稳定性
 
     # 广播频率
     pose_broadcast_every: int = 10   # 每 N 圈广播一次位姿（10 圈 = 1Hz）
@@ -96,6 +98,18 @@ class SlamConfig:
 
 
 DEFAULT_SLAM_CONFIG = SlamConfig()
+
+
+def config_from_env() -> SlamConfig:
+    """从环境变量构建配置，便于调试地图轮廓消失等问题。"""
+    return SlamConfig(
+        map_size_pixels=int(os.environ.get("SLAM_MAP_SIZE_PIXELS", "1000")),
+        map_size_meters=float(os.environ.get("SLAM_MAP_SIZE_METERS", "20")),
+        map_quality=int(os.environ.get("SLAM_MAP_QUALITY", "50")),
+        sigma_xy_mm=float(os.environ.get("SLAM_SIGMA_XY_MM", "100")),
+        sigma_theta_deg=float(os.environ.get("SLAM_SIGMA_THETA_DEG", "20")),
+        max_search_iter=int(os.environ.get("SLAM_MAX_SEARCH_ITER", "1500")),
+    )
 
 
 # ── SlamEngine ────────────────────────────────────────────────────
@@ -173,6 +187,7 @@ class SlamEngine:
                 hole_width_mm=self._cfg.hole_width_mm,
                 sigma_xy_mm=self._cfg.sigma_xy_mm,
                 sigma_theta_degrees=self._cfg.sigma_theta_deg,
+                max_search_iter=self._cfg.max_search_iter,
             )
             self._map_bytes = bytearray(self._cfg.map_size_pixels ** 2)
             self._pose = (0.0, 0.0, 0.0)

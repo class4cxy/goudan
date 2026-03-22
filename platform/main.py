@@ -29,7 +29,7 @@ from pydantic import BaseModel
 
 from audio_effector import AudioEffector
 from lidar_sensor import LidarSensor
-from slam import SlamEngine, SlamConfig
+from slam import SlamEngine, SlamConfig, config_from_env
 from devices import (
     Chassis, DEFAULT_CONFIG,
     CameraMount, DEFAULT_CAMERA_CONFIG,
@@ -127,8 +127,8 @@ cam = Camera(CaptureConfig(
     snapshot_dir=os.environ.get("CAMERA_SNAPSHOT_DIR", "/tmp/roborock_snapshots"),
 ))
 
-# SLAM 引擎 + 激光雷达应用层
-slam_engine  = SlamEngine(SlamConfig())
+# SLAM 引擎 + 激光雷达应用层（配置可从 SLAM_MAP_QUALITY 等环境变量覆盖）
+slam_engine  = SlamEngine(config_from_env())
 lidar_sensor = LidarSensor(ws_manager, slam_engine)
 
 # 电源传感器（INA219，低电量时 WebSocket 广播报警）
