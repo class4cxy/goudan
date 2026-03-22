@@ -19,9 +19,18 @@ const MOTION_COMMANDS: Record<string, ActionMotorPayload['command']> = {
   向左转:     'turn_left',
   右转:       'turn_right',
   向右转:     'turn_right',
+  掉头:       'turn_left',
+  调头:       'turn_left',
   停止:       'stop',
   停:         'stop',
 }
+
+/** 左转/右转默认时长（秒），约 30°，避免持续转动角度过大 */
+const TURN_DEFAULT_DURATION = 0.45
+/** 掉头默认时长（秒），约 180° */
+const TURN_AROUND_DURATION = 2.2
+/** 语音/手动控制默认速度（0–100），仅影响 navigateTo，与 Explorer 建图速度独立 */
+const MANUAL_DEFAULT_SPEED = Number(process.env.MANUAL_DEFAULT_SPEED ?? process.env.CHASSIS_DEFAULT_SPEED ?? '35')
 
 /**
  * navigateTo — 机器车移动控制
@@ -44,12 +53,12 @@ export const navigateTo = tool({
       .min(0)
       .max(100)
       .optional()
-      .describe('速度 0–100，不填使用默认速度（45）'),
+      .describe('速度 0–100，不填使用 MANUAL_DEFAULT_SPEED（默认 35），与建图速度独立'),
     duration: z
       .number()
       .positive()
       .optional()
-      .describe('持续时间（秒），不填则持续运动直到下一条指令'),
+      .describe('持续时间（秒）。左转/右转不填时默认 0.45s（约 30°）；掉头不填时默认 2.2s（约 180°）；其他动作不填则持续直到下一条指令'),
     reason: z
       .string()
       .optional()
@@ -57,25 +66,34 @@ export const navigateTo = tool({
   }),
   execute: async ({ destination, speed, duration, reason }) => {
     try {
-      const motorCommand = MOTION_COMMANDS[destination.trim()]
+      const dest = destination.trim()
+      const motorCommand = MOTION_COMMANDS[dest]
 
       if (motorCommand) {
+        // 转向动作：未指定 duration 时使用合理默认，避免转动角度过大
+        let effectiveDuration = duration
+        if (effectiveDuration == null && (motorCommand === 'turn_left' || motorCommand === 'turn_right')) {
+          effectiveDuration = ['掉头', '调头'].includes(dest) ? TURN_AROUND_DURATION : TURN_DEFAULT_DURATION
+        }
+        // 语音/手动：未指定 speed 时用 MANUAL_DEFAULT_SPEED，与 Explorer 建图速度独立
+        const effectiveSpeed = speed ?? (motorCommand !== 'stop' ? MANUAL_DEFAULT_SPEED : undefined)
+
         // 简单动作：直接发 action.motor，MotorEffector 会立即转发给 Platform 执行
         Spine.publish<ActionMotorPayload>({
           type: 'action.motor',
           priority: 'HIGH',
           source: 'brain',
-          payload: { command: motorCommand, speed, duration },
-          summary: `电机指令：${motorCommand}${speed != null ? ` 速度${speed}%` : ''}${duration != null ? ` 持续${duration}s` : ''}`,
+          payload: { command: motorCommand, speed: effectiveSpeed, duration: effectiveDuration ?? duration },
+          summary: `电机指令：${motorCommand}${effectiveSpeed != null ? ` 速度${effectiveSpeed}%` : ''}${effectiveDuration != null ? ` 持续${effectiveDuration}s` : ''}`,
         })
 
         return {
           success: true,
           mode: 'motor',
           command: motorCommand,
-          speed: speed ?? '默认(45)',
-          duration: duration ?? '持续到下一条指令',
-          message: `已执行：${destination}${duration ? `，持续 ${duration} 秒` : ''}`,
+          speed: effectiveSpeed ?? '默认',
+          duration: effectiveDuration ?? duration ?? '持续到下一条指令',
+          message: `已执行：${destination}${effectiveDuration != null ? `，持续 ${effectiveDuration} 秒` : ''}`,
         }
       } else {
         // 房间导航：记录意图，等地图模块就绪后规划路径

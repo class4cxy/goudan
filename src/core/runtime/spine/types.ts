@@ -147,7 +147,7 @@ export interface ActionNavigatePayload {
 
 export interface ActionMotorPayload {
   command: 'forward' | 'backward' | 'turn_left' | 'turn_right' | 'stop'
-  speed?: number                // 0–100，不传使用 Bridge 默认速度（45）
+  speed?: number                // 0–100，不传使用 Bridge 默认速度（CHASSIS_DEFAULT_SPEED，默认 35）
   duration?: number             // 秒，不传=持续运动直到下一条指令（由 NavigationThalamus 控制）
 }
 

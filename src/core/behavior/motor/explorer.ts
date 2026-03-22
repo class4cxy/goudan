@@ -61,7 +61,7 @@ const BURST_DURATION_HIGH_LIDAR = 0.22
 const FORWARD_SPEED_HIGH_LIDAR = 22
 
 // ── 运动参数 ─────────────────────────────────────────────────────
-const FORWARD_SPEED      = Number(process.env.EXPLORER_FORWARD_SPEED ?? '20')
+const FORWARD_SPEED      = Number(process.env.EXPLORER_FORWARD_SPEED ?? '28')
 const TURN_SPEED         = Number(process.env.EXPLORER_TURN_SPEED ?? '20')
 /**
  * 正常脉冲前进时长（秒）。
@@ -74,8 +74,8 @@ const ESCAPE_BURST_DURATION = 0.8
 const REVERSE_DURATION   = 0.6
 /** 卡死时大后退时长（秒）：连续卡死后彻底换区域 */
 const BIG_REVERSE_DURATION = 1.5
-/** 单次转向时长（秒） */
-const TURN_STEP_DURATION = Number(process.env.EXPLORER_TURN_STEP_DURATION ?? '0.4')
+/** 单次转向时长（秒）：调小可减少每步转动角度 */
+const TURN_STEP_DURATION = Number(process.env.EXPLORER_TURN_STEP_DURATION ?? '0.3')
 /** 单次转向最大步数（超过后换方向+后退） */
 const MAX_TURN_STEPS     = Number(process.env.EXPLORER_MAX_TURN_STEPS ?? '6')
 
@@ -121,8 +121,8 @@ interface UltrasonicStatus {
 
 // ── Explorer 单例 ─────────────────────────────────────────────────
 
-/** 大角度逃脱旋转时长（秒）：约 120°，用于振荡时跳出障碍物簇 */
-const ESCAPE_ROTATE_DURATION = 1.8
+/** 大角度逃脱旋转时长（秒）：约 80°，用于振荡时跳出障碍物簇（调小可减少转动角度） */
+const ESCAPE_ROTATE_DURATION = Number(process.env.EXPLORER_ESCAPE_ROTATE_DURATION ?? '1.2')
 
 /** 雷达装在车身最高处时设为 1，启用保守前进（缩短步长、降速、更早停车） */
 const HIGH_LIDAR = process.env.EXPLORER_HIGH_LIDAR === '1'

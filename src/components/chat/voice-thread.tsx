@@ -13,6 +13,7 @@ import {
   MessagePrimitive,
   ActionBarPrimitive,
   BranchPickerPrimitive,
+  useMessagePartText,
   useAui,
   useAuiState,
   type ToolCallMessagePartComponent,
@@ -106,6 +107,13 @@ function VoiceBubble({ text }: { text: string }) {
   );
 }
 
+// ── 用户消息中的 Text 部件：用语音气泡替代原文（需在 MessagePart 上下文中用 hook 取文本）
+function UserMessageTextPart() {
+  const part = useMessagePartText();
+  const text = part && "text" in part ? part.text : "";
+  return <VoiceBubble text={text} />;
+}
+
 // ── Messages ──────────────────────────────────────────────────────
 function UserMessage() {
   return (
@@ -113,7 +121,7 @@ function UserMessage() {
       <div className="max-w-[80%] min-w-0">
         <MessagePrimitive.Parts
           components={{
-            Text: ({ text }) => <VoiceBubble text={text} />,
+            Text: UserMessageTextPart,
           }}
         />
       </div>
