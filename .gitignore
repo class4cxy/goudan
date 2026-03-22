@@ -29,3 +29,6 @@ dist/
 
 # HTTPS 本地证书（mkcert 生成，不提交）
 certs/
+
+# Explorer 建图调试日志（EXPLORER_LOG_DATA=1 生成）
+logs/

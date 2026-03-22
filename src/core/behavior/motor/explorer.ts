@@ -27,9 +27,16 @@
  *     步长、降速），减轻碰撞；根本解决需保险杠或底盘高度测距等硬件。
  */
 
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { PlatformConnector } from '../../runtime/platform-connector'
 
 const PLATFORM_URL = process.env.PLATFORM_URL ?? 'http://localhost:8001'
+
+/** 启用时将每轮决策数据写入 logs/explorer_<timestamp>.jsonl，便于事后分析乱转/斜顶等问题 */
+const LOG_DATA = process.env.EXPLORER_LOG_DATA === '1'
+/** 启用时在控制台输出结构化决策日志（可单独用，也可与 LOG_DATA 同时开） */
+const LOG_VERBOSE = process.env.EXPLORER_LOG_VERBOSE === '1'
 
 // ── 距离阈值（按实际车体几何推算）──────────────────────────────────
 //
@@ -119,6 +126,40 @@ interface UltrasonicStatus {
   } | null
 }
 
+/** 决策记录类型，用于 JSONL 日志（EXPLORER_LOG_DATA=1） */
+interface ExplorerLogRecord {
+  ev: string
+  ts: number
+  cycle?: number
+  front?: number
+  frontLeft?: number
+  frontRight?: number
+  sideLeft?: number
+  sideRight?: number
+  ultrasonicCm?: number | null
+  ultraHardStop?: boolean
+  ultraCaution?: boolean
+  frontStopMm?: number
+  clearMm?: number
+  diagStopMm?: number
+  isEmergency?: boolean
+  decision?: 'emergency' | 'turn' | 'forward'
+  motor?: string
+  motorSpeed?: number
+  motorDuration?: number
+  pose?: { x_mm: number; y_mm: number; theta_deg: number } | null
+  moved_mm?: number
+  stuckCount?: number
+  noProgressBursts?: number
+  inplaceTurnStreak?: number
+  oscillationCount?: number
+  turnStep?: number
+  turnSwitches?: number
+  lidarValidCount?: number
+  lidarTimestampMs?: number
+  [key: string]: unknown
+}
+
 // ── Explorer 单例 ─────────────────────────────────────────────────
 
 /** 大角度逃脱旋转时长（秒）：约 90°，用于振荡时跳出障碍物簇 */
@@ -174,6 +215,10 @@ class ExplorerClass {
   private _inplaceTurnStreak  = 0
   /** 上一次转向方向（用于小空间迟滞，避免左右来回抖动） */
   private _lastTurnDir: 'turn_left' | 'turn_right' | null = null
+  /** 主循环轮次计数，用于日志 */
+  private _cycleCount         = 0
+  /** 数据日志文件路径（LOG_DATA 时在 start 时创建） */
+  private _logPath: string | null = null
 
   get isRunning() { return this._running }
 
@@ -212,6 +257,20 @@ class ExplorerClass {
       return
     }
 
+    if (LOG_DATA) {
+      const logsDir = path.join(process.cwd(), 'logs')
+      try {
+        fs.mkdirSync(logsDir, { recursive: true })
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+        this._logPath = path.join(logsDir, `explorer_${stamp}.jsonl`)
+        fs.appendFileSync(this._logPath, `# EXPLORER_LOG_DATA start ${new Date().toISOString()}\n`)
+        console.log(`[Explorer] 数据日志写入: ${this._logPath}`)
+      } catch (e) {
+        console.warn('[Explorer] 创建日志文件失败:', e)
+        this._logPath = null
+      }
+    }
+
     console.log('[Explorer] 自主探索已启动')
     this._runLoop().catch((e) => console.error('[Explorer] 循环异常：', e))
   }
@@ -241,11 +300,13 @@ class ExplorerClass {
         continue
       }
 
-      const points = await this._fetchLidar()
-      if (!points) {
+      const lidarData = await this._fetchLidar()
+      if (!lidarData) {
         await this._sleep(200)
         continue
       }
+      const { points } = lidarData
+      this._cycleCount++
 
       // 五扇区
       // front：±15° 窄扇区，仅看正前，走廊侧壁不影响前进判断
@@ -262,6 +323,52 @@ class ExplorerClass {
       // 正前和对角使用不同阈值（避免对角远处障碍误触发紧急）
       const diagMin    = Math.min(frontLeft, frontRight)
       const isEmergency = front < this._frontStopMm() || diagMin < DIAG_STOP_MM || ultraHardStop
+
+      const frontStopMm = this._frontStopMm()
+      const clearMm = this._clearMm()
+
+      if (LOG_DATA || LOG_VERBOSE) {
+        const pose = await this._fetchPose()
+        const base: ExplorerLogRecord = {
+          ev: 'cycle',
+          ts: Date.now(),
+          cycle: this._cycleCount,
+          front,
+          frontLeft,
+          frontRight,
+          sideLeft,
+          sideRight,
+          ultrasonicCm: ultrasonicCm ?? null,
+          ultraHardStop,
+          ultraCaution,
+          frontStopMm,
+          clearMm,
+          diagStopMm: DIAG_STOP_MM,
+          isEmergency,
+          pose: pose ?? null,
+          stuckCount: this._stuckCount,
+          noProgressBursts: this._noProgressBursts,
+          inplaceTurnStreak: this._inplaceTurnStreak,
+          oscillationCount: this._oscillationCount,
+          lidarValidCount: lidarData.valid_count,
+          lidarTimestampMs: lidarData.timestamp_ms,
+        }
+        if (isEmergency) {
+          base.decision = 'emergency'
+          base.motor = 'stop'
+        } else if (front < clearMm || ultraCaution) {
+          base.decision = 'turn'
+          const turnDir = this._chooseTurnDir(frontLeft, frontRight, sideLeft, sideRight, true)
+          base.motor = turnDir
+          base.motorDuration = TURN_STEP_DURATION
+        } else {
+          base.decision = 'forward'
+          base.motor = 'forward'
+          base.motorSpeed = this._forwardSpeed()
+          base.motorDuration = this._burstDuration()
+        }
+        this._logRecord(base)
+      }
 
       if (isEmergency) {
         // ── 紧急避障 ─────────────────────────────────────────────
@@ -283,6 +390,19 @@ class ExplorerClass {
         if (this._oscillationCount >= 2) {
           // ── 振荡确认：大角度旋转 + 长距离后退跳出障碍物簇 ─────
           console.warn(`[Explorer] 振荡检测（${this._oscillationCount} 次交替），执行大角度逃脱`)
+          if (LOG_DATA || LOG_VERBOSE) {
+            this._logRecord({
+              ev: 'emergency_oscillation',
+              ts: Date.now(),
+              oscillationCount: this._oscillationCount,
+              front,
+              frontLeft,
+              frontRight,
+              side,
+              motor: side === 'left' ? 'turn_right' : 'turn_left',
+              motorDuration: ESCAPE_ROTATE_DURATION,
+            })
+          }
           this._oscillationCount = 0
           this._lastEmergencySide = null
           this._motor('stop')
@@ -325,6 +445,18 @@ class ExplorerClass {
           // 两个方向都没出路：卡死一次
           this._stuckCount++
           console.warn(`[Explorer] 卡死第 ${this._stuckCount} 次，执行强制换向`)
+          if (LOG_DATA || LOG_VERBOSE) {
+            this._logRecord({
+              ev: 'emergency_stuck',
+              ts: Date.now(),
+              stuckCount: this._stuckCount,
+              front,
+              frontLeft,
+              frontRight,
+              sideLeft,
+              sideRight,
+            })
+          }
           if (ALLOW_REVERSE) {
             const reverseDur = this._stuckCount >= 2 ? BIG_REVERSE_DURATION : REVERSE_DURATION
             this._motor('backward', this._forwardSpeed(), reverseDur)
@@ -396,8 +528,19 @@ class ExplorerClass {
         await this._forwardWithUltrasonicGuard(this._burstDuration(), this._forwardSpeed())
         const postPose = await this._fetchPose()
 
+        let moved = 0
         if (prePose && postPose) {
-          const moved = Math.hypot(postPose.x_mm - prePose.x_mm, postPose.y_mm - prePose.y_mm)
+          moved = Math.hypot(postPose.x_mm - prePose.x_mm, postPose.y_mm - prePose.y_mm)
+          if (LOG_DATA || LOG_VERBOSE) {
+            this._logRecord({
+              ev: 'forward_done',
+              ts: Date.now(),
+              cycle: this._cycleCount,
+              moved_mm: Math.round(moved * 10) / 10,
+              noProgressBursts: this._noProgressBursts,
+              pose: postPose,
+            })
+          }
           if (moved < PROGRESS_MIN_MOVE_MM) {
             this._noProgressBursts++
             console.warn(
@@ -469,8 +612,9 @@ class ExplorerClass {
       this._motor(currentDir, TURN_SPEED, TURN_STEP_DURATION)
       await this._sleep(TURN_STEP_DURATION * 1000 + 100)
 
-      const points = await this._fetchLidar()
-      if (!points) continue
+      const lidarData = await this._fetchLidar()
+      if (!lidarData) continue
+      const { points } = lidarData
 
       const front = this._minDist(points, -DRIVE_HALF_DEG, DRIVE_HALF_DEG)
       const frontLeft = this._minDist(points, -FRONT_HALF_DEG, -DRIVE_HALF_DEG)
@@ -480,6 +624,20 @@ class ExplorerClass {
         `[Explorer] 转向中（步 ${steps + 1}/${MAX_TURN_STEPS}，换向 ${switches} 次）：` +
         `正前=${front}mm 斜向=${diagClear}mm`
       )
+      if (LOG_DATA || LOG_VERBOSE) {
+        this._logRecord({
+          ev: 'turn_step',
+          ts: Date.now(),
+          turnStep: steps + 1,
+          turnSwitches: switches,
+          front,
+          frontLeft,
+          frontRight,
+          diagClear,
+          motor: currentDir,
+          motorDuration: TURN_STEP_DURATION,
+        })
+      }
 
       if (front > TURN_EXIT_MM || (front > this._frontStopMm() && diagClear > TURN_EXIT_DIAG_MM)) {
         console.log('[Explorer] 前方/斜向已开阔，脱困成功')
@@ -509,16 +667,36 @@ class ExplorerClass {
     return false
   }
 
-  // ── 工具方法 ────────────────────────────────────────────────────
+  // ── 日志与工具方法 ───────────────────────────────────────────────
 
-  private async _fetchLidar(): Promise<LidarPoint[] | null> {
+  private _logRecord(rec: ExplorerLogRecord): void {
+    const line = JSON.stringify(rec) + '\n'
+    if (LOG_VERBOSE) {
+      console.log(`[Explorer:${rec.ev}]`, JSON.stringify(rec))
+    }
+    if (LOG_DATA && this._logPath) {
+      fs.appendFile(this._logPath, line, (err) => {
+        if (err) console.warn('[Explorer] 日志写入失败:', err)
+      })
+    }
+  }
+
+  private async _fetchLidar(): Promise<{
+    points: LidarPoint[]
+    timestamp_ms?: number
+    valid_count?: number
+  } | null> {
     try {
       const res = await fetch(`${PLATFORM_URL}/lidar/scan/valid`, {
         signal: AbortSignal.timeout(600),
       })
       if (!res.ok) return null
-      const data = (await res.json()) as { points: LidarPoint[] }
-      return data.points.length > 0 ? data.points : null
+      const data = (await res.json()) as {
+        points: LidarPoint[]
+        timestamp_ms?: number
+        valid_count?: number
+      }
+      return data.points.length > 0 ? data : null
     } catch {
       return null
     }
@@ -572,6 +750,15 @@ class ExplorerClass {
         console.warn(
           `[Explorer] 超声波急停：${distCm.toFixed(1)}cm <= ${EFFECTIVE_ULTRASONIC_STOP_CM}cm`
         )
+        if (LOG_DATA || LOG_VERBOSE) {
+          this._logRecord({
+            ev: 'ultrasonic_stop',
+            ts: Date.now(),
+            ultrasonicCm: distCm,
+            ultrasonicStopCm: EFFECTIVE_ULTRASONIC_STOP_CM,
+            motor: 'stop',
+          })
+        }
         return false
       }
       const step = Math.min(FORWARD_GUARD_STEP_S, durationS - elapsed)

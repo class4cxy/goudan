@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
@@ -48,6 +49,9 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 建图调试：EXPLORER_DEBUG_LOG=1 时，记录 lidar/slam/ultrasonic 请求的响应摘要
+EXPLORER_DEBUG_LOG = os.environ.get("EXPLORER_DEBUG_LOG") == "1"
 
 TOKEN_FILE = Path(__file__).parent / ".roborock_token.json"
 
@@ -998,9 +1002,11 @@ async def lidar_scan_valid():
     """
     scan = lidar_sensor.device.latest_scan
     if scan is None:
+        if EXPLORER_DEBUG_LOG:
+            logger.info("[ExplorerDebug] GET /lidar/scan/valid -> 503 激光雷达未就绪")
         raise HTTPException(status_code=503, detail="激光雷达未就绪")
     valid = scan.valid_points
-    return {
+    out = {
         "timestamp_ms": scan.timestamp_ms,
         "rpm": round(scan.rpm, 1),
         "valid_count": len(valid),
@@ -1009,6 +1015,14 @@ async def lidar_scan_valid():
             for p in valid
         ],
     }
+    if EXPLORER_DEBUG_LOG:
+        logger.info(
+            "[ExplorerDebug] GET /lidar/scan/valid -> ok valid_count=%d ts=%d rpm=%.1f",
+            len(valid),
+            scan.timestamp_ms,
+            scan.rpm,
+        )
+    return out
 
 
 # ── SLAM 建图接口 ──────────────────────────────────────────────────
@@ -1084,9 +1098,19 @@ async def slam_pose():
     - theta_deg: 朝向角度（度，逆时针为正）
     """
     if not slam_engine.is_mapping and slam_engine.scan_count == 0:
+        if EXPLORER_DEBUG_LOG:
+            logger.info("[ExplorerDebug] GET /slam/pose -> 503 SLAM 未启动")
         raise HTTPException(status_code=503, detail="SLAM 未启动，请先调用 /slam/start")
     x, y, theta = slam_engine.get_pose()
-    return {"x_mm": round(x, 1), "y_mm": round(y, 1), "theta_deg": round(theta, 2)}
+    out = {"x_mm": round(x, 1), "y_mm": round(y, 1), "theta_deg": round(theta, 2)}
+    if EXPLORER_DEBUG_LOG:
+        logger.info(
+            "[ExplorerDebug] GET /slam/pose -> ok x_mm=%.1f y_mm=%.1f theta_deg=%.2f",
+            out["x_mm"],
+            out["y_mm"],
+            out["theta_deg"],
+        )
+    return out
 
 
 @app.get("/slam/map", summary="获取当前地图（PNG base64）")
@@ -1203,7 +1227,19 @@ async def ultrasonic_status():
       - trig_pin/echo_pin: GPIO 引脚配置（BCM）
       - latest:        最近一次测距读数（distance_cm / is_too_close）
     """
-    return ultrasonic.status
+    status = ultrasonic.status
+    if EXPLORER_DEBUG_LOG and status.get("latest"):
+        latest = status["latest"]
+        age_ms = int(time.time() * 1000) - latest.get("timestamp_ms", 0)
+        logger.info(
+            "[ExplorerDebug] GET /ultrasonic/status -> ok distance_cm=%.1f too_close=%s age_ms=%d",
+            latest.get("distance_cm", 0),
+            latest.get("is_too_close", False),
+            age_ms,
+        )
+    elif EXPLORER_DEBUG_LOG and not status.get("latest"):
+        logger.info("[ExplorerDebug] GET /ultrasonic/status -> ok latest=null")
+    return status
 
 
 @app.get("/ultrasonic/read", summary="执行一次超声波测距")
