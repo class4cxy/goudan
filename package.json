@@ -3,6 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "scripts": {
+    "postinstall": "node scripts/patch-assistant-ui-findlast.js",
     "dev": "next dev",
     "dev:https": "next dev --experimental-https --experimental-https-key ./certs/key.pem --experimental-https-cert ./certs/cert.pem",
     "build": "rm -fr build && next build",
