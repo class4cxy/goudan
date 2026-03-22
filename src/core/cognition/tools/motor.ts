@@ -25,10 +25,10 @@ const MOTION_COMMANDS: Record<string, ActionMotorPayload['command']> = {
   停:         'stop',
 }
 
-/** 左转/右转默认时长（秒），约 30°，避免持续转动角度过大 */
-const TURN_DEFAULT_DURATION = 0.45
-/** 掉头默认时长（秒），约 180° */
-const TURN_AROUND_DURATION = 2.2
+/** 左转/右转默认时长（秒），约 85°，可调 TURN_DEFAULT_DURATION 环境变量 */
+const TURN_DEFAULT_DURATION = Number(process.env.TURN_DEFAULT_DURATION ?? '0.85')
+/** 掉头默认时长（秒），约 175°，可调 TURN_AROUND_DURATION 环境变量 */
+const TURN_AROUND_DURATION = Number(process.env.TURN_AROUND_DURATION ?? '1.75')
 /** 语音/手动控制默认速度（0–100），仅影响 navigateTo，与 Explorer 建图速度独立 */
 const MANUAL_DEFAULT_SPEED = Number(process.env.MANUAL_DEFAULT_SPEED ?? process.env.CHASSIS_DEFAULT_SPEED ?? '35')
 
@@ -58,7 +58,7 @@ export const navigateTo = tool({
       .number()
       .positive()
       .optional()
-      .describe('持续时间（秒）。左转/右转不填时默认 0.45s（约 30°）；掉头不填时默认 2.2s（约 180°）；其他动作不填则持续直到下一条指令'),
+      .describe('持续时间（秒）。左转/右转不填时默认 0.85s（约 85°）；掉头不填时默认 1.75s（约 175°）；其他动作不填则持续直到下一条指令'),
     reason: z
       .string()
       .optional()

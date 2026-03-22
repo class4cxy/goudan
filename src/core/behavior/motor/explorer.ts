@@ -74,8 +74,8 @@ const ESCAPE_BURST_DURATION = 0.8
 const REVERSE_DURATION   = 0.6
 /** 卡死时大后退时长（秒）：连续卡死后彻底换区域 */
 const BIG_REVERSE_DURATION = 1.5
-/** 单次转向时长（秒）：调小可减少每步转动角度 */
-const TURN_STEP_DURATION = Number(process.env.EXPLORER_TURN_STEP_DURATION ?? '0.3')
+/** 单次转向时长（秒）：建图避障需足够转角，与语音左转/右转独立 */
+const TURN_STEP_DURATION = Number(process.env.EXPLORER_TURN_STEP_DURATION ?? '0.45')
 /** 单次转向最大步数（超过后换方向+后退） */
 const MAX_TURN_STEPS     = Number(process.env.EXPLORER_MAX_TURN_STEPS ?? '6')
 
@@ -121,8 +121,8 @@ interface UltrasonicStatus {
 
 // ── Explorer 单例 ─────────────────────────────────────────────────
 
-/** 大角度逃脱旋转时长（秒）：约 80°，用于振荡时跳出障碍物簇（调小可减少转动角度） */
-const ESCAPE_ROTATE_DURATION = Number(process.env.EXPLORER_ESCAPE_ROTATE_DURATION ?? '1.2')
+/** 大角度逃脱旋转时长（秒）：约 100°，用于振荡时跳出障碍物簇 */
+const ESCAPE_ROTATE_DURATION = Number(process.env.EXPLORER_ESCAPE_ROTATE_DURATION ?? '1.6')
 
 /** 雷达装在车身最高处时设为 1，启用保守前进（缩短步长、降速、更早停车） */
 const HIGH_LIDAR = process.env.EXPLORER_HIGH_LIDAR === '1'

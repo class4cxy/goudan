@@ -87,22 +87,24 @@ const FallbackToolUI: ToolCallMessagePartComponent = ({ toolName, status }) => {
 
 // ── 语音气泡：根据文字长度换算宽度（类似微信，无最长限制）
 function VoiceBubble({ text }: { text: string }) {
-  // 按字符数换算气泡宽度，约 5px/字，最小 56px；上限仅防布局溢出，语义上无最长限制
-  const widthPx = Math.max(56, Math.min(280, 56 + text.length * 5));
+  // 按字符数换算气泡宽度，约 5px/字，最小 72px 保证图标不被压缩；上限防布局溢出
+  const widthPx = Math.max(72, Math.min(280, 56 + text.length * 5));
   return (
     <div
       className="flex items-center gap-2 rounded-2xl rounded-br-sm bg-primary px-3.5 py-2.5 text-primary-foreground"
       style={{ width: widthPx }}
     >
-      <div className="flex-1 flex items-center justify-end gap-1 min-w-0">
+      <div className="flex-1 min-w-0 flex items-center justify-end gap-1 overflow-hidden">
         {/* 简易波形条，宽度随文字长度变化 */}
-        <span className="h-2 w-1 rounded-full bg-primary-foreground/50" />
-        <span className="h-2.5 w-1 rounded-full bg-primary-foreground/70" />
-        <span className="h-2 w-1 rounded-full bg-primary-foreground/50" />
-        <span className="h-3 w-1 rounded-full bg-primary-foreground/90" />
-        <span className="h-2 w-1 rounded-full bg-primary-foreground/50" />
+        <span className="h-2 w-1 rounded-full bg-primary-foreground/50 shrink-0" />
+        <span className="h-2.5 w-1 rounded-full bg-primary-foreground/70 shrink-0" />
+        <span className="h-2 w-1 rounded-full bg-primary-foreground/50 shrink-0" />
+        <span className="h-3 w-1 rounded-full bg-primary-foreground/90 shrink-0" />
+        <span className="h-2 w-1 rounded-full bg-primary-foreground/50 shrink-0" />
       </div>
-      <MicIcon className="h-4 w-4 shrink-0 opacity-90" />
+      <div className="flex h-5 w-5 shrink-0 items-center justify-center">
+        <MicIcon className="h-4 w-4 opacity-90" />
+      </div>
     </div>
   );
 }
