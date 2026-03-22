@@ -44,7 +44,7 @@ export const navigateTo = tool({
       .min(0)
       .max(100)
       .optional()
-      .describe('速度 0–100，不填使用默认速度（60）'),
+      .describe('速度 0–100，不填使用默认速度（45）'),
     duration: z
       .number()
       .positive()
@@ -73,7 +73,7 @@ export const navigateTo = tool({
           success: true,
           mode: 'motor',
           command: motorCommand,
-          speed: speed ?? '默认(60)',
+          speed: speed ?? '默认(45)',
           duration: duration ?? '持续到下一条指令',
           message: `已执行：${destination}${duration ? `，持续 ${duration} 秒` : ''}`,
         }

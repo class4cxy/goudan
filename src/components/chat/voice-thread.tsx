@@ -84,12 +84,38 @@ const FallbackToolUI: ToolCallMessagePartComponent = ({ toolName, status }) => {
   );
 };
 
+// ── 语音气泡：根据文字长度换算宽度（类似微信，无最长限制）
+function VoiceBubble({ text }: { text: string }) {
+  // 按字符数换算气泡宽度，约 5px/字，最小 56px；上限仅防布局溢出，语义上无最长限制
+  const widthPx = Math.max(56, Math.min(280, 56 + text.length * 5));
+  return (
+    <div
+      className="flex items-center gap-2 rounded-2xl rounded-br-sm bg-primary px-3.5 py-2.5 text-primary-foreground"
+      style={{ width: widthPx }}
+    >
+      <div className="flex-1 flex items-center justify-end gap-1 min-w-0">
+        {/* 简易波形条，宽度随文字长度变化 */}
+        <span className="h-2 w-1 rounded-full bg-primary-foreground/50" />
+        <span className="h-2.5 w-1 rounded-full bg-primary-foreground/70" />
+        <span className="h-2 w-1 rounded-full bg-primary-foreground/50" />
+        <span className="h-3 w-1 rounded-full bg-primary-foreground/90" />
+        <span className="h-2 w-1 rounded-full bg-primary-foreground/50" />
+      </div>
+      <MicIcon className="h-4 w-4 shrink-0 opacity-90" />
+    </div>
+  );
+}
+
 // ── Messages ──────────────────────────────────────────────────────
 function UserMessage() {
   return (
     <MessagePrimitive.Root className="flex justify-end gap-2 px-3 py-1.5">
-      <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-3.5 py-2 text-sm text-primary-foreground">
-        <MessagePrimitive.Parts />
+      <div className="max-w-[80%] min-w-0">
+        <MessagePrimitive.Parts
+          components={{
+            Text: ({ text }) => <VoiceBubble text={text} />,
+          }}
+        />
       </div>
       <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-zinc-800">
         <UserIcon className="h-3.5 w-3.5 text-zinc-400" />

@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from dataclasses import replace
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -108,7 +109,8 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 audio_effector = AudioEffector(ws_manager=ws_manager)
 bluetooth_manager = BluetoothManager()
-chassis = Chassis(DEFAULT_CONFIG)
+_chassis_speed = int(os.environ.get("CHASSIS_DEFAULT_SPEED", "45"))
+chassis = Chassis(replace(DEFAULT_CONFIG, default_speed=_chassis_speed))
 camera  = CameraMount(DEFAULT_CAMERA_CONFIG)
 
 # 摄像头采集实例（source / snapshot_dir 从环境变量覆盖）
@@ -784,7 +786,7 @@ async def motor_command(req: MotorCommandRequest):
     执行底盘运动指令。
 
     command 取值：forward / backward / turn_left / turn_right / stop
-    speed 范围：0–100（整数），省略时使用底盘默认速度（60）
+    speed 范围：0–100（整数），省略时使用底盘默认速度（CHASSIS_DEFAULT_SPEED，默认 45）
     duration：持续秒数，省略或为 null 时持续运动，直到发送 stop 指令
     """
     from devices.chassis import VALID_COMMANDS

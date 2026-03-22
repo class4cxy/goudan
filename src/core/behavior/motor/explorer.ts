@@ -61,13 +61,13 @@ const BURST_DURATION_HIGH_LIDAR = 0.22
 const FORWARD_SPEED_HIGH_LIDAR = 22
 
 // ── 运动参数 ─────────────────────────────────────────────────────
-const FORWARD_SPEED      = 30
-const TURN_SPEED         = Number(process.env.EXPLORER_TURN_SPEED ?? '30')
+const FORWARD_SPEED      = Number(process.env.EXPLORER_FORWARD_SPEED ?? '20')
+const TURN_SPEED         = Number(process.env.EXPLORER_TURN_SPEED ?? '20')
 /**
  * 正常脉冲前进时长（秒）。
  * 脱困后使用更长的 ESCAPE_BURST_DURATION，把机器人真正带离障碍区域。
  */
-const BURST_DURATION     = 0.4
+const BURST_DURATION     = Number(process.env.EXPLORER_BURST_DURATION ?? '0.5')
 /** 脱困后的前进时长（秒）：比普通脉冲长，确保离开障碍区 */
 const ESCAPE_BURST_DURATION = 0.8
 /** 普通后退时长（秒） */

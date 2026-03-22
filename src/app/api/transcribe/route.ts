@@ -138,7 +138,7 @@ export async function POST(req: Request) {
     if (!transcript) return Response.json({ error: "转录结果为空" }, { status: 422 });
 
     // Step 2: 润色（SDK prompt 已明确禁止回答问题，只整理口语）
-    const text = await sdk.polish(transcript, { appType: "general" })
+    const text = await sdk.polish(transcript, { appType: "general", vocabulary: ['狗蛋'] })
       .catch((err: unknown) => {
         console.warn("[polish] 失败，回退原始转录：", err);
         return transcript;
