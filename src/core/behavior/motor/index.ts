@@ -7,7 +7,9 @@
 
 import { PlatformConnector } from '../../runtime/platform-connector'
 import { startMotorEffector } from './effector'
-export { Explorer } from './explorer'
+import { Explorer } from './explorer'
+
+export { Explorer }
 
 export function startMotorModule(): void {
   PlatformConnector.start()
