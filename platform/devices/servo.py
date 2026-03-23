@@ -63,13 +63,13 @@ DEFAULT_CAMERA_CONFIG = CameraConfig(
         pin=12,
         min_angle=0.0,
         max_angle=180.0,
-        default_angle=90.0,    # 正前方
+        default_angle=70.0,    # 实测正前方（舵机安装偏移，几何中位 90° ≠ 视觉正前方）
     ),
     tilt=ServoConfig(
         pin=13,
-        min_angle=56.0,
-        max_angle=106.0,
-        default_angle=90.0,
+        min_angle=2.0,
+        max_angle=88.0,
+        default_angle=45.0,    # 实测安全范围 2°–88°，机械中点 45°（可目测微调至水平正视）
     ),
 )
 
@@ -148,8 +148,8 @@ class CameraMount:
     摄像头云台控制器（水平 Pan + 垂直 Tilt）。
 
     角度约定：
-      Pan  0°   = 最左  |  90° = 正前方  |  180° = 最右
-      Tilt 75°  = 最低  |  90° = 水平    |  105° = 最高（硬件限制）
+      Pan  0°   = 最左  |  70° = 正前方（实测）  |  180° = 最右
+      Tilt 2°   = 最低  |  45° = 水平正视（实测） |  88°  = 最高（硬件限制）
 
     用法示例::
 

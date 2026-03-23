@@ -29,6 +29,12 @@ DUTY_MID   = 7.5  # % → 90°
 DUTY_MAX   = 12.5 # % → 180°
 STEP_DELAY = 0.02 # 秒，平滑扫描每步延迟
 
+# ── 实测标定值（与 servo.py DEFAULT_CAMERA_CONFIG 保持一致）────────────
+PAN_CENTER  = 70.0  # 水平正前方（安装偏移，几何中位 90° ≠ 视觉正前）
+TILT_CENTER = 45.0  # 垂直水平正视（安全范围机械中点）
+TILT_MIN    = 2.0   # 垂直安全下限
+TILT_MAX    = 88.0  # 垂直安全上限
+
 # ── GPIO 初始化 ───────────────────────────────────────────────────────
 try:
     import RPi.GPIO as GPIO
@@ -83,12 +89,12 @@ def _smooth_move(pwm, from_angle: float, to_angle: float, step: float = 1.0):
 # ── 功能函数 ──────────────────────────────────────────────────────────
 
 def center_all():
-    """双轴归中到 90°。"""
-    print("  双轴归中（90°）...")
-    for pin in (PAN_PIN, TILT_PIN):
+    """双轴归中：Pan → 70°（实测正前），Tilt → 45°（实测水平正视）。"""
+    print(f"  双轴归中（Pan {PAN_CENTER:.0f}° / Tilt {TILT_CENTER:.0f}°）...")
+    for pin, angle in ((PAN_PIN, PAN_CENTER), (TILT_PIN, TILT_CENTER)):
         GPIO.setup(pin, GPIO.OUT)
         pwm = GPIO.PWM(pin, PWM_FREQ)
-        pwm.start(_duty(90))
+        pwm.start(_duty(angle))
         time.sleep(0.5)
         pwm.stop()
         GPIO.cleanup(pin)
@@ -96,40 +102,40 @@ def center_all():
 
 
 def sweep_pan():
-    """水平轴全幅扫描：0° → 180° → 90°。"""
-    print(f"\n  水平 Pan（GPIO {PAN_PIN}）扫描：0° → 180° → 90°")
-    pwm = _make_pwm(PAN_PIN)
+    """水平轴全幅扫描：0° → 180° → PAN_CENTER。"""
+    print(f"\n  水平 Pan（GPIO {PAN_PIN}）扫描：0° → 180° → {PAN_CENTER:.0f}°（正前）")
+    pwm = _make_pwm(PAN_PIN, PAN_CENTER)
     time.sleep(0.3)
-    _smooth_move(pwm, 90, 0)
+    _smooth_move(pwm, PAN_CENTER, 0)
     time.sleep(0.4)
     _smooth_move(pwm, 0, 180)
     time.sleep(0.4)
-    _smooth_move(pwm, 180, 90)
+    _smooth_move(pwm, 180, PAN_CENTER)
     pwm.stop()
     GPIO.cleanup(PAN_PIN)
-    print("  扫描完成，已归中。")
+    print(f"  扫描完成，已归中（{PAN_CENTER:.0f}°）。")
 
 
-def sweep_tilt_safe(min_angle: float = 75.0, max_angle: float = 105.0):
-    """垂直轴在安全范围内扫描：min → max → 90°。"""
-    print(f"\n  垂直 Tilt（GPIO {TILT_PIN}）安全范围扫描：{min_angle:.0f}° → {max_angle:.0f}° → 90°")
-    pwm = _make_pwm(TILT_PIN)
+def sweep_tilt_safe(min_angle: float = TILT_MIN, max_angle: float = TILT_MAX):
+    """垂直轴在安全范围内扫描：min → max → TILT_CENTER。"""
+    print(f"\n  垂直 Tilt（GPIO {TILT_PIN}）安全范围扫描：{min_angle:.0f}° → {max_angle:.0f}° → {TILT_CENTER:.0f}°（水平正视）")
+    pwm = _make_pwm(TILT_PIN, TILT_CENTER)
     time.sleep(0.3)
-    _smooth_move(pwm, 90, min_angle)
+    _smooth_move(pwm, TILT_CENTER, min_angle)
     time.sleep(0.4)
     _smooth_move(pwm, min_angle, max_angle)
     time.sleep(0.4)
-    _smooth_move(pwm, max_angle, 90)
+    _smooth_move(pwm, max_angle, TILT_CENTER)
     pwm.stop()
     GPIO.cleanup(TILT_PIN)
-    print("  扫描完成，已归中。")
+    print(f"  扫描完成，已归中（{TILT_CENTER:.0f}°）。")
 
 
 def manual_pan():
     """手动输入角度控制水平轴。"""
     print(f"\n  水平 Pan 手动定位（GPIO {PAN_PIN}）— 输入角度 0–180，q 退出")
-    pwm = _make_pwm(PAN_PIN)
-    _run_manual(pwm, 0.0, 180.0)
+    pwm = _make_pwm(PAN_PIN, PAN_CENTER)
+    _run_manual(pwm, 0.0, 180.0, PAN_CENTER)
     pwm.stop()
     GPIO.cleanup(PAN_PIN)
 
@@ -138,15 +144,15 @@ def manual_tilt():
     """手动输入角度控制垂直轴（不做范围限制，用于校准）。"""
     print(f"\n  垂直 Tilt 手动定位（GPIO {TILT_PIN}）— 输入角度 0–180，q 退出")
     print("  提示：此模式不限位，请小心不要磕碰遮挡物")
-    pwm = _make_pwm(TILT_PIN)
-    _run_manual(pwm, 0.0, 180.0)
+    pwm = _make_pwm(TILT_PIN, TILT_CENTER)
+    _run_manual(pwm, 0.0, 180.0, TILT_CENTER)
     pwm.stop()
     GPIO.cleanup(TILT_PIN)
 
 
-def _run_manual(pwm, hard_min: float, hard_max: float):
+def _run_manual(pwm, hard_min: float, hard_max: float, start_angle: float = 90.0):
     """通用手动角度控制循环。"""
-    current = 90.0
+    current = start_angle
     while True:
         try:
             raw = input(f"  当前 {current:.1f}° → 输入角度 [0-180] > ").strip().lower()
@@ -299,12 +305,12 @@ MENU = """
 ╔══════════════════════════════════════════════════╗
 ║       摄像头舵机探针 — 交互菜单                  ║
 ╠══════════════════════════════════════════════════╣
-║  1. 水平 Pan  全幅扫描（0°→180°→90°）           ║
-║  2. 垂直 Tilt 安全范围扫描（75°→105°→90°）      ║
-║  3. 水平 Pan  手动定位                          ║
+║  1. 水平 Pan  全幅扫描（0°→180°→70°）           ║
+║  2. 垂直 Tilt 安全范围扫描（2°→88°→45°）        ║
+║  3. 水平 Pan  手动定位（起始 70°=正前）          ║
 ║  4. 垂直 Tilt 手动定位（无限位，校准用）         ║
 ║  c. 垂直 Tilt 限位校准（找上下安全边界）         ║
-║  0. 双轴归中（90°）                             ║
+║  0. 双轴归中（Pan 70° / Tilt 45°）              ║
 ║  q. 退出                                        ║
 ╚══════════════════════════════════════════════════╝"""
 
