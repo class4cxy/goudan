@@ -69,7 +69,7 @@ DEFAULT_CAMERA_CONFIG = CameraConfig(
         pin=13,
         min_angle=2.0,
         max_angle=88.0,
-        default_angle=45.0,    # 实测安全范围 2°–88°，机械中点 45°（可目测微调至水平正视）
+        default_angle=65.0,    # 实测水平正视（安全范围 2°–88°，实测标定）
     ),
 )
 
