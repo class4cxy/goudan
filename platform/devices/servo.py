@@ -83,7 +83,16 @@ DEFAULT_CAMERA_CONFIG = CameraConfig(
 # ── 单轴舵机 ──────────────────────────────────────────────────────────
 
 class Servo:
-    """单轴舵机控制器。"""
+    """单轴舵机控制器。
+
+    采用「脉冲到位即停」策略：
+      每次 set_angle 时临时启动 PWM → 等待舵机到位 → 停止 PWM 信号。
+      舵机通过内部齿轮摩擦保持位置，不再持续输出 50Hz 信号，
+      从而消除多路软件 PWM 互相干扰导致的持续抖动。
+    """
+
+    # 舵机到位等待时间（秒）：SG90 全程约 0.1s/60°，300ms 对大多数移动已够
+    SETTLE_S: float = 0.3
 
     def __init__(self, name: str, config: ServoConfig) -> None:
         self.name = name
@@ -93,22 +102,41 @@ class Servo:
         self._default = config.default_angle
         self._invert = config.invert
         self._pwm: object | None = None
+        self._pwm_running: bool = False
         self._current_angle: float = config.default_angle
 
     def _to_physical(self, logical: float) -> float:
         """将逻辑角度转为物理 PWM 角度（invert=True 时镜像）。"""
         return (self._min + self._max - logical) if self._invert else logical
 
+    def _start_pwm(self) -> None:
+        """若 PWM 已停止则重新启动（从当前角度恢复）。"""
+        if not self._pwm_running:
+            self._pwm.start(_angle_to_duty(self._to_physical(self._current_angle)))
+            self._pwm_running = True
+
+    def _stop_pwm(self) -> None:
+        """停止 PWM 输出（舵机保持当前位置）。"""
+        if self._pwm_running:
+            self._pwm.stop()
+            self._pwm_running = False
+
     def setup(self) -> None:
-        """初始化 GPIO，启动 PWM 并归位到默认角度。"""
+        """初始化 GPIO，将舵机移到默认角度后停止 PWM。"""
         GPIO.setup(self._pin, GPIO.OUT)
         self._pwm = GPIO.PWM(self._pin, _PWM_FREQ)
         self._pwm.start(_angle_to_duty(self._to_physical(self._default)))
-        logger.debug("[舵机-%s] 初始化，默认角度=%.1f°（invert=%s）", self.name, self._default, self._invert)
+        self._pwm_running = True
+        time.sleep(self.SETTLE_S)   # 等待舵机到达默认位置
+        self._stop_pwm()
+        logger.debug("[舵机-%s] 初始化完成，默认角度=%.1f°（invert=%s）", self.name, self._default, self._invert)
 
     def set_angle(self, angle: float) -> float:
         """
-        设置目标角度（逻辑角度），超出范围自动钳位。
+        移动到目标逻辑角度，到位后停止 PWM。
+
+        含 time.sleep(SETTLE_S) 阻塞等待，调用方若在异步上下文中
+        应通过 asyncio.to_thread 调用以避免阻塞事件循环。
 
         Returns:
             实际设置的逻辑角度（钳位后）
@@ -119,8 +147,11 @@ class Servo:
                 "[舵机-%s] %.1f° 超出范围 [%.1f°, %.1f°]，钳位至 %.1f°",
                 self.name, angle, self._min, self._max, clamped,
             )
+        self._start_pwm()
         self._pwm.ChangeDutyCycle(_angle_to_duty(self._to_physical(clamped)))
         self._current_angle = clamped
+        time.sleep(self.SETTLE_S)   # 等待舵机到位
+        self._stop_pwm()
         return clamped
 
     def move_by(self, delta: float) -> float:
@@ -132,11 +163,12 @@ class Servo:
         self.set_angle(self._default)
 
     def cleanup(self) -> None:
-        """归位后停止 PWM，释放资源。"""
+        """归位后释放 GPIO 资源。"""
         if self._pwm is not None:
             self.center()
-            time.sleep(0.3)   # 等待舵机到位
-            self._pwm.stop()
+            # PWM 已在 set_angle 内停止，直接清理即可
+            if self._pwm_running:
+                self._pwm.stop()
 
     @property
     def current_angle(self) -> float:

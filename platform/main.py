@@ -845,9 +845,9 @@ async def camera_look_at(req: CameraLookAtRequest):
     """
     result: dict = {}
     if req.pan is not None:
-        result["pan"] = camera.pan_to(req.pan)
+        result["pan"] = await asyncio.to_thread(camera.pan_to, req.pan)
     if req.tilt is not None:
-        result["tilt"] = camera.tilt_to(req.tilt)
+        result["tilt"] = await asyncio.to_thread(camera.tilt_to, req.tilt)
     if not result:
         raise HTTPException(status_code=400, detail="请至少指定 pan 或 tilt")
     return {"ok": True, **result}
@@ -857,9 +857,9 @@ async def camera_look_at(req: CameraLookAtRequest):
 async def camera_move(req: CameraMoveRequest):
     """相对偏移云台（axis=pan|tilt，delta 为度数，正=右/上，负=左/下）。"""
     if req.axis == "pan":
-        actual = camera.pan_by(req.delta)
+        actual = await asyncio.to_thread(camera.pan_by, req.delta)
     elif req.axis == "tilt":
-        actual = camera.tilt_by(req.delta)
+        actual = await asyncio.to_thread(camera.tilt_by, req.delta)
     else:
         raise HTTPException(status_code=400, detail="axis 须为 pan 或 tilt")
     return {"ok": True, "axis": req.axis, "angle": actual}
@@ -868,7 +868,7 @@ async def camera_move(req: CameraMoveRequest):
 @app.post("/camera/center")
 async def camera_center():
     """云台双轴归中（正视前方）。"""
-    camera.center()
+    await asyncio.to_thread(camera.center)
     return {"ok": True, "status": camera.status}
 
 
@@ -1427,19 +1427,19 @@ async def _handle_action(message: dict) -> None:
             if command == "look_at":
                 pan  = payload.get("pan")
                 tilt = payload.get("tilt")
-                if pan  is not None: camera.pan_to(float(pan))
-                if tilt is not None: camera.tilt_to(float(tilt))
+                if pan  is not None: await asyncio.to_thread(camera.pan_to,  float(pan))
+                if tilt is not None: await asyncio.to_thread(camera.tilt_to, float(tilt))
                 logger.info("[WS] 云台 look_at pan=%s tilt=%s", pan, tilt)
             elif command == "move":
                 axis  = payload.get("axis", "pan")
                 delta = float(payload.get("delta", 0))
                 if axis == "pan":
-                    camera.pan_by(delta)
+                    await asyncio.to_thread(camera.pan_by, delta)
                 else:
-                    camera.tilt_by(delta)
+                    await asyncio.to_thread(camera.tilt_by, delta)
                 logger.info("[WS] 云台 move axis=%s delta=%s", axis, delta)
             elif command == "center":
-                camera.center()
+                await asyncio.to_thread(camera.center)
                 logger.info("[WS] 云台归中")
             elif command == "snapshot":
                 # 拍照后通过 WebSocket 广播给所有连接的客户端（含 Node.js Agent）
