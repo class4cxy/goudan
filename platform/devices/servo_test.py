@@ -31,11 +31,10 @@ STEP_DELAY = 0.02 # 秒，平滑扫描每步延迟
 
 # ── 实测物理标定值 ────────────────────────────────────────────────────
 # 注意：此脚本直接操作物理 PWM 角度，与 Platform API 的「逻辑角度」不同。
-# Platform 层（servo.py）两轴均反向安装（invert=True），物理↔逻辑镜像转换：
-#   physical = min + max - logical
-# 对应关系：Pan 逻辑 110° ↔ 物理 70°；Tilt 逻辑 25° ↔ 物理 65°
-PAN_CENTER  = 70.0  # 物理正前方（Platform 逻辑角度 = 110°）
-TILT_CENTER = 65.0  # 物理水平正视（Platform 逻辑角度 = 25°）
+# Platform 层：Pan 反向安装 invert=True → 逻辑 110° ↔ 物理 70°
+#            Tilt 无镜像 invert=False → 逻辑角 = 物理角（与下述常量一致）
+PAN_CENTER  = 70.0  # 物理正前方（Platform API 用 pan=110）
+TILT_CENTER = 65.0  # 物理水平正视（Platform API 用 tilt=65）
 TILT_MIN    = 2.0   # 物理安全下限
 TILT_MAX    = 88.0  # 物理安全上限
 

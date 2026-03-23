@@ -41,7 +41,7 @@ export const moveCameraMount = tool({
   description:
     "控制摄像头云台朝向（双轴舵机）。" +
     "Pan（水平）0°=最左 / 110°=正前 / 180°=最右；" +
-    "Tilt（垂直）2°=最低俯视 / 25°=水平正视 / 88°=最高仰视。" +
+    "Tilt（垂直）2°=最低俯视 / 65°=水平正视 / 88°=最高仰视。" +
     "两个参数均可省略（省略则该轴保持当前角度）。",
   inputSchema: z.object({
     pan: z
@@ -55,7 +55,7 @@ export const moveCameraMount = tool({
       .min(2)
       .max(88)
       .optional()
-      .describe("垂直俯仰角度（2–88°，25=水平正视）"),
+      .describe("垂直俯仰角度（2–88°，65=水平正视）"),
   }),
   execute: async ({ pan, tilt }) => {
     try {
@@ -76,7 +76,7 @@ export const moveCameraMount = tool({
 
 export const centerCameraMount = tool({
   description:
-    "将摄像头云台双轴归中（Pan=110°，Tilt=25°，正视前方）。",
+    "将摄像头云台双轴归中（Pan=110°，Tilt=65°，正视前方）。",
   inputSchema: z.object({}),
   execute: async () => {
     try {

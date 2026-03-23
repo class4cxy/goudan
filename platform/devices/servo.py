@@ -59,10 +59,8 @@ class CameraConfig:
 
 
 # MAKEROBO 扩展板实测配置
-# 两轴舵机均反向安装（invert=True），逻辑角度与物理信号镜像：physical = min + max - logical
-# 逻辑约定：Pan 0°=最左/180°=最右，Tilt 2°=最低俯视/88°=最高仰视
-# 物理标定：Pan 物理 70° = 正前方  → 逻辑中心 = 180−70 = 110°
-#           Tilt 物理 80° = 水平正视 → 逻辑中心 = (2+88)−80 = 25°
+# Pan 反向安装：invert=True，physical = min + max - logical（0°=最左、110°=正前、180°=最右）
+# Tilt 安装方向与角度约定一致：invert=False，逻辑角=物理 PWM 角（2°=俯视、65°=水平正视、88°=仰视）
 DEFAULT_CAMERA_CONFIG = CameraConfig(
     pan=ServoConfig(
         pin=12,
@@ -75,8 +73,8 @@ DEFAULT_CAMERA_CONFIG = CameraConfig(
         pin=13,
         min_angle=2.0,
         max_angle=88.0,
-        default_angle=25.0,    # 逻辑水平正视（对应物理 80°）
-        invert=True,
+        default_angle=65.0,    # 水平正视（与 servo_test 物理标定一致）
+        invert=False,
     ),
 )
 
@@ -159,9 +157,9 @@ class CameraMount:
     """
     摄像头云台控制器（水平 Pan + 垂直 Tilt）。
 
-    逻辑角度约定（API 层，invert 后物理信号已镜像）：
-      Pan  0°   = 最左  |  110° = 正前方（逻辑，对应物理 70°）  |  180° = 最右
-      Tilt 2°   = 最低俯视  |  25° = 水平正视（逻辑，对应物理 80°） |  88° = 最高仰视
+    逻辑角度约定（API 层；Pan 经 invert 镜像，Tilt 与物理角一致）：
+      Pan  0° = 最左  |  110° = 正前方（逻辑 → 物理 70°）  |  180° = 最右
+      Tilt 2° = 最低俯视  |  65° = 水平正视  |  88° = 最高仰视
 
     用法示例::
 

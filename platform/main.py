@@ -840,8 +840,8 @@ async def camera_look_at(req: CameraLookAtRequest):
     """
     设置云台朝向。pan/tilt 均可省略（省略=保持当前值）。
 
-    Pan  范围：0–180°（0=最左，110=正前，180=最右）  ← 逻辑角度，invert 后物理 70°=正前
-    Tilt 范围：2–88°（2=最低俯视，25=水平正视，88=最高仰视）  ← 逻辑角度，invert 后物理 80°=水平
+    Pan  范围：0–180°（0=最左，110=正前，180=最右）  ← 逻辑角，Pan invert 后物理 70°=正前
+    Tilt 范围：2–88°（2=最低俯视，65=水平正视，88=最高仰视）  ← 与物理 PWM 一致，无镜像
     """
     result: dict = {}
     if req.pan is not None:
