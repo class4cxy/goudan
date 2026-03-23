@@ -46,7 +46,8 @@ class ServoConfig:
     pin: int                   # BCM GPIO 引脚
     min_angle: float = 0.0     # 可用最小角度（度），硬件/机械限制
     max_angle: float = 180.0   # 可用最大角度（度），硬件/机械限制
-    default_angle: float = 90.0  # 上电默认角度（归中位置）
+    default_angle: float = 90.0  # 上电默认角度（逻辑角度，归中位置）
+    invert: bool = False         # True = 舵机安装方向与角度约定相反，自动镜像物理信号
 
 
 @dataclass
@@ -58,18 +59,24 @@ class CameraConfig:
 
 
 # MAKEROBO 扩展板实测配置
+# 两轴舵机均反向安装（invert=True），逻辑角度与物理信号镜像：physical = min + max - logical
+# 逻辑约定：Pan 0°=最左/180°=最右，Tilt 2°=最低俯视/88°=最高仰视
+# 物理标定：Pan 物理 70° = 正前方  → 逻辑中心 = 180−70 = 110°
+#           Tilt 物理 80° = 水平正视 → 逻辑中心 = (2+88)−80 = 25°
 DEFAULT_CAMERA_CONFIG = CameraConfig(
     pan=ServoConfig(
         pin=12,
         min_angle=0.0,
         max_angle=180.0,
-        default_angle=70.0,    # 实测正前方（舵机安装偏移，几何中位 90° ≠ 视觉正前方）
+        default_angle=110.0,   # 逻辑正前方（对应物理 70°）
+        invert=True,
     ),
     tilt=ServoConfig(
         pin=13,
         min_angle=2.0,
         max_angle=88.0,
-        default_angle=65.0,    # 实测水平正视（安全范围 2°–88°，实测标定）
+        default_angle=25.0,    # 逻辑水平正视（对应物理 80°）
+        invert=True,
     ),
 )
 
@@ -85,22 +92,27 @@ class Servo:
         self._min = config.min_angle
         self._max = config.max_angle
         self._default = config.default_angle
+        self._invert = config.invert
         self._pwm: object | None = None
         self._current_angle: float = config.default_angle
+
+    def _to_physical(self, logical: float) -> float:
+        """将逻辑角度转为物理 PWM 角度（invert=True 时镜像）。"""
+        return (self._min + self._max - logical) if self._invert else logical
 
     def setup(self) -> None:
         """初始化 GPIO，启动 PWM 并归位到默认角度。"""
         GPIO.setup(self._pin, GPIO.OUT)
         self._pwm = GPIO.PWM(self._pin, _PWM_FREQ)
-        self._pwm.start(_angle_to_duty(self._default))
-        logger.debug("[舵机-%s] 初始化，默认角度=%.1f°", self.name, self._default)
+        self._pwm.start(_angle_to_duty(self._to_physical(self._default)))
+        logger.debug("[舵机-%s] 初始化，默认角度=%.1f°（invert=%s）", self.name, self._default, self._invert)
 
     def set_angle(self, angle: float) -> float:
         """
-        设置目标角度，超出范围自动钳位。
+        设置目标角度（逻辑角度），超出范围自动钳位。
 
         Returns:
-            实际设置的角度（钳位后）
+            实际设置的逻辑角度（钳位后）
         """
         clamped = max(self._min, min(self._max, angle))
         if abs(clamped - angle) > 0.01:
@@ -108,7 +120,7 @@ class Servo:
                 "[舵机-%s] %.1f° 超出范围 [%.1f°, %.1f°]，钳位至 %.1f°",
                 self.name, angle, self._min, self._max, clamped,
             )
-        self._pwm.ChangeDutyCycle(_angle_to_duty(clamped))
+        self._pwm.ChangeDutyCycle(_angle_to_duty(self._to_physical(clamped)))
         self._current_angle = clamped
         return clamped
 
@@ -147,9 +159,9 @@ class CameraMount:
     """
     摄像头云台控制器（水平 Pan + 垂直 Tilt）。
 
-    角度约定：
-      Pan  0°   = 最左  |  70° = 正前方（实测）  |  180° = 最右
-      Tilt 2°   = 最低  |  45° = 水平正视（实测） |  88°  = 最高（硬件限制）
+    逻辑角度约定（API 层，invert 后物理信号已镜像）：
+      Pan  0°   = 最左  |  110° = 正前方（逻辑，对应物理 70°）  |  180° = 最右
+      Tilt 2°   = 最低俯视  |  25° = 水平正视（逻辑，对应物理 80°） |  88° = 最高仰视
 
     用法示例::
 

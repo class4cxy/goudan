@@ -200,7 +200,7 @@ class Ultrasonic:
     def _simulate_reading(self) -> UltrasonicReading:
         # 在 20cm~110cm 区间内轻微抖动，便于本地联调。
         self._sim_phase = (self._sim_phase + 0.35) % 6.28
-        distance = 65.0 + 45.0 * math.sin(self._sim_phase)
+        distance = 80.0 + 45.0 * math.sin(self._sim_phase)
         distance = max(20.0, min(110.0, distance))
 
         reading = UltrasonicReading(
