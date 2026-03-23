@@ -6,6 +6,7 @@ platform/.roborock_token.json
 
 # 数据库
 data/
+docs/
 
 # 临时截图
 /tmp/home-agent-snapshots/
