@@ -883,7 +883,37 @@ async def camera_status():
 
 # ── 摄像头拍照接口 ─────────────────────────────────────────────────
 
-from fastapi.responses import Response as _FastAPIResponse  # noqa: E402
+from fastapi.responses import Response as _FastAPIResponse, StreamingResponse as _StreamingResponse  # noqa: E402
+
+
+@app.get("/camera/stream", summary="MJPEG 直播流")
+async def camera_stream():
+    """
+    推送 MJPEG 直播流（multipart/x-mixed-replace）。
+
+    - 浏览器可直接用 <img src="/camera/stream"> 播放，无需插件
+    - 客户端断开连接后自动停止推流，不占用摄像头资源
+    - 默认 15fps；与 /camera/capture 并发安全（内部共享锁）
+    """
+    if not cam.is_available:
+        raise HTTPException(503, "摄像头不可用，请检查摄像头连接")
+
+    async def generate():
+        loop = asyncio.get_running_loop()
+        # iter_frames() 是同步生成器，在线程池里按帧推送
+        frame_iter = cam.iter_frames(fps=15)
+        try:
+            while True:
+                data = await loop.run_in_executor(None, next, frame_iter)
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
+        except StopIteration:
+            pass
+
+    return _StreamingResponse(
+        generate(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/camera/capture", summary="拍照（返回 JPEG 图像）")

@@ -36,6 +36,8 @@ import {
   StopExploringToolUI,
   GetMapStatusToolUI,
   GetMapImageToolUI,
+  OpenCameraStreamToolUI,
+  CloseCameraStreamToolUI,
 } from "@/components/chat/tool-uis";
 
 // ── Voice mode toggle ─────────────────────────────────────────────
@@ -299,6 +301,8 @@ export function ChatThread() {
       <StopExploringToolUI />
       <GetMapStatusToolUI />
       <GetMapImageToolUI />
+      <OpenCameraStreamToolUI />
+      <CloseCameraStreamToolUI />
 
       <ThreadPrimitive.Root className="flex h-full flex-col bg-zinc-950 group">
         <ThreadPrimitive.Viewport className="flex-1 overflow-y-auto">

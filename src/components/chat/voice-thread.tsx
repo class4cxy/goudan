@@ -36,6 +36,8 @@ import {
   StopExploringToolUI,
   GetMapStatusToolUI,
   GetMapImageToolUI,
+  OpenCameraStreamToolUI,
+  CloseCameraStreamToolUI,
 } from "@/components/chat/tool-uis";
 import {
   BotIcon,
@@ -424,6 +426,8 @@ export function VoiceThread() {
       <StopExploringToolUI />
       <GetMapStatusToolUI />
       <GetMapImageToolUI />
+      <OpenCameraStreamToolUI />
+      <CloseCameraStreamToolUI />
 
       {/* relative 给 ScrollToBottom 绝对定位用，overflow-hidden 防止整体溢出 */}
       <ThreadPrimitive.Root className="relative flex h-full w-full flex-col overflow-hidden bg-zinc-950">

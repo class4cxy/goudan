@@ -1,5 +1,5 @@
 """
-摄像头拍照模块
+摄像头拍照 / 直播流模块
 
 支持 USB 摄像头（source=0 对应 /dev/video0）和 RTSP 网络摄像头（source 为 URL 字符串）。
 采用 OpenCV 采集图像，输出 JPEG 格式。
@@ -12,10 +12,12 @@
   jpeg = cam.capture()           # → bytes | None
   b64  = cam.capture_base64()    # → str   | None
   path = cam.capture_to_file()   # → str   | None（保存到文件，返回绝对路径）
+  frames = cam.iter_frames()     # → Iterator[bytes]，用于 MJPEG 直播流
   cam.cleanup()
 
 注意事项：
-  - capture() 是阻塞调用，在 asyncio 中请用 asyncio.to_thread(cam.capture) 包裹。
+  - capture() 和 iter_frames() 均为同步阻塞调用；asyncio 中请用 asyncio.to_thread 包裹。
+  - 内部使用 threading.Lock 保证 capture() 与 iter_frames() 并发安全。
   - 首次调用 capture() 时自动打开摄像头，之后保持常驻打开以避免每次打开的延迟。
   - 在树莓派上优先使用 opencv-python-headless，避免安装 GUI 依赖。
   - Raspberry Pi OS Bookworm 上 OpenCV 4.x 的 V4L2 后端用整数索引枚举会跳过 USB UVC
@@ -29,6 +31,7 @@ import base64
 import logging
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,6 +88,7 @@ class Camera:
         self._cap: "cv2.VideoCapture | None" = None  # type: ignore
         self._snapshot_dir = Path(config.snapshot_dir)
         self._is_open = False
+        self._lock = threading.Lock()  # 保护 _cap.read()，防止 capture() 与 iter_frames() 并发竞争
 
     # ── 打开 / 关闭 ───────────────────────────────────────────────
 
@@ -150,37 +154,72 @@ class Camera:
 
     # ── 拍照 ──────────────────────────────────────────────────────
 
-    def capture(self) -> bytes | None:
-        """拍一张照片，返回 JPEG bytes。失败时返回 None。
-
-        首次调用会自动 open()；若读帧失败会尝试重新打开摄像头。
-        """
-        if not self._is_open and not self.open():
-            return None
-
-        assert self._cap is not None
-
-        # 丢弃缓存旧帧：grab() 不解码，overhead 极小
-        self._cap.grab()
-        ret, frame = self._cap.read()
-
+    def _read_frame(self) -> "cv2.Mat | None":  # type: ignore
+        """持锁读一帧（内部公共路径，供 capture 和 iter_frames 复用）。"""
+        with self._lock:
+            if self._cap is None:
+                return None
+            self._cap.grab()
+            ret, frame = self._cap.read()
         if not ret or frame is None:
-            logger.warning("摄像头读帧失败，尝试重新打开")
-            self.cleanup()
-            if not self.open():
-                return None
-            ret, frame = self._cap.read()  # type: ignore
-            if not ret:
-                return None
+            return None
+        return self._apply_rotate(frame)
 
-        frame = self._apply_rotate(frame)
-
+    def _encode_jpeg(self, frame: "cv2.Mat") -> bytes | None:  # type: ignore
         params = [cv2.IMWRITE_JPEG_QUALITY, self._config.jpeg_quality]
         ok, buf = cv2.imencode(".jpg", frame, params)
         if not ok:
             logger.error("JPEG 编码失败")
             return None
         return buf.tobytes()
+
+    def capture(self) -> bytes | None:
+        """拍一张照片，返回 JPEG bytes。失败时返回 None。
+
+        首次调用会自动 open()；若读帧失败会尝试重新打开摄像头。
+        线程安全：内部使用 Lock，可与 iter_frames() 并发调用。
+        """
+        if not self._is_open and not self.open():
+            return None
+
+        frame = self._read_frame()
+        if frame is None:
+            logger.warning("摄像头读帧失败，尝试重新打开")
+            self.cleanup()
+            if not self.open():
+                return None
+            frame = self._read_frame()
+            if frame is None:
+                return None
+
+        return self._encode_jpeg(frame)
+
+    def iter_frames(self, fps: int = 15):
+        """持续产出 JPEG bytes，用于 MJPEG 直播流。
+
+        调用方断开连接时停止迭代（GeneratorExit）。
+        线程安全：内部使用 Lock，可与 capture() 并发调用。
+
+        用法（FastAPI StreamingResponse）：
+            async def gen():
+                for data in cam.iter_frames():
+                    yield b"--frame\\r\\nContent-Type: image/jpeg\\r\\n\\r\\n" + data + b"\\r\\n"
+        """
+        if not self._is_open and not self.open():
+            return
+
+        interval = 1.0 / max(fps, 1)
+        while True:
+            t0 = time.monotonic()
+            frame = self._read_frame()
+            if frame is not None:
+                data = self._encode_jpeg(frame)
+                if data:
+                    yield data
+            elapsed = time.monotonic() - t0
+            sleep_s = interval - elapsed
+            if sleep_s > 0:
+                time.sleep(sleep_s)
 
     def capture_base64(self) -> str | None:
         """拍照，返回 base64 编码的 JPEG 字符串（可直接嵌入 JSON）。"""

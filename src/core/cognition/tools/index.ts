@@ -10,7 +10,7 @@
 
 import { executeScheduledTask as _execTask } from "@/core/cognition/brain/task";
 import { getRobotStatus, getRooms, startFullCleaning, cleanRooms, pauseCleaning, resumeCleaning, returnHome, getCleaningHistory } from "@/core/cognition/tools/roborock";
-import { takeRobotPhoto, moveCameraMount, centerCameraMount } from "@/core/cognition/tools/camera";
+import { takeRobotPhoto, moveCameraMount, centerCameraMount, openCameraStream, closeCameraStream } from "@/core/cognition/tools/camera";
 import { addScheduledTaskTool, listScheduledTasksTool } from "@/core/cognition/tools/scheduler-tool";
 import { navigateTo } from "@/core/cognition/tools/motor";
 import { getPowerStatus } from "@/core/cognition/tools/power";
@@ -30,6 +30,8 @@ export const ALL_TOOLS = {
   takeRobotPhoto,
   moveCameraMount,
   centerCameraMount,
+  openCameraStream,
+  closeCameraStream,
   addScheduledTask: addScheduledTaskTool,
   listScheduledTasks: listScheduledTasksTool,
   navigateTo,

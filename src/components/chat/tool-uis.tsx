@@ -20,8 +20,10 @@ import {
   NavigationIcon,
   SquareIcon,
   RefreshCwIcon,
+  XIcon,
 } from "lucide-react";
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useSyncExternalStore } from "react";
+import { cameraStreamStore } from "@/components/chat/camera-stream-store";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -618,6 +620,99 @@ export const CenterCameraMountToolUI = makeAssistantToolUI<
         )}
         {!loading && result && !result.success && (
           <p className="text-xs text-red-400">{result.error}</p>
+        )}
+      </ToolCard>
+    );
+  },
+});
+
+export const OpenCameraStreamToolUI = makeAssistantToolUI<
+  Record<string, never>,
+  { success: boolean; stream_url?: string; error?: string; hint?: string }
+>({
+  toolName: "openCameraStream",
+  render({ result, status: execStatus }) {
+    const loading = execStatus.type === "running";
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const isActive = useSyncExternalStore(
+      cameraStreamStore.subscribe,
+      cameraStreamStore.getSnapshot,
+      cameraStreamStore.getServerSnapshot,
+    );
+
+    // 工具结果到达且成功时，激活全局流状态
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    useEffect(() => {
+      if (result?.success) cameraStreamStore.open();
+    }, [result?.success]);
+
+    if (loading) return <ToolCard icon={CameraIcon} title="正在开启直播..." loading />;
+
+    if (!result?.success) {
+      return (
+        <ToolCard icon={CameraIcon} title="摄像头直播">
+          <p className="text-xs text-red-400">{result?.error}</p>
+          {result?.hint && (
+            <p className="text-[11px] text-muted-foreground mt-1">{result.hint}</p>
+          )}
+        </ToolCard>
+      );
+    }
+
+    return (
+      <Card className="my-2 w-full max-w-md animate-fade-in overflow-hidden">
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center justify-between text-muted-foreground">
+            <span className="flex items-center gap-2 text-sm">
+              <span className="inline-block h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+              机器车直播
+            </span>
+            {isActive && (
+              <button
+                onClick={() => cameraStreamStore.close()}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+                title="关闭直播"
+              >
+                <XIcon className="h-4 w-4" />
+              </button>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {isActive ? (
+            <img
+              src={result.stream_url}
+              alt="机器车实时画面"
+              className="w-full object-cover"
+            />
+          ) : (
+            <div className="flex items-center justify-center h-24 bg-muted text-xs text-muted-foreground">
+              直播已关闭
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    );
+  },
+});
+
+export const CloseCameraStreamToolUI = makeAssistantToolUI<
+  Record<string, never>,
+  { success: boolean }
+>({
+  toolName: "closeCameraStream",
+  render({ result, status: execStatus }) {
+    const loading = execStatus.type === "running";
+
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    useEffect(() => {
+      if (result?.success) cameraStreamStore.close();
+    }, [result?.success]);
+
+    return (
+      <ToolCard icon={CameraIcon} title="摄像头直播" loading={loading}>
+        {!loading && (
+          <p className="text-xs text-muted-foreground">已关闭</p>
         )}
       </ToolCard>
     );

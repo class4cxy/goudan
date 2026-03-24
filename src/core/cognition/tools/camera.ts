@@ -74,6 +74,39 @@ export const moveCameraMount = tool({
   },
 });
 
+export const openCameraStream = tool({
+  description:
+    "开启机器车摄像头直播流，在对话中显示实时画面卡片。" +
+    "用户说「开摄像头」「直播」「实时查看」时调用。" +
+    "调用后立即返回，画面在卡片中持续更新，不阻塞对话。",
+  inputSchema: z.object({}),
+  execute: async () => {
+    try {
+      const res = await fetch(`${PLATFORM_URL}/camera/capture/status`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { success: true, stream_url: "/api/camera/stream" };
+    } catch (err) {
+      return {
+        success: false,
+        error: String(err),
+        hint: "请检查机器车摄像头是否连接（/dev/video0），以及 platform 服务是否在线",
+      };
+    }
+  },
+});
+
+export const closeCameraStream = tool({
+  description:
+    "关闭机器车摄像头直播流，关闭对话中的实时画面卡片。" +
+    "用户说「关摄像头」「停止直播」「关掉」时调用。",
+  inputSchema: z.object({}),
+  execute: async () => {
+    return { success: true };
+  },
+});
+
 export const centerCameraMount = tool({
   description:
     "将摄像头云台双轴归中（Pan=110°，Tilt=5° 逻辑角=水平正视，物理约 85°）。",
