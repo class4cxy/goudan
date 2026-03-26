@@ -70,7 +70,7 @@ MOTOR_NAMES = {
 # VCC → 树莓派 3.3V（Pin 1 或 Pin 17），GND → GND
 ENCODER_PINS: dict[str, dict[str, int]] = {
     "front_left":  {"pin_a": 23, "pin_b": 16},  # M1 左前
-    "front_right": {"pin_a": 18, "pin_b": 17},  # M2 右前
+    "front_right": {"pin_a": 14, "pin_b": 17},  # M2 右前（GPIO18=蜂鸣器，改用GPIO14 UART TX）
     "rear_left":   {"pin_a":  4, "pin_b": 11},  # M3 左后（里程计左轮）
     "rear_right":  {"pin_a": 19, "pin_b": 10},  # M4 右后（里程计右轮）GPIO7/8 被 spi0 CS 强占
 }

@@ -58,10 +58,10 @@ _CHIP_NUM = _detect_gpio_chip()
 @dataclass
 class EncoderConfig:
     """双路编码器 GPIO 引脚配置（BCM 编号）。"""
-    left_a:  int = int(os.environ.get("ENCODER_LEFT_A",   "4"))
-    left_b:  int = int(os.environ.get("ENCODER_LEFT_B",  "11"))
-    right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "19"))
-    right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "10"))
+    left_a:  int = int(os.environ.get("ENCODER_LEFT_A",   "4"))   # M3 左后 A
+    left_b:  int = int(os.environ.get("ENCODER_LEFT_B",  "11"))  # M3 左后 B
+    right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "19"))  # M4 右后 A
+    right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "10"))  # M4 右后 B（GPIO7/8=spi0 CS强占）
     lines_per_rev: int = int(os.environ.get("ENCODER_LINES_PER_REV", "500"))
 
     @property
