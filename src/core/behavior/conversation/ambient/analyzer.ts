@@ -11,6 +11,7 @@
 
 import { streamText } from 'ai'
 import { AGENT_MODEL } from '@/core/cognition/tools'
+import { agentDisplayName } from '@/lib/agent-display'
 import { ConversationManager } from '../manager'
 import { Spine } from '../../../runtime/spine'
 import type { SpineEvent, AudioTranscriptPayload } from '../../../runtime/spine'
@@ -78,7 +79,7 @@ function shouldAnalyzeAmbient(text: string): boolean {
 async function analyzeInterest(turns: string[]): Promise<void> {
   const context = turns.join('\n')
 
-  const prompt = `你是家庭机器人 Aria，旁听到以下对话片段：
+  const prompt = `你是家庭机器人 ${agentDisplayName()}，旁听到以下对话片段：
 
 ${context}
 

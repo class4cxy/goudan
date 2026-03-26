@@ -1,8 +1,8 @@
 """
-4轮电机测试脚本 — 适用于树莓派 + Makerobo 功能扩展板 / L298N 驱动板
+4轮编码电机测试脚本 — 适用于树莓派 + Makerobo 功能扩展板
 =====================================================
 
-接线说明（使用 BCM GPIO 编号）：
+硬件：GMR 1:90 编码电机 × 4，PH2.0-6P 接口（接线见 docs/HARDWARE.md §2.1）
 
   Makerobo 扩展板接口          对应电机位置
   ┌──────┬──────────────────┐
@@ -12,22 +12,22 @@
   │  M4  │ 右后轮 (rear_right)  │
   └──────┴──────────────────┘
 
-  电机驱动引脚（BCM 编号，GPIO 探针 Phase A 实测）：
-  M1: IN1=24  IN2=25  （无外部 EN，驱动芯片 EN 已内部接高电平）
-  M2: IN1=27  IN2=26
-  M3: IN1=5   IN2=6
-  M4: IN1=22  IN2=9   （GPIO9 = SPI_MISO 复用，全部引脚已实测确认）
-
-  注意：该板使用 SW-6008 驱动芯片，EN 引脚内部已接 3.3V/5V，
-        速度控制通过对 IN1/IN2 引脚直接 PWM 实现（非 EN 引脚 PWM）。
+  电机驱动引脚（BCM）：M1(24,25) M2(27,26) M3(5,6) M4(22,9)
+  编码器引脚（BCM）：
+    左前 M1: A=23  B=16     右前 M2: A=18  B=17
+    左后 M3: A=4   B=11     右后 M4: A=19  B=7
+  编码器 VCC → 树莓派 3.3V（Pin 1/17），GND → GND
 
 用法：
-  python motor_test.py             # 交互菜单模式
-  python motor_test.py --all       # 自动运行全部测试
-  python motor_test.py --motor 1   # 只测试指定编号电机 (1-4)
-  python motor_test.py --verify    # 逐口目视验证 M1~M4 接线是否正确
+  python motor_test.py              # 交互菜单模式
+  python motor_test.py --all        # 自动运行全部电机测试
+  python motor_test.py --motor 1    # 只测试指定编号电机 (1-4)
+  python motor_test.py --verify     # 逐口目视验证 M1~M4 接线是否正确
+  python motor_test.py --encoder    # 自动运行全部编码器测试
+  python motor_test.py --enc-verify # 逐路交互验证编码器接线
 
 注意：必须以 root 或 gpio 组身份运行才能访问 GPIO。
+      编码器测试需要 pigpio 守护进程：sudo pigpiod
 """
 
 import argparse
@@ -64,6 +64,34 @@ MOTOR_NAMES = {
     3: "rear_left",
     4: "rear_right",
 }
+
+# ── 编码器引脚配置（BCM，定稿见 docs/HARDWARE.md §7.1.1）────────────
+# 每路编码器：pin_a = A相，pin_b = B相
+# VCC → 树莓派 3.3V（Pin 1 或 Pin 17），GND → GND
+ENCODER_PINS: dict[str, dict[str, int]] = {
+    "front_left":  {"pin_a": 23, "pin_b": 16},  # M1 左前
+    "front_right": {"pin_a": 18, "pin_b": 17},  # M2 右前
+    "rear_left":   {"pin_a":  4, "pin_b": 11},  # M3 左后（里程计左轮）
+    "rear_right":  {"pin_a": 19, "pin_b":  7},  # M4 右后（里程计右轮）
+}
+
+# 正交解码状态转换表（4倍频）
+_QUAD_TABLE: dict[tuple[int, int, int, int], int] = {
+    (0, 0, 0, 1): +1, (0, 1, 1, 1): +1, (1, 1, 1, 0): +1, (1, 0, 0, 0): +1,
+    (0, 0, 1, 0): -1, (1, 0, 1, 1): -1, (1, 1, 0, 1): -1, (0, 1, 0, 0): -1,
+}
+
+# ── pigpio 初始化（编码器依赖 pigpio 守护进程）────────────────────────
+try:
+    import pigpio as _pigpio
+    _pi = _pigpio.pi()
+    if not _pi.connected:
+        raise RuntimeError("pigpiod 未运行，请先执行：sudo pigpiod")
+    ENC_SIMULATION = False
+except Exception as _e:
+    print(f"⚠️  pigpio 不可用，编码器将进入模拟模式：{_e}")
+    _pi = None
+    ENC_SIMULATION = True
 
 MOTOR_LABELS = {
     "front_left":  "前左 (Motor 1)",
@@ -241,6 +269,220 @@ class CarController:
         GPIO.cleanup()
 
 
+# ── 编码器计数器 ──────────────────────────────────────────────────
+class _EncoderCounter:
+    """单路正交编码器计数器（pigpio 中断驱动）。"""
+
+    def __init__(self, pi, pin_a: int, pin_b: int):
+        self._pi    = pi
+        self._pin_a = pin_a
+        self._pin_b = pin_b
+        self._ticks = 0
+        self._prev_a = 0
+        self._prev_b = 0
+        self._cb_a = None
+        self._cb_b = None
+
+    def start(self):
+        import pigpio
+        self._pi.set_mode(self._pin_a, pigpio.INPUT)
+        self._pi.set_mode(self._pin_b, pigpio.INPUT)
+        self._pi.set_pull_up_down(self._pin_a, pigpio.PUD_UP)
+        self._pi.set_pull_up_down(self._pin_b, pigpio.PUD_UP)
+        self._prev_a = self._pi.read(self._pin_a)
+        self._prev_b = self._pi.read(self._pin_b)
+        self._cb_a = self._pi.callback(self._pin_a, pigpio.EITHER_EDGE, self._on_edge)
+        self._cb_b = self._pi.callback(self._pin_b, pigpio.EITHER_EDGE, self._on_edge)
+
+    def stop(self):
+        if self._cb_a:
+            self._cb_a.cancel()
+        if self._cb_b:
+            self._cb_b.cancel()
+
+    def _on_edge(self, gpio, level, tick):
+        curr_a = self._pi.read(self._pin_a)
+        curr_b = self._pi.read(self._pin_b)
+        delta = _QUAD_TABLE.get((self._prev_a, self._prev_b, curr_a, curr_b), 0)
+        self._ticks += delta
+        self._prev_a = curr_a
+        self._prev_b = curr_b
+
+    @property
+    def ticks(self) -> int:
+        return self._ticks
+
+    def reset(self):
+        self._ticks = 0
+
+
+# ── 编码器测试函数 ──────────────────────────────────────────────────
+_ENC_SPIN_DURATION = 2.0    # 秒：转动时长
+_ENC_MIN_TICKS     = 50     # 判断"有脉冲"的最低阈值
+
+
+def _enc_label(name: str) -> str:
+    return MOTOR_LABELS[name]
+
+
+def test_encoder_pulse(car: CarController, name: str) -> bool:
+    """
+    转动单个电机 _ENC_SPIN_DURATION 秒，检测对应编码器是否产生脉冲。
+    返回 True 表示脉冲正常。
+    """
+    if ENC_SIMULATION:
+        print(f"    [模拟] 跳过编码器脉冲检测（pigpio 不可用）")
+        return True
+
+    pins = ENCODER_PINS[name]
+    enc = _EncoderCounter(_pi, pins["pin_a"], pins["pin_b"])
+    enc.start()
+    try:
+        label = _enc_label(name)
+        print(f"    ▶ 正转 {_ENC_SPIN_DURATION}s，读取脉冲...", end="", flush=True)
+        car.motor_forward(name, TEST_SPEED)
+        time.sleep(_ENC_SPIN_DURATION)
+        car.motor_stop(name)
+        time.sleep(0.2)
+        fwd_ticks = enc.ticks
+        enc.reset()
+
+        print(f" 正转脉冲={fwd_ticks:+d}")
+
+        print(f"    ▶ 反转 {_ENC_SPIN_DURATION}s，读取脉冲...", end="", flush=True)
+        car.motor_backward(name, TEST_SPEED)
+        time.sleep(_ENC_SPIN_DURATION)
+        car.motor_stop(name)
+        time.sleep(0.2)
+        bwd_ticks = enc.ticks
+        print(f" 反转脉冲={bwd_ticks:+d}")
+
+        ok_fwd = abs(fwd_ticks) >= _ENC_MIN_TICKS
+        ok_bwd = abs(bwd_ticks) >= _ENC_MIN_TICKS
+        ok_dir = (fwd_ticks > 0 and bwd_ticks < 0) or (fwd_ticks < 0 and bwd_ticks > 0)
+
+        if not ok_fwd or not ok_bwd:
+            print(f"    ❌ 脉冲数过少（阈值 {_ENC_MIN_TICKS}）→ 检查 VCC/GND/A/B 接线")
+            return False
+        if not ok_dir:
+            print(f"    ⚠️  正反转脉冲方向相同 → A/B 相可能接反（里程计方向会出错）")
+            return False
+        print(f"    ✅ 脉冲正常，方向正确")
+        return True
+    finally:
+        enc.stop()
+
+
+def test_encoder_realtime(car: CarController, name: str):
+    """
+    实时显示编码器脉冲数（5 秒），供手动转动轮子或驱动电机时观察。
+    """
+    if ENC_SIMULATION:
+        print(f"    [模拟] 跳过实时显示（pigpio 不可用）")
+        return
+
+    pins = ENCODER_PINS[name]
+    enc = _EncoderCounter(_pi, pins["pin_a"], pins["pin_b"])
+    enc.start()
+    try:
+        label = _enc_label(name)
+        print(f"    实时脉冲监视（{label}，5 秒，手动转轮或等电机旋转）：")
+        for _ in range(50):
+            print(f"\r    ticks = {enc.ticks:+6d}", end="", flush=True)
+            time.sleep(0.1)
+        print(f"\r    最终 ticks = {enc.ticks:+6d}  （5 秒总计）")
+    finally:
+        enc.stop()
+
+
+def test_all_encoders(car: CarController) -> None:
+    """依次对四路编码器做脉冲 + 方向验证，打印汇总报告。"""
+    print("\n" + "═" * 56)
+    print("  【编码器测试】四路脉冲 & 方向验证")
+    if ENC_SIMULATION:
+        print("  ⚠️  pigpio 不可用，以下结果均为模拟")
+    print("═" * 56)
+
+    results = []
+    for name in MOTOR_NAMES.values():
+        label = _enc_label(name)
+        pins  = ENCODER_PINS[name]
+        print(f"\n  [{label}]  A=GPIO{pins['pin_a']}  B=GPIO{pins['pin_b']}")
+        ok = test_encoder_pulse(car, name)
+        results.append((label, ok))
+        time.sleep(0.5)
+
+    print("\n" + "═" * 56)
+    print("  【编码器测试汇总】")
+    print("═" * 56)
+    all_ok = True
+    for label, ok in results:
+        status = "✅ 正常" if ok else "❌ 异常"
+        if not ok:
+            all_ok = False
+        print(f"  {label:<20} {status}")
+    print("═" * 56)
+    if all_ok:
+        print("  结论：全部编码器脉冲与方向正常！\n")
+    else:
+        print("  结论：存在异常，请对照 docs/HARDWARE.md §2.1 检查接线。\n")
+
+
+def verify_encoder_wiring(car: CarController) -> None:
+    """
+    交互式编码器接线验证：
+    依次转动每个电机，显示实时脉冲，用户确认是否有信号。
+    """
+    print("\n" + "═" * 56)
+    print("  【编码器接线验证】逐路交互确认")
+    print("  每路电机会转动 3 秒，同时显示实时脉冲数。")
+    print("  若脉冲数持续为 0，说明该路编码器接线有问题。")
+    if ENC_SIMULATION:
+        print("  ⚠️  pigpio 不可用，以下为模拟模式")
+    print("═" * 56)
+
+    results = []
+    for name in MOTOR_NAMES.values():
+        label = _enc_label(name)
+        pins  = ENCODER_PINS[name]
+        print(f"\n  ─── {label}  A=GPIO{pins['pin_a']}  B=GPIO{pins['pin_b']} ───")
+        input(f"  按 Enter 开始转动 [{label}]...")
+
+        if ENC_SIMULATION:
+            print("  [模拟] 跳过")
+            results.append((label, "跳过"))
+            continue
+
+        enc = _EncoderCounter(_pi, pins["pin_a"], pins["pin_b"])
+        enc.start()
+        car.motor_forward(name, TEST_SPEED)
+        try:
+            for _ in range(30):
+                print(f"\r  ticks = {enc.ticks:+6d}", end="", flush=True)
+                time.sleep(0.1)
+        finally:
+            car.motor_stop(name)
+            enc.stop()
+
+        final = enc.ticks
+        print(f"\r  3 秒脉冲总计：{final:+d}")
+
+        if abs(final) < _ENC_MIN_TICKS:
+            print(f"  ❌ 脉冲过少（< {_ENC_MIN_TICKS}），可能接线有问题")
+            verdict = "❌ 异常"
+        else:
+            print(f"  ✅ 脉冲正常")
+            verdict = "✅ 正常"
+        results.append((label, verdict))
+        time.sleep(0.5)
+
+    print("\n" + "═" * 56)
+    print("  【编码器验证汇总】")
+    for label, verdict in results:
+        print(f"  {label:<20} {verdict}")
+    print("═" * 56 + "\n")
+
+
 # ── 测试用例 ──────────────────────────────────────────────────────
 def _step(label: str, action, duration: float = TEST_DURATION):
     print(f"  ▶ {label} ({duration:.1f}s)...", end="", flush=True)
@@ -400,21 +642,29 @@ def verify_motor_mapping(car: CarController):
 
 # ── 交互菜单 ──────────────────────────────────────────────────────
 def interactive_menu(car: CarController):
-    menu = """
-╔══════════════════════════════════════╗
-║      4轮电机测试 — 交互菜单          ║
-╠══════════════════════════════════════╣
-║  1. 测试前左电机 M1 (Front-Left)     ║
-║  2. 测试前右电机 M2 (Front-Right)    ║
-║  3. 测试后左电机 M3 (Rear-Left)      ║
-║  4. 测试后右电机 M4 (Rear-Right)     ║
-║  5. 逐一测试全部电机                 ║
-║  6. 速度渐变测试                     ║
-║  7. 整车运动模式测试                 ║
-║  8. 运行全部测试                     ║
-║  v. 接线验证（目视确认 M1~M4 位置）  ║
-║  q. 退出                             ║
-╚══════════════════════════════════════╝"""
+    enc_status = "模拟模式（pigpio 不可用）" if ENC_SIMULATION else "已就绪（pigpiod 运行中）"
+    menu = f"""
+╔════════════════════════════════════════════╗
+║     4轮编码电机测试 — 交互菜单             ║
+║     编码器状态：{enc_status:<20}║
+╠════════════════════════════════════════════╣
+║  ── 电机测试 ──────────────────────────── ║
+║  1. 测试前左电机 M1 (Front-Left)           ║
+║  2. 测试前右电机 M2 (Front-Right)          ║
+║  3. 测试后左电机 M3 (Rear-Left)            ║
+║  4. 测试后右电机 M4 (Rear-Right)           ║
+║  5. 逐一测试全部电机                       ║
+║  6. 速度渐变测试                           ║
+║  7. 整车运动模式测试                       ║
+║  8. 运行全部电机测试                       ║
+║  v. 目视验证 M1~M4 接线位置               ║
+║  ── 编码器测试 ─────────────────────────  ║
+║  e. 四路编码器脉冲 & 方向自动测试          ║
+║  r. 实时脉冲显示（选单路，手动转轮）       ║
+║  w. 交互式编码器接线验证                   ║
+║  ─────────────────────────────────────── ║
+║  q. 退出                                   ║
+╚════════════════════════════════════════════╝"""
     while True:
         print(menu)
         try:
@@ -436,6 +686,20 @@ def interactive_menu(car: CarController):
             test_all(car)
         elif choice == "v":
             verify_motor_mapping(car)
+        elif choice == "e":
+            test_all_encoders(car)
+        elif choice == "r":
+            print("  选择要监视的编码器：1=左前 2=右前 3=左后 4=右后")
+            try:
+                sel = input("  > ").strip()
+                if sel in ("1", "2", "3", "4"):
+                    test_encoder_realtime(car, MOTOR_NAMES[int(sel)])
+                else:
+                    print("  无效选项")
+            except (EOFError, KeyboardInterrupt):
+                pass
+        elif choice == "w":
+            verify_encoder_wiring(car)
         else:
             print("  无效选项，请重新输入")
 
@@ -446,18 +710,24 @@ def interactive_menu(car: CarController):
 
 # ── 主入口 ────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="4轮电机测试脚本")
-    parser.add_argument("--all", action="store_true", help="自动运行全部测试")
+    parser = argparse.ArgumentParser(description="4轮编码电机测试脚本")
+    parser.add_argument("--all", action="store_true",
+                        help="自动运行全部电机测试")
     parser.add_argument("--motor", type=int, choices=[1, 2, 3, 4],
                         help="只测试指定编号电机 (1=M1左前 2=M2右前 3=M3左后 4=M4右后)")
     parser.add_argument("--verify", action="store_true",
-                        help="逐口目视验证模式：依次点动 M1~M4，确认接线是否正确")
+                        help="逐口目视验证模式：依次点动 M1~M4，确认电机接线位置")
+    parser.add_argument("--encoder", action="store_true",
+                        help="自动测试四路编码器脉冲与方向（需要 sudo pigpiod）")
+    parser.add_argument("--enc-verify", action="store_true",
+                        help="交互式编码器接线验证（逐路转动，实时显示脉冲）")
     args = parser.parse_args()
 
-    mode = "模拟" if SIMULATION else "真实 GPIO"
-    print(f"\n4轮电机测试脚本 — 运行模式：{mode}")
-    print(f"测试速度：{TEST_SPEED}%  |  步骤时长：{TEST_DURATION}s")
-    print(f"GPIO 引脚（BCM）：{MOTOR_PINS}\n")
+    gpio_mode = "模拟" if SIMULATION else "真实 GPIO"
+    enc_mode  = "模拟" if ENC_SIMULATION else "pigpio"
+    print(f"\n4轮编码电机测试脚本")
+    print(f"  GPIO 模式：{gpio_mode}  |  编码器模式：{enc_mode}")
+    print(f"  测试速度：{TEST_SPEED}%  |  步骤时长：{TEST_DURATION}s\n")
 
     car = CarController()
     try:
@@ -467,13 +737,19 @@ def main():
             test_single_motor(car, MOTOR_NAMES[args.motor])
         elif args.all:
             test_all(car)
+        elif args.encoder:
+            test_all_encoders(car)
+        elif args.enc_verify:
+            verify_encoder_wiring(car)
         else:
             interactive_menu(car)
     except KeyboardInterrupt:
         print("\n\n⚠️  用户中断，正在停止电机并清理 GPIO...")
     finally:
         car.cleanup()
-        print("GPIO 已清理，程序退出。")
+        if _pi is not None:
+            _pi.stop()
+        print("资源已释放，程序退出。")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@
  */
 
 import { Spine } from '../../runtime/spine'
+import { agentDisplayName } from '@/lib/agent-display'
 import type { SpineEvent, AudioSpeechEndPayload } from '../../runtime/spine'
 
 const ASR_MODEL = 'qwen3-asr-flash'
@@ -24,7 +25,8 @@ const USE_CLOUD_STT = process.env.STT_USE_CLOUD === '1'
 const LOCAL_STT_URL: string | null = USE_CLOUD_STT ? null : process.env.LOCAL_STT_URL || null
 
 // 唤醒词列表，逗号分隔，支持环境变量覆盖
-const WAKE_WORDS: string[] = (process.env.WAKE_WORDS ?? 'Aria,小豆,狗蛋,aria')
+const WAKE_WORDS: string[] = (process.env.WAKE_WORDS ??
+  `${agentDisplayName()},小豆,Aria,aria`)
   .split(',')
   .map((w) => w.trim())
   .filter(Boolean)

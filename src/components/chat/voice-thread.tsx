@@ -51,6 +51,7 @@ import {
   ChevronDownIcon as ScrollDownIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAgentDisplayName } from "@/components/agent-display-context";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
@@ -185,6 +186,7 @@ function AssistantMessage() {
 
 // ── Welcome ───────────────────────────────────────────────────────
 function WelcomeScreen() {
+  const agentName = useAgentDisplayName();
   return (
     <ThreadPrimitive.Empty>
       <div className="flex flex-col items-center justify-center gap-5 py-16 text-center px-6">
@@ -192,7 +194,7 @@ function WelcomeScreen() {
           <BotIcon className="h-8 w-8 text-primary" />
         </div>
         <div>
-          <h2 className="text-xl font-semibold">你好，我是 Aria</h2>
+          <h2 className="text-xl font-semibold">你好，我是 {agentName}</h2>
           <p className="mt-1 text-sm text-muted-foreground">按住下方按钮开始说话</p>
         </div>
       </div>
@@ -406,6 +408,7 @@ function ThinkingDots() {
 
 // ── Main ──────────────────────────────────────────────────────────
 export function VoiceThread() {
+  const agentName = useAgentDisplayName();
   return (
     <>
       {/* 注册自定义工具 UI，与主聊天页一致，确保拍照、地图等结果能正确展示 */}
@@ -443,7 +446,7 @@ export function VoiceThread() {
         </Link>
         <div className="flex items-center gap-1.5 text-sm font-medium">
           <BotIcon className="h-4 w-4 text-primary" />
-          Aria 语音模式
+          {agentName} 语音模式
         </div>
         <div className="flex items-center gap-1 text-xs text-primary/80">
           <Volume2Icon className="h-3.5 w-3.5" />

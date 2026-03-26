@@ -25,6 +25,7 @@ import type { SpineEvent, AudioTranscriptPayload, AudioEmotionPayload, AudioKeyw
 import { ConversationContext } from './context'
 import { generateVoiceResponse } from '@/core/cognition/brain/conversation'
 import { ALL_TOOLS } from '@/core/cognition/tools'
+import { agentDisplayName } from '@/lib/agent-display'
 import { resetIdleTimer } from './active/idle-initiator'
 
 // ─── 类型 ─────────────────────────────────────────────────────────────────────
@@ -455,7 +456,10 @@ class ConversationManagerClass {
 
 /** 从唤醒句中去掉唤醒词，提取实质问题内容 */
 function stripWakeWords(text: string): string {
-  const words = (process.env.WAKE_WORDS ?? 'Aria,小豆,狗蛋,aria').split(',').map((w) => w.trim())
+  const words = (process.env.WAKE_WORDS ??
+    `${agentDisplayName()},小豆,Aria,aria`)
+    .split(',')
+    .map((w) => w.trim())
   let result = text
   for (const word of words) {
     result = result.replace(new RegExp(word, 'gi'), '')

@@ -222,16 +222,31 @@ class SlamEngine:
 
     # ─── 核心：处理扫描帧 ────────────────────────────────────────
 
-    def process_scan(self, scan) -> None:
+    def process_scan(
+        self,
+        scan,
+        velocities: tuple[float, float, float] | None = None,
+    ) -> None:
         """
         接收一圈 LidarScan，驱动 SLAM 更新。
         在 LiDAR 串口线程中调用（同步，非异步）。
+
+        Args:
+            scan:       LidarScan 对象
+            velocities: 里程计增量 (dxy_mm, dtheta_degrees, dt_seconds)。
+                        由 Odometry.get_velocity_for_slam() 提供。
+                        传入后 breezyslam 以里程计作为初始搜索猜测，
+                        显著降低扫描匹配漂移，尤其在长走廊和急转弯场景。
+                        为 None 时退化为纯激光 SLAM（原行为）。
         """
         with self._lock:
             if not self._is_mapping or self._slam is None:
                 return
             distances = _resample_scan(scan, self._cfg)
-            self._slam.update(distances)
+            if velocities is not None:
+                self._slam.update(distances, velocities)
+            else:
+                self._slam.update(distances)
             x, y, theta = self._slam.getpos()
             self._pose = (x, y, theta)
             self._slam.getmap(self._map_bytes)

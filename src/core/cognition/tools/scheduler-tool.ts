@@ -2,11 +2,12 @@ import { tool } from "ai";
 import { z } from "zod";
 import { addScheduledTask } from "@/core/behavior/scheduler";
 import { queries, parseRawTask } from "@/lib/db";
+import { agentDisplayName } from "@/lib/agent-display";
 import type { RawScheduledTask } from "@/lib/db";
 
 export const addScheduledTaskTool = tool({
   description:
-    "为家庭智能管家添加一个定时任务。支持两种类型：" +
+    `为${agentDisplayName()}（家庭智能管家）添加一个定时任务。支持两种类型：` +
     "clean_rooms（定时清扫指定房间）、clean_full（定时全屋清扫）。" +
     "cron 示例：'0 9 * * *' 表示每天早上9点，'0 9 * * 1-5' 表示工作日早上9点。",
   inputSchema: z.object({

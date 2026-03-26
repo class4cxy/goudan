@@ -32,9 +32,10 @@ logger = logging.getLogger(__name__)
 class LidarSensor:
     """Lidar + SlamEngine → WebSocket 的桥接层（应用层）。"""
 
-    def __init__(self, ws_manager: "ConnectionManager", slam_engine: SlamEngine):
+    def __init__(self, ws_manager: "ConnectionManager", slam_engine: SlamEngine, odometry=None):
         self._ws = ws_manager
         self._slam = slam_engine
+        self._odometry = odometry   # Odometry 实例（可选），有则传里程计给 SLAM
         self._loop: asyncio.AbstractEventLoop | None = None
 
         # LiDAR 硬件实例（配置来自环境变量）
@@ -111,7 +112,9 @@ class LidarSensor:
 
         # ── 2. 喂给 SLAM（建图中才有效）────────────────────────────
         if self._slam.is_mapping:
-            self._slam.process_scan(scan)
+            # 若里程计可用，读取本帧期间的增量并传给 SLAM 提升精度
+            velocities = self._odometry.get_velocity_for_slam() if self._odometry else None
+            self._slam.process_scan(scan, velocities)
             pose = self._slam.get_pose()
 
             # ── 2a. 位姿广播（1Hz）──────────────────────────────────

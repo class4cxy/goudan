@@ -16,6 +16,7 @@ import {
   MicIcon, Volume2Icon, VolumeXIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAgentDisplayName } from "@/components/agent-display-context";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { voiceModeStore } from "@/components/chat/voice-mode-store";
 import {
@@ -251,6 +252,7 @@ const SUGGESTIONS = [
 ];
 
 function WelcomeScreen() {
+  const agentName = useAgentDisplayName();
   return (
     <ThreadPrimitive.Empty>
       <div className="flex flex-col items-center justify-center gap-8 py-20 text-center">
@@ -258,7 +260,7 @@ function WelcomeScreen() {
           <BotIcon className="h-8 w-8 text-primary" />
         </div>
         <div>
-          <h2 className="text-xl font-semibold">你好，我是 Aria</h2>
+          <h2 className="text-xl font-semibold">你好，我是 {agentName}</h2>
           <p className="mt-1 text-sm text-muted-foreground">你的家庭智能管家，随时帮你打理家务</p>
         </div>
         <div className="grid grid-cols-2 gap-2">
@@ -281,6 +283,7 @@ function WelcomeScreen() {
 
 // ── Main Thread ───────────────────────────────────────────────────
 export function ChatThread() {
+  const agentName = useAgentDisplayName();
   return (
     <>
       {/* Register custom tool UIs (renders nothing, hooks into context) */}
@@ -326,7 +329,7 @@ export function ChatThread() {
         <div className="border-t border-border bg-zinc-950 p-4">
           <ComposerPrimitive.Root className="flex items-end gap-2 rounded-xl border border-border bg-zinc-900 px-3 py-2.5 focus-within:border-primary/50 transition-colors">
             <ComposerPrimitive.Input
-              placeholder="发消息给 Aria…"
+              placeholder={`发消息给 ${agentName}…`}
               className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none max-h-40"
               rows={1}
             />

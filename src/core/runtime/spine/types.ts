@@ -50,7 +50,7 @@ export type SpineEventType =
 // ─── Payload 类型定义 ─────────────────────────────────────────────────────────
 
 export interface AudioKeywordPayload {
-  keyword: string           // 命中的唤醒词（如 "小豆"、"Aria"）
+  keyword: string           // 命中的唤醒词（如 "小豆"；主名见 AGENT_DISPLAY_NAME / WAKE_WORDS）
   transcript: string        // 包含唤醒词的完整句子
   duration_ms: number
 }

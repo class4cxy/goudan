@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto'
 import type { UIMessage } from 'ai'
 import { AGENT_MODEL } from '@/core/cognition/tools'
 import { queries, type ConversationChunk } from '@/lib/db'
+import { agentDisplayName } from '@/lib/agent-display'
 
 // ─── 配置 ──────────────────────────────────────────────────────────────────
 
@@ -25,20 +26,48 @@ const MAX_LEVEL = 3
  */
 const HISTORY_TOKEN_BUDGET = 1500
 
+/** LLM 压缩调用最大重试次数 */
+const MAX_RETRY_ATTEMPTS = 3
+
 // ─── 压缩 Prompt ───────────────────────────────────────────────────────────
 
 const COMPRESS_PROMPT = `你是对话历史压缩助手。请将输入的对话内容压缩为一段简洁的中文摘要。
 
 重点保留：
 - 用户明确表达的偏好和要求
-- 已安排或取消的任务
-- 重要的事实和决定
+- 已安排或取消的任务，及其当前状态（进行中/已完成/待处理）
+- 重要的事实和决定，及其理由
 - 对话的情绪基调
 - 未解决的问题或待完成的事项
+- 所有具体的编号、单号、日期、金额、地址，原样保留，不得简化或重构
 
 忽略：闲聊寒暄、重复确认、工具调用的执行细节。
 
 请直接输出摘要文本，不加任何前缀或解释。`
+
+// ─── 工具函数 ───────────────────────────────────────────────────────────────
+
+/**
+ * 带指数退避的重试，专用于 LLM 压缩调用。
+ * AbortError 不重试，其余错误最多重试 MAX_RETRY_ATTEMPTS 次。
+ */
+async function retryLLMCall<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') throw err
+      lastError = err
+      if (attempt < MAX_RETRY_ATTEMPTS) {
+        const delay = Math.min(500 * 2 ** (attempt - 1), 5000)
+        const jitter = delay * 0.2 * (Math.random() * 2 - 1)
+        await new Promise(resolve => setTimeout(resolve, delay + jitter))
+      }
+    }
+  }
+  throw new Error(`[${label}] 重试 ${MAX_RETRY_ATTEMPTS} 次后仍失败: ${String(lastError)}`)
+}
 
 // ─── ConversationBuffer ────────────────────────────────────────────────────
 
@@ -152,16 +181,23 @@ export class ConversationBuffer {
 
   /**
    * 将一批 UIMessage 压缩为一个 level-N chunk，写入 DB。
+   * LLM 调用失败时最多重试 MAX_RETRY_ATTEMPTS 次；
+   * 重试耗尽后插入占位 chunk（避免消息偏移计算错误），不向上抛。
    */
   private async flushToChunk(messages: UIMessage[], level: number): Promise<void> {
     const text = this.messagesToText(messages)
     if (!text.trim()) return
 
-    const { text: summary } = await generateText({
-      model: AGENT_MODEL,
-      system: COMPRESS_PROMPT,
-      prompt: text,
-    })
+    let summary: string
+    try {
+      const result = await retryLLMCall(
+        () => generateText({ model: AGENT_MODEL, system: COMPRESS_PROMPT, prompt: text }),
+        'flushToChunk',
+      )
+      summary = result.text
+    } catch {
+      summary = `[压缩失败，共 ${messages.length} 条消息]`
+    }
 
     const timestamps = messages
       .map(m => {
@@ -204,11 +240,14 @@ export class ConversationBuffer {
       .map((c, i) => `【摘要 ${i + 1}】\n${c.summary}`)
       .join('\n\n')
 
-    const { text: summary } = await generateText({
-      model: AGENT_MODEL,
-      system: COMPRESS_PROMPT,
-      prompt: `请将以下 ${MERGE_THRESHOLD} 段历史摘要进一步合并压缩为一段简洁的摘要：\n\n${mergedInput}`,
-    })
+    const { text: summary } = await retryLLMCall(
+      () => generateText({
+        model: AGENT_MODEL,
+        system: COMPRESS_PROMPT,
+        prompt: `请将以下 ${MERGE_THRESHOLD} 段历史摘要进一步合并压缩为一段简洁的摘要：\n\n${mergedInput}`,
+      }),
+      'maybeMergeChunks',
+    )
 
     const coversFrom    = Math.min(...toMerge.map(c => c.covers_from))
     const coversTo      = Math.max(...toMerge.map(c => c.covers_to))
@@ -238,11 +277,12 @@ export class ConversationBuffer {
    * 只保留 user / assistant 的文字和工具调用摘要，忽略 step-start 等元数据。
    */
   private messagesToText(messages: UIMessage[]): string {
+    const assistantLabel = agentDisplayName()
     return messages
       .map(msg => {
         if (msg.role !== 'user' && msg.role !== 'assistant') return null
 
-        const role = msg.role === 'user' ? '用户' : 'Aria'
+        const role = msg.role === 'user' ? '用户' : assistantLabel
         const parts = (msg.parts ?? []) as Array<Record<string, unknown>>
         const segments: string[] = []
 

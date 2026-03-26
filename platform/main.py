@@ -30,6 +30,14 @@ from pydantic import BaseModel
 from audio_effector import AudioEffector
 from lidar_sensor import LidarSensor
 from slam import SlamEngine, SlamConfig, config_from_env
+from odometry import Odometry, OdometryConfig
+from localization import DistanceField, AMCL, AmclConfig
+from navigation import (
+    Costmap, CostmapConfig,
+    AStarPlanner,
+    DWAPlanner, DWAConfig, RobotConstraints,
+    Navigator, NavigatorConfig, NavigationStatus,
+)
 from devices import (
     Chassis, DEFAULT_CONFIG,
     CameraMount, DEFAULT_CAMERA_CONFIG,
@@ -37,6 +45,8 @@ from devices import (
     BluetoothManager,
     PowerSensor, PowerSensorConfig, PowerReading,
     Ultrasonic, UltrasonicConfig, UltrasonicReading,
+    Encoder, EncoderConfig,
+    Imu,
 )
 
 from roborock.data import UserData
@@ -127,9 +137,24 @@ cam = Camera(CaptureConfig(
     snapshot_dir=os.environ.get("CAMERA_SNAPSHOT_DIR", "/tmp/roborock_snapshots"),
 ))
 
-# SLAM 引擎 + 激光雷达应用层（配置可从 SLAM_MAP_QUALITY 等环境变量覆盖）
+# ── 编码器 + IMU + 里程计 ─────────────────────────────────────────
+encoder  = Encoder()
+imu      = Imu()
+odometry = Odometry(encoder, imu)
+
+# ── SLAM 引擎 + 激光雷达（建图层）────────────────────────────────
 slam_engine  = SlamEngine(config_from_env())
-lidar_sensor = LidarSensor(ws_manager, slam_engine)
+lidar_sensor = LidarSensor(ws_manager, slam_engine, odometry)
+
+# ── 定位层（AMCL）────────────────────────────────────────────────
+_distance_field = DistanceField()
+amcl            = AMCL(_distance_field, AmclConfig())
+
+# ── 导航层（Costmap + A* + DWA + Navigator）──────────────────────
+costmap   = Costmap(CostmapConfig())
+planner   = AStarPlanner()
+dwa       = DWAPlanner(RobotConstraints(), DWAConfig())
+navigator = Navigator(amcl, costmap, planner, dwa, odometry, chassis)
 
 # 电源传感器（INA219，低电量时 WebSocket 广播报警）
 # loop 在 _startup() 中赋值，回调在子线程里通过 run_coroutine_threadsafe 提交
@@ -298,9 +323,36 @@ async def _startup():
 
     # 激光雷达懒启动：服务启动时不自动开启雷达，仅在需要时由意图驱动：
     #   - 开始建图：POST /slam/start 内部自动启动
-    #   - 开始导航：Node.js MotorEffector 收到 action.navigate 后调用 POST /lidar/start
+    #   - 开始导航：POST /localize/start 内部自动启动
     #   - 手动控制：POST /lidar/start / POST /lidar/stop
     logger.info("⏸  激光雷达未自动启动，将在建图或导航时按需开启")
+
+    # 启动编码器（pigpio 中断驱动，非树莓派降级模拟）
+    await asyncio.to_thread(encoder.start)
+    if encoder.is_simulation:
+        logger.warning("⚠️  编码器运行在模拟模式（pigpiod 未运行或未接线）")
+    else:
+        logger.info("🔩 编码器已启动（左 A/B=GPIO%s/%s 右 A/B=GPIO%s/%s）",
+                    encoder.status["pins"]["left_a"],  encoder.status["pins"]["left_b"],
+                    encoder.status["pins"]["right_a"], encoder.status["pins"]["right_b"])
+
+    # 启动 IMU（MPU6050 I2C，非树莓派降级模拟）
+    await asyncio.to_thread(imu.start)
+    if imu.is_simulation:
+        logger.warning("⚠️  IMU 运行在模拟模式（smbus2 未安装或 MPU6050 未接线）")
+    else:
+        logger.info("📐 IMU 已启动（MPU6050 @ %s）", imu.status["i2c_addr"])
+
+    # 启动里程计（后台 50Hz 更新线程）
+    odometry.start()
+    logger.info("📍 里程计已启动（轮径=%.1fmm 轮距=%.1fmm IMU权重=%.1f）",
+                odometry.status["wheel_radius_mm"],
+                odometry.status["wheel_base_mm"],
+                odometry.status["imu_weight"])
+
+    # 启动导航控制循环（10Hz，默认 IDLE）
+    navigator.start()
+    logger.info("🧭 导航控制循环已启动")
 
     # 启动电源传感器（I2C 轮询线程，失败自动降级模拟模式）
     await asyncio.to_thread(power_sensor.start)
@@ -405,6 +457,22 @@ async def _shutdown():
             dm.close()
         except Exception:
             pass
+    try:
+        navigator.stop()
+    except Exception:
+        pass
+    try:
+        odometry.stop()
+    except Exception:
+        pass
+    try:
+        encoder.stop()
+    except Exception:
+        pass
+    try:
+        imu.stop()
+    except Exception:
+        pass
     try:
         chassis.cleanup()
     except Exception:
@@ -1491,3 +1559,198 @@ async def _handle_action(message: dict) -> None:
 
     else:
         logger.warning(f"[WS] 未知指令类型：{msg_type}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ── 里程计 & 传感器接口 ──────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+
+@app.get("/odometry/status", summary="里程计状态")
+async def odometry_status():
+    return odometry.status
+
+@app.post("/odometry/reset", summary="重置里程计位姿为原点")
+async def odometry_reset():
+    odometry.reset_pose(0.0, 0.0, 0.0)
+    return {"ok": True, "message": "里程计已重置"}
+
+@app.get("/encoder/status", summary="编码器状态")
+async def encoder_status():
+    return encoder.status
+
+@app.get("/imu/status", summary="IMU 状态")
+async def imu_status():
+    return imu.status
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ── 定位接口（AMCL）───────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+
+class LocalizeStartRequest(BaseModel):
+    map_name:  str   = ""             # 地图文件名（不含扩展名）；空=使用最新地图
+    x_mm:      float | None = None   # 已知起点 X（None=全局定位）
+    y_mm:      float | None = None   # 已知起点 Y（None=全局定位）
+    theta_deg: float | None = None   # 已知起点角度（None=全局定位）
+
+@app.post("/localize/start", summary="启动 AMCL 定位（加载地图）")
+async def localize_start(req: LocalizeStartRequest):
+    """
+    加载地图并启动 AMCL 定位。
+
+    - 若 x_mm/y_mm/theta_deg 均提供：以已知起点初始化（从充电桩出发时使用）
+    - 否则：全局定位，粒子均匀散布，机器车需缓慢移动 20–60 秒以收敛
+    - 建图完成后必须先调用此接口才能导航
+    """
+    # 确定地图文件
+    maps_dir = slam_engine._cfg.maps_dir
+    if req.map_name:
+        pgm_path = maps_dir / f"{req.map_name}.pgm"
+        json_path = maps_dir / f"{req.map_name}.json"
+    else:
+        # 自动选最新地图
+        pgm_files = sorted(maps_dir.glob("*.pgm"), key=lambda p: p.stat().st_mtime)
+        if not pgm_files:
+            raise HTTPException(status_code=404, detail="maps/ 目录下无已保存地图")
+        pgm_path  = pgm_files[-1]
+        json_path = pgm_path.with_suffix(".json")
+
+    if not pgm_path.exists():
+        raise HTTPException(status_code=404, detail=f"地图文件不存在：{pgm_path}")
+
+    # 读取元数据获取地图参数
+    import json as _json
+    meta = {}
+    if json_path.exists():
+        meta = _json.loads(json_path.read_text())
+    map_size = meta.get("map_size_pixels", slam_engine._cfg.map_size_pixels)
+    mpp      = meta.get("mm_per_pixel",    slam_engine._cfg.mm_per_pixel)
+
+    # 加载距离变换（供 AMCL 似然场使用）
+    ok = await asyncio.to_thread(
+        _distance_field.load_from_pgm, pgm_path, map_size, mpp
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="距离变换计算失败（scipy 是否已安装？）")
+
+    # 加载代价地图（供导航使用）
+    pgm_raw = pgm_path.read_bytes()
+    # 解析 PGM 跳过 header
+    lines = pgm_raw.split(b"\n")
+    skip = 0
+    for line in lines:
+        skip += 1
+        if not line.startswith(b"#") and skip >= 3:
+            if b" " in line or line.isdigit():
+                break
+    raw_pixels = b"\n".join(lines[skip:])
+    await asyncio.to_thread(costmap.load_static, raw_pixels, map_size, mpp)
+
+    # 启动 AMCL
+    if req.x_mm is not None and req.y_mm is not None and req.theta_deg is not None:
+        amcl.start_at(req.x_mm, req.y_mm, req.theta_deg)
+        mode = "已知起点"
+    else:
+        amcl.start_global()
+        mode = "全局定位"
+
+    # 启动激光雷达（AMCL 需要实时扫描）
+    if not lidar_sensor.device.is_running:
+        await asyncio.to_thread(lidar_sensor.start, _main_loop)
+
+    return {
+        "ok":      True,
+        "map":     pgm_path.stem,
+        "mode":    mode,
+        "status":  amcl.status,
+    }
+
+@app.get("/localize/pose", summary="当前 AMCL 定位位姿")
+async def localize_pose():
+    if not amcl.is_running:
+        raise HTTPException(status_code=503, detail="AMCL 未启动，请先调用 /localize/start")
+    return amcl.status
+
+@app.post("/localize/reset", summary="触发全局重定位（机器人被搬走时调用）")
+async def localize_reset():
+    if not amcl.is_running:
+        raise HTTPException(status_code=503, detail="AMCL 未启动")
+    amcl.reset()
+    return {"ok": True, "message": "已触发全局重定位，机器人需缓慢移动以收敛"}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ── AMCL 订阅：将 AMCL 位姿广播到 WebSocket ──────────────────────
+# ═══════════════════════════════════════════════════════════════════
+
+def _start_amcl_lidar_bridge():
+    """将每圈 LiDAR 扫描同时喂给 AMCL（定位模式下）。"""
+    original_on_scan = lidar_sensor._on_scan
+
+    def patched_on_scan(scan):
+        original_on_scan(scan)
+        if amcl.is_running:
+            vel = odometry.get_velocity_for_slam()
+            amcl.update(scan, vel)
+            loop = _main_loop
+            if loop and loop.is_running():
+                x, y, t, conf = amcl.get_pose()
+                asyncio.run_coroutine_threadsafe(
+                    ws_manager.broadcast({
+                        "type": "sense.amcl.pose",
+                        "payload": {
+                            "x_mm": round(x, 1), "y_mm": round(y, 1),
+                            "theta_deg": round(t, 2), "confidence": round(conf, 3),
+                            "converged": amcl.is_converged,
+                        },
+                    }),
+                    loop,
+                )
+                # 更新代价地图动态障碍层
+                costmap.update_dynamic(scan, x, y, t)
+
+    lidar_sensor._on_scan = patched_on_scan
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ── 导航接口（A* + DWA）─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+
+class NavigateRequest(BaseModel):
+    x_mm:  float
+    y_mm:  float
+    label: str = ""
+
+@app.post("/navigate/to", summary="导航到目标坐标（mm）")
+async def navigate_to(req: NavigateRequest):
+    """
+    向目标坐标导航。
+
+    前置条件：
+      1. 已调用 /localize/start 并等待 AMCL 收敛（confidence > 0.6）
+      2. 地图已加载（costmap.is_loaded = True）
+
+    过程中可通过 GET /navigate/status 查询进度。
+    """
+    result = navigator.navigate_to(req.x_mm, req.y_mm, req.label)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result["message"])
+    return result
+
+@app.post("/navigate/cancel", summary="取消当前导航")
+async def navigate_cancel():
+    navigator.cancel()
+    return {"ok": True, "message": "导航已取消"}
+
+@app.get("/navigate/status", summary="查询导航状态")
+async def navigate_status():
+    return navigator.status
+
+@app.post("/navigate/costmap/clear_dynamic", summary="清除动态障碍层")
+async def costmap_clear_dynamic():
+    """清除临时动态障碍（调试用）。"""
+    costmap.clear_dynamic()
+    return {"ok": True, "message": "动态障碍层已清除"}
+
+# 启动 AMCL-LiDAR 桥接（Monkey Patch，在应用启动后执行）
+_start_amcl_lidar_bridge()

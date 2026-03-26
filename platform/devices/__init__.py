@@ -3,6 +3,15 @@ platform/devices — 机器车硬件抽象层
 
 公开接口：
 
+  编码器（500线正交编码器，pigpio 驱动）
+    Encoder            — 双路编码器控制器（左轮 + 右轮）
+    EncoderConfig      — 编码器 GPIO 引脚配置数据类
+
+  IMU（MPU6050 陀螺仪/加速度计）
+    Imu                — MPU6050 驱动，100Hz 后台采样
+    ImuReading         — 单次采样数据（gyro_x/y/z, accel_x/y/z）
+
+
   底盘（4轮差速驱动）
     Chassis            — 4轮底盘控制器
     ChassisConfig      — 底盘引脚配置数据类
@@ -51,6 +60,8 @@ from .bluetooth import BluetoothManager
 from .lidar import Lidar, LidarConfig, DEFAULT_LIDAR_CONFIG, LidarScan, LidarPoint
 from .power_sensor import PowerSensor, PowerSensorConfig, DEFAULT_POWER_CONFIG, PowerReading
 from .ultrasonic import Ultrasonic, UltrasonicConfig, DEFAULT_ULTRASONIC_CONFIG, UltrasonicReading
+from .encoder import Encoder, EncoderConfig
+from .imu import Imu, ImuReading
 
 __all__ = [
     # 底盘
@@ -90,4 +101,10 @@ __all__ = [
     "UltrasonicConfig",
     "DEFAULT_ULTRASONIC_CONFIG",
     "UltrasonicReading",
+    # 编码器
+    "Encoder",
+    "EncoderConfig",
+    # IMU
+    "Imu",
+    "ImuReading",
 ]
