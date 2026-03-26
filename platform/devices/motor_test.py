@@ -304,6 +304,12 @@ class _EncoderCounter:
 
     def start(self):
         import lgpio
+        # 先尝试释放，防止上一轮未释放导致 GPIO busy
+        for pin in (self._pin_a, self._pin_b):
+            try:
+                lgpio.gpio_free(self._h, pin)
+            except Exception:
+                pass
         lgpio.gpio_claim_input(self._h, self._pin_a, lgpio.SET_PULL_UP)
         lgpio.gpio_claim_input(self._h, self._pin_b, lgpio.SET_PULL_UP)
         self._prev_a = lgpio.gpio_read(self._h, self._pin_a)
@@ -312,10 +318,18 @@ class _EncoderCounter:
         self._cb_b = lgpio.callback(self._h, self._pin_b, lgpio.BOTH_EDGES, self._on_edge)
 
     def stop(self):
+        import lgpio
         if self._cb_a:
             self._cb_a.cancel()
+            self._cb_a = None
         if self._cb_b:
             self._cb_b.cancel()
+            self._cb_b = None
+        for pin in (self._pin_a, self._pin_b):
+            try:
+                lgpio.gpio_free(self._h, pin)
+            except Exception:
+                pass
 
     def _on_edge(self, chip, gpio, level, tick):
         import lgpio
@@ -444,6 +458,65 @@ def test_all_encoders(car: CarController) -> None:
         print("  结论：全部编码器脉冲与方向正常！\n")
     else:
         print("  结论：存在异常，请对照 docs/HARDWARE.md §2.1 检查接线。\n")
+
+
+def diagnose_encoder_pins(name: str) -> None:
+    """
+    不转电机，直接读 A/B 相引脚原始电平，手动转轮观察变化。
+    用于确认编码器信号是否到达 GPIO（排查 VCC/接线问题）。
+    """
+    if ENC_SIMULATION:
+        print("    [模拟] lgpio 不可用，跳过")
+        return
+
+    import lgpio
+    pins  = ENCODER_PINS[name]
+    pin_a = pins["pin_a"]
+    pin_b = pins["pin_b"]
+    label = _enc_label(name)
+
+    print(f"\n  【引脚诊断】{label}  A=GPIO{pin_a}  B=GPIO{pin_b}")
+    print(f"  请用手慢慢转动对应轮子，观察 A/B 值是否在 0/1 之间跳变。")
+    print(f"  若始终为 1/1 或 0/0 且不变 → 编码器 VCC/GND/A/B 接线有问题。")
+    print(f"  按 Ctrl+C 结束诊断\n")
+
+    for pin in (pin_a, pin_b):
+        try:
+            lgpio.gpio_free(_h, pin)
+        except Exception:
+            pass
+
+    ok_a = ok_b = True
+    try:
+        lgpio.gpio_claim_input(_h, pin_a, lgpio.SET_PULL_UP)
+    except Exception as e:
+        print(f"  ❌ GPIO{pin_a} 无法声明：{e}（可能被内核占用，如 SPI/I2C）")
+        ok_a = False
+    try:
+        lgpio.gpio_claim_input(_h, pin_b, lgpio.SET_PULL_UP)
+    except Exception as e:
+        print(f"  ❌ GPIO{pin_b} 无法声明：{e}（可能被内核占用，如 SPI/I2C）")
+        ok_b = False
+
+    try:
+        prev = (-1, -1)
+        while True:
+            a = lgpio.gpio_read(_h, pin_a) if ok_a else "×"
+            b = lgpio.gpio_read(_h, pin_b) if ok_b else "×"
+            if (a, b) != prev:
+                print(f"\r  A(GPIO{pin_a})={a}  B(GPIO{pin_b})={b}    ", flush=True)
+                prev = (a, b)
+            else:
+                print(f"\r  A(GPIO{pin_a})={a}  B(GPIO{pin_b})={b}    ", end="", flush=True)
+            import time as _t; _t.sleep(0.02)
+    except KeyboardInterrupt:
+        print("\n  诊断结束")
+    finally:
+        for pin in (pin_a, pin_b):
+            try:
+                lgpio.gpio_free(_h, pin)
+            except Exception:
+                pass
 
 
 def verify_encoder_wiring(car: CarController) -> None:
@@ -679,6 +752,7 @@ def interactive_menu(car: CarController):
 ║  ── 编码器测试 ─────────────────────────  ║
 ║  e. 四路编码器脉冲 & 方向自动测试          ║
 ║  r. 实时脉冲显示（选单路，手动转轮）       ║
+║  d. 引脚原始电平诊断（手动转轮看0/1跳变）  ║
 ║  w. 交互式编码器接线验证                   ║
 ║  ─────────────────────────────────────── ║
 ║  q. 退出                                   ║
@@ -716,6 +790,16 @@ def interactive_menu(car: CarController):
                     print("  无效选项")
             except (EOFError, KeyboardInterrupt):
                 pass
+        elif choice == "d":
+            print("  选择要诊断的编码器：1=左前 2=右前 3=左后 4=右后")
+            try:
+                sel = input("  > ").strip()
+                if sel in ("1", "2", "3", "4"):
+                    diagnose_encoder_pins(MOTOR_NAMES[int(sel)])
+                else:
+                    print("  无效选项")
+            except (EOFError, KeyboardInterrupt):
+                pass
         elif choice == "w":
             verify_encoder_wiring(car)
         else:
@@ -739,10 +823,12 @@ def main():
                         help="自动测试四路编码器脉冲与方向（需要 sudo pigpiod）")
     parser.add_argument("--enc-verify", action="store_true",
                         help="交互式编码器接线验证（逐路转动，实时显示脉冲）")
+    parser.add_argument("--diagnose", type=int, choices=[1, 2, 3, 4],
+                        help="引脚原始电平诊断，手动转轮观察0/1跳变 (1=左前 2=右前 3=左后 4=右后)")
     args = parser.parse_args()
 
     gpio_mode = "模拟" if SIMULATION else "真实 GPIO"
-    enc_mode  = "模拟" if ENC_SIMULATION else "pigpio"
+    enc_mode  = "模拟" if ENC_SIMULATION else f"lgpio chip{_CHIP_NUM}"
     print(f"\n4轮编码电机测试脚本")
     print(f"  GPIO 模式：{gpio_mode}  |  编码器模式：{enc_mode}")
     print(f"  测试速度：{TEST_SPEED}%  |  步骤时长：{TEST_DURATION}s\n")
@@ -759,6 +845,8 @@ def main():
             test_all_encoders(car)
         elif args.enc_verify:
             verify_encoder_wiring(car)
+        elif args.diagnose:
+            diagnose_encoder_pins(MOTOR_NAMES[args.diagnose])
         else:
             interactive_menu(car)
     except KeyboardInterrupt:
