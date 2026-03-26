@@ -71,45 +71,67 @@ class EncoderConfig:
 
 
 class _WheelEncoder:
-    """单路正交编码器（A/B 两相），由 lgpio 硬件中断驱动。"""
+    """
+    单路正交编码器（A/B 两相），lgpio 轮询线程驱动。
+
+    使用轮询线程代替 callback，避免 RPi.GPIO 与 lgpio 共享 gpiochip
+    handle 时 callback 不触发的问题（树莓派 5 实测确认）。
+    """
 
     def __init__(self, h: int, pin_a: int, pin_b: int) -> None:
-        self._h     = h
-        self._pin_a = pin_a
-        self._pin_b = pin_b
-        self._lock  = threading.Lock()
-        self._ticks = 0
+        self._h       = h
+        self._pin_a   = pin_a
+        self._pin_b   = pin_b
+        self._lock    = threading.Lock()
+        self._ticks   = 0
         self._prev_a: int = 0
         self._prev_b: int = 0
-        self._cb_a = None
-        self._cb_b = None
+        self._running = False
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         import lgpio
+        for pin in (self._pin_a, self._pin_b):
+            try:
+                lgpio.gpio_free(self._h, pin)
+            except Exception:
+                pass
         lgpio.gpio_claim_input(self._h, self._pin_a, lgpio.SET_PULL_UP)
         lgpio.gpio_claim_input(self._h, self._pin_b, lgpio.SET_PULL_UP)
-        self._prev_a = lgpio.gpio_read(self._h, self._pin_a)
-        self._prev_b = lgpio.gpio_read(self._h, self._pin_b)
-        self._cb_a = lgpio.callback(self._h, self._pin_a, lgpio.BOTH_EDGES, self._on_edge)
-        self._cb_b = lgpio.callback(self._h, self._pin_b, lgpio.BOTH_EDGES, self._on_edge)
+        self._prev_a  = lgpio.gpio_read(self._h, self._pin_a)
+        self._prev_b  = lgpio.gpio_read(self._h, self._pin_b)
+        self._running = True
+        self._thread  = threading.Thread(
+            target=self._poll_loop, daemon=True, name=f"enc-{self._pin_a}"
+        )
+        self._thread.start()
+
+    def _poll_loop(self) -> None:
+        import lgpio
+        while self._running:
+            curr_a = lgpio.gpio_read(self._h, self._pin_a)
+            curr_b = lgpio.gpio_read(self._h, self._pin_b)
+            if curr_a != self._prev_a or curr_b != self._prev_b:
+                delta = _QUAD_TABLE.get(
+                    (self._prev_a, self._prev_b, curr_a, curr_b), 0
+                )
+                if delta:
+                    with self._lock:
+                        self._ticks += delta
+                self._prev_a = curr_a
+                self._prev_b = curr_b
 
     def stop(self) -> None:
-        if self._cb_a:
-            self._cb_a.cancel()
-        if self._cb_b:
-            self._cb_b.cancel()
-
-    def _on_edge(self, chip: int, gpio: int, level: int, tick: int) -> None:
-        """lgpio 中断回调（在 lgpio 内部线程中执行）。"""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=1.0)
+            self._thread = None
         import lgpio
-        curr_a = lgpio.gpio_read(self._h, self._pin_a)
-        curr_b = lgpio.gpio_read(self._h, self._pin_b)
-        delta = _QUAD_TABLE.get((self._prev_a, self._prev_b, curr_a, curr_b), 0)
-        if delta:
-            with self._lock:
-                self._ticks += delta
-        self._prev_a = curr_a
-        self._prev_b = curr_b
+        for pin in (self._pin_a, self._pin_b):
+            try:
+                lgpio.gpio_free(self._h, pin)
+            except Exception:
+                pass
 
     def get_and_reset(self) -> int:
         """原子地读取并清零脉冲计数，返回自上次调用以来的脉冲增量。"""

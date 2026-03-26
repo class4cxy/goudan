@@ -290,21 +290,26 @@ class CarController:
 
 # ── 编码器计数器 ──────────────────────────────────────────────────
 class _EncoderCounter:
-    """单路正交编码器计数器（lgpio 硬件中断驱动，支持树莓派 5）。"""
+    """
+    单路正交编码器计数器（lgpio 轮询线程，支持树莓派 5）。
+
+    使用轮询线程代替 callback，避免 RPi.GPIO 与 lgpio 共享 gpiochip
+    handle 时 callback 无法触发的问题。原始 GPIO read 已验证正常。
+    """
 
     def __init__(self, h: int, pin_a: int, pin_b: int):
-        self._h     = h
-        self._pin_a = pin_a
-        self._pin_b = pin_b
-        self._ticks = 0
-        self._prev_a = 0
-        self._prev_b = 0
-        self._cb_a = None
-        self._cb_b = None
+        self._h       = h
+        self._pin_a   = pin_a
+        self._pin_b   = pin_b
+        self._ticks   = 0
+        self._prev_a  = 0
+        self._prev_b  = 0
+        self._running = False
+        self._thread  = None
 
     def start(self):
         import lgpio
-        # 先尝试释放，防止上一轮未释放导致 GPIO busy
+        import threading
         for pin in (self._pin_a, self._pin_b):
             try:
                 lgpio.gpio_free(self._h, pin)
@@ -312,33 +317,37 @@ class _EncoderCounter:
                 pass
         lgpio.gpio_claim_input(self._h, self._pin_a, lgpio.SET_PULL_UP)
         lgpio.gpio_claim_input(self._h, self._pin_b, lgpio.SET_PULL_UP)
-        self._prev_a = lgpio.gpio_read(self._h, self._pin_a)
-        self._prev_b = lgpio.gpio_read(self._h, self._pin_b)
-        self._cb_a = lgpio.callback(self._h, self._pin_a, lgpio.BOTH_EDGES, self._on_edge)
-        self._cb_b = lgpio.callback(self._h, self._pin_b, lgpio.BOTH_EDGES, self._on_edge)
+        self._prev_a  = lgpio.gpio_read(self._h, self._pin_a)
+        self._prev_b  = lgpio.gpio_read(self._h, self._pin_b)
+        self._running = True
+        self._thread  = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
+
+    def _poll_loop(self):
+        import lgpio
+        while self._running:
+            curr_a = lgpio.gpio_read(self._h, self._pin_a)
+            curr_b = lgpio.gpio_read(self._h, self._pin_b)
+            if curr_a != self._prev_a or curr_b != self._prev_b:
+                delta = _QUAD_TABLE.get(
+                    (self._prev_a, self._prev_b, curr_a, curr_b), 0
+                )
+                if delta:
+                    self._ticks += delta
+                self._prev_a = curr_a
+                self._prev_b = curr_b
 
     def stop(self):
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=1.0)
+            self._thread = None
         import lgpio
-        if self._cb_a:
-            self._cb_a.cancel()
-            self._cb_a = None
-        if self._cb_b:
-            self._cb_b.cancel()
-            self._cb_b = None
         for pin in (self._pin_a, self._pin_b):
             try:
                 lgpio.gpio_free(self._h, pin)
             except Exception:
                 pass
-
-    def _on_edge(self, chip, gpio, level, tick):
-        import lgpio
-        curr_a = lgpio.gpio_read(self._h, self._pin_a)
-        curr_b = lgpio.gpio_read(self._h, self._pin_b)
-        delta = _QUAD_TABLE.get((self._prev_a, self._prev_b, curr_a, curr_b), 0)
-        self._ticks += delta
-        self._prev_a = curr_a
-        self._prev_b = curr_b
 
     @property
     def ticks(self) -> int:
