@@ -81,16 +81,20 @@ _QUAD_TABLE: dict[tuple[int, int, int, int], int] = {
     (0, 0, 1, 0): -1, (1, 0, 1, 1): -1, (1, 1, 0, 1): -1, (0, 1, 0, 0): -1,
 }
 
-# ── pigpio 初始化（编码器依赖 pigpio 守护进程）────────────────────────
+# 树莓派 5 用 gpiochip4（RP1），旧款用 gpiochip0
+import os as _os
+_CHIP_NUM = int(_os.environ.get("GPIO_CHIP_NUM", "4" if _os.path.exists("/dev/gpiochip4") else "0"))
+
+# ── lgpio 初始化（编码器后端，支持树莓派 5）────────────────────────────
 try:
-    import pigpio as _pigpio
-    _pi = _pigpio.pi()
-    if not _pi.connected:
-        raise RuntimeError("pigpiod 未运行，请先执行：sudo pigpiod")
+    import lgpio as _lgpio
+    _h = _lgpio.gpiochip_open(_CHIP_NUM)
     ENC_SIMULATION = False
 except Exception as _e:
-    print(f"⚠️  pigpio 不可用，编码器将进入模拟模式：{_e}")
-    _pi = None
+    print(f"⚠️  lgpio 不可用，编码器将进入模拟模式：{_e}")
+    print(f"   安装方法：sudo apt install -y python3-lgpio")
+    _lgpio = None  # type: ignore[assignment]
+    _h = None
     ENC_SIMULATION = True
 
 MOTOR_LABELS = {
@@ -271,10 +275,10 @@ class CarController:
 
 # ── 编码器计数器 ──────────────────────────────────────────────────
 class _EncoderCounter:
-    """单路正交编码器计数器（pigpio 中断驱动）。"""
+    """单路正交编码器计数器（lgpio 硬件中断驱动，支持树莓派 5）。"""
 
-    def __init__(self, pi, pin_a: int, pin_b: int):
-        self._pi    = pi
+    def __init__(self, h: int, pin_a: int, pin_b: int):
+        self._h     = h
         self._pin_a = pin_a
         self._pin_b = pin_b
         self._ticks = 0
@@ -284,15 +288,13 @@ class _EncoderCounter:
         self._cb_b = None
 
     def start(self):
-        import pigpio
-        self._pi.set_mode(self._pin_a, pigpio.INPUT)
-        self._pi.set_mode(self._pin_b, pigpio.INPUT)
-        self._pi.set_pull_up_down(self._pin_a, pigpio.PUD_UP)
-        self._pi.set_pull_up_down(self._pin_b, pigpio.PUD_UP)
-        self._prev_a = self._pi.read(self._pin_a)
-        self._prev_b = self._pi.read(self._pin_b)
-        self._cb_a = self._pi.callback(self._pin_a, pigpio.EITHER_EDGE, self._on_edge)
-        self._cb_b = self._pi.callback(self._pin_b, pigpio.EITHER_EDGE, self._on_edge)
+        import lgpio
+        lgpio.gpio_claim_input(self._h, self._pin_a, lgpio.SET_PULL_UP)
+        lgpio.gpio_claim_input(self._h, self._pin_b, lgpio.SET_PULL_UP)
+        self._prev_a = lgpio.gpio_read(self._h, self._pin_a)
+        self._prev_b = lgpio.gpio_read(self._h, self._pin_b)
+        self._cb_a = lgpio.callback(self._h, self._pin_a, lgpio.BOTH_EDGES, self._on_edge)
+        self._cb_b = lgpio.callback(self._h, self._pin_b, lgpio.BOTH_EDGES, self._on_edge)
 
     def stop(self):
         if self._cb_a:
@@ -300,9 +302,10 @@ class _EncoderCounter:
         if self._cb_b:
             self._cb_b.cancel()
 
-    def _on_edge(self, gpio, level, tick):
-        curr_a = self._pi.read(self._pin_a)
-        curr_b = self._pi.read(self._pin_b)
+    def _on_edge(self, chip, gpio, level, tick):
+        import lgpio
+        curr_a = lgpio.gpio_read(self._h, self._pin_a)
+        curr_b = lgpio.gpio_read(self._h, self._pin_b)
         delta = _QUAD_TABLE.get((self._prev_a, self._prev_b, curr_a, curr_b), 0)
         self._ticks += delta
         self._prev_a = curr_a
@@ -335,7 +338,7 @@ def test_encoder_pulse(car: CarController, name: str) -> bool:
         return True
 
     pins = ENCODER_PINS[name]
-    enc = _EncoderCounter(_pi, pins["pin_a"], pins["pin_b"])
+    enc = _EncoderCounter(_h, pins["pin_a"], pins["pin_b"])
     enc.start()
     try:
         label = _enc_label(name)
@@ -382,7 +385,7 @@ def test_encoder_realtime(car: CarController, name: str):
         return
 
     pins = ENCODER_PINS[name]
-    enc = _EncoderCounter(_pi, pins["pin_a"], pins["pin_b"])
+    enc = _EncoderCounter(_h, pins["pin_a"], pins["pin_b"])
     enc.start()
     try:
         label = _enc_label(name)
@@ -453,7 +456,7 @@ def verify_encoder_wiring(car: CarController) -> None:
             results.append((label, "跳过"))
             continue
 
-        enc = _EncoderCounter(_pi, pins["pin_a"], pins["pin_b"])
+        enc = _EncoderCounter(_h, pins["pin_a"], pins["pin_b"])
         enc.start()
         car.motor_forward(name, TEST_SPEED)
         try:
@@ -747,8 +750,8 @@ def main():
         print("\n\n⚠️  用户中断，正在停止电机并清理 GPIO...")
     finally:
         car.cleanup()
-        if _pi is not None:
-            _pi.stop()
+        if _h is not None and _lgpio is not None:
+            _lgpio.gpiochip_close(_h)
         print("资源已释放，程序退出。")
 
 

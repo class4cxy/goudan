@@ -1,23 +1,25 @@
 """
-Encoder — 500线正交编码器驱动（pigpio 后端）
-============================================
+Encoder — 500线正交编码器驱动（lgpio 后端，支持树莓派 5）
+============================================================
 职责：
-  - 通过 pigpio 守护进程读取两路正交编码器（A/B 两相）
+  - 通过 lgpio 读取两路正交编码器（A/B 两相）的硬件中断
   - 4 倍频解码：A/B 上升沿与下降沿均计数 → 每圈 2000 脉冲（500线）
   - 线程安全地累计脉冲，供 Odometry 定期读取并清零
-  - 非树莓派或 pigpiod 未启动时自动降级为模拟模式（返回 0）
+  - lgpio 不可用时自动降级为模拟模式（返回 0）
 
 接线说明（GMR 1:90 编码电机，6 线：M+/M− 接电机驱动口，另 4 线为编码器信号）：
-  编码器 4 线：VCC(5V)、GND、A相、B相
+  编码器 4 线：VCC(3.3V)、GND、A相、B相
   四轮底盘只需接左右各一路编码器（选后轮，受力更均匀）：
     左后轮编码器：A → ENCODER_LEFT_A（默认 GPIO4），B → ENCODER_LEFT_B（默认 GPIO11）
     右后轮编码器：A → ENCODER_RIGHT_A（默认 GPIO19），B → ENCODER_RIGHT_B（默认 GPIO7）
   引脚定稿见 docs/HARDWARE.md §7.1.1；GPIO13 已被舵机 Tilt 占用，禁止接编码器。
+  编码器 VCC 接树莓派 3.3V（Pin 1 或 Pin 17），不要接 5V。
 
-pigpio 安装与启动：
-  pip install pigpio
-  sudo pigpiod               # 启动守护进程（每次开机）
-  sudo systemctl enable pigpiod  # 或设置开机自启
+lgpio 安装：
+  sudo apt install -y python3-lgpio
+
+树莓派 5 GPIO 芯片编号：
+  /dev/gpiochip4（RP1 芯片）—— 脚本自动检测，无需手动配置。
 """
 
 import os
@@ -33,6 +35,9 @@ _QUAD_TABLE: dict[tuple[int, int, int, int], int] = {
     (0, 0, 0, 1): +1, (0, 1, 1, 1): +1, (1, 1, 1, 0): +1, (1, 0, 0, 0): +1,
     (0, 0, 1, 0): -1, (1, 0, 1, 1): -1, (1, 1, 0, 1): -1, (0, 1, 0, 0): -1,
 }
+
+# 树莓派 5 使用 gpiochip4（RP1），旧款使用 gpiochip0
+_CHIP_NUM = int(os.environ.get("GPIO_CHIP_NUM", "4" if os.path.exists("/dev/gpiochip4") else "0"))
 
 
 @dataclass
@@ -51,10 +56,10 @@ class EncoderConfig:
 
 
 class _WheelEncoder:
-    """单路正交编码器（A/B 两相），由 pigpio 中断驱动。"""
+    """单路正交编码器（A/B 两相），由 lgpio 硬件中断驱动。"""
 
-    def __init__(self, pi, pin_a: int, pin_b: int) -> None:
-        self._pi    = pi
+    def __init__(self, h: int, pin_a: int, pin_b: int) -> None:
+        self._h     = h
         self._pin_a = pin_a
         self._pin_b = pin_b
         self._lock  = threading.Lock()
@@ -65,15 +70,13 @@ class _WheelEncoder:
         self._cb_b = None
 
     def start(self) -> None:
-        import pigpio
-        self._pi.set_mode(self._pin_a, pigpio.INPUT)
-        self._pi.set_mode(self._pin_b, pigpio.INPUT)
-        self._pi.set_pull_up_down(self._pin_a, pigpio.PUD_UP)
-        self._pi.set_pull_up_down(self._pin_b, pigpio.PUD_UP)
-        self._prev_a = self._pi.read(self._pin_a)
-        self._prev_b = self._pi.read(self._pin_b)
-        self._cb_a = self._pi.callback(self._pin_a, pigpio.EITHER_EDGE, self._on_edge)
-        self._cb_b = self._pi.callback(self._pin_b, pigpio.EITHER_EDGE, self._on_edge)
+        import lgpio
+        lgpio.gpio_claim_input(self._h, self._pin_a, lgpio.SET_PULL_UP)
+        lgpio.gpio_claim_input(self._h, self._pin_b, lgpio.SET_PULL_UP)
+        self._prev_a = lgpio.gpio_read(self._h, self._pin_a)
+        self._prev_b = lgpio.gpio_read(self._h, self._pin_b)
+        self._cb_a = lgpio.callback(self._h, self._pin_a, lgpio.BOTH_EDGES, self._on_edge)
+        self._cb_b = lgpio.callback(self._h, self._pin_b, lgpio.BOTH_EDGES, self._on_edge)
 
     def stop(self) -> None:
         if self._cb_a:
@@ -81,10 +84,11 @@ class _WheelEncoder:
         if self._cb_b:
             self._cb_b.cancel()
 
-    def _on_edge(self, gpio: int, level: int, tick: int) -> None:
-        """pigpio 中断回调（在 pigpio C 线程中执行，极低延迟）。"""
-        curr_a = self._pi.read(self._pin_a)
-        curr_b = self._pi.read(self._pin_b)
+    def _on_edge(self, chip: int, gpio: int, level: int, tick: int) -> None:
+        """lgpio 中断回调（在 lgpio 内部线程中执行）。"""
+        import lgpio
+        curr_a = lgpio.gpio_read(self._h, self._pin_a)
+        curr_b = lgpio.gpio_read(self._h, self._pin_b)
         delta = _QUAD_TABLE.get((self._prev_a, self._prev_b, curr_a, curr_b), 0)
         if delta:
             with self._lock:
@@ -104,13 +108,13 @@ class Encoder:
     """
     双路正交编码器控制器（左轮 + 右轮）。
 
-    使用 pigpio 守护进程读取高频脉冲信号。
-    非树莓派或 pigpiod 未运行时自动降级为模拟模式（read_and_reset 始终返回 (0, 0)）。
+    使用 lgpio 读取硬件中断，支持树莓派 5（gpiochip4）及旧款（gpiochip0）。
+    lgpio 不可用时自动降级为模拟模式（read_and_reset 始终返回 (0, 0)）。
     """
 
     def __init__(self, config: EncoderConfig | None = None) -> None:
-        self._cfg          = config or EncoderConfig()
-        self._pi           = None
+        self._cfg           = config or EncoderConfig()
+        self._h: int | None = None
         self._left:  _WheelEncoder | None = None
         self._right: _WheelEncoder | None = None
         self._is_simulation = False
@@ -126,18 +130,15 @@ class Encoder:
             False = 降级为模拟模式
         """
         try:
-            import pigpio
-            self._pi = pigpio.pi()
-            if not self._pi.connected:
-                raise RuntimeError(
-                    "pigpiod 守护进程未运行，请执行：sudo pigpiod"
-                )
-            self._left  = _WheelEncoder(self._pi, self._cfg.left_a,  self._cfg.left_b)
-            self._right = _WheelEncoder(self._pi, self._cfg.right_a, self._cfg.right_b)
+            import lgpio
+            self._h = lgpio.gpiochip_open(_CHIP_NUM)
+            self._left  = _WheelEncoder(self._h, self._cfg.left_a,  self._cfg.left_b)
+            self._right = _WheelEncoder(self._h, self._cfg.right_a, self._cfg.right_b)
             self._left.start()
             self._right.start()
             logger.info(
-                f"[Encoder] 已启动 | 左轮 A/B={self._cfg.left_a}/{self._cfg.left_b} "
+                f"[Encoder] 已启动（lgpio chip={_CHIP_NUM}）| "
+                f"左轮 A/B={self._cfg.left_a}/{self._cfg.left_b} "
                 f"右轮 A/B={self._cfg.right_a}/{self._cfg.right_b} "
                 f"ticks/rev={self._cfg.ticks_per_rev}"
             )
@@ -148,14 +149,18 @@ class Encoder:
             return False
 
     def stop(self) -> None:
-        """停止编码器读取并释放 pigpio 资源。"""
+        """停止编码器读取并释放 lgpio 资源。"""
         if self._left:
             self._left.stop()
         if self._right:
             self._right.stop()
-        if self._pi:
-            self._pi.stop()
-            self._pi = None
+        if self._h is not None:
+            try:
+                import lgpio
+                lgpio.gpiochip_close(self._h)
+            except Exception:
+                pass
+            self._h = None
 
     # ─── 数据读取 ────────────────────────────────────────────────
 
@@ -186,6 +191,7 @@ class Encoder:
         return {
             "is_simulation": self._is_simulation,
             "ticks_per_rev": self._cfg.ticks_per_rev,
+            "gpio_chip":     _CHIP_NUM,
             "pins": {
                 "left_a":  self._cfg.left_a,
                 "left_b":  self._cfg.left_b,
