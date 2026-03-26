@@ -72,7 +72,7 @@ ENCODER_PINS: dict[str, dict[str, int]] = {
     "front_left":  {"pin_a": 23, "pin_b": 16},  # M1 左前
     "front_right": {"pin_a": 18, "pin_b": 17},  # M2 右前
     "rear_left":   {"pin_a":  4, "pin_b": 11},  # M3 左后（里程计左轮）
-    "rear_right":  {"pin_a": 19, "pin_b":  7},  # M4 右后（里程计右轮）
+    "rear_right":  {"pin_a": 19, "pin_b": 10},  # M4 右后（里程计右轮）GPIO7/8 被 spi0 CS 强占
 }
 
 # 正交解码状态转换表（4倍频）
@@ -307,7 +307,11 @@ class _EncoderCounter:
         self._running = False
         self._thread  = None
 
-    def start(self):
+    def start(self) -> bool:
+        """
+        启动编码器轮询线程。
+        Returns True 成功，False 表示引脚被占用（如 SPI0 未禁用）。
+        """
         import lgpio
         import threading
         for pin in (self._pin_a, self._pin_b):
@@ -315,13 +319,20 @@ class _EncoderCounter:
                 lgpio.gpio_free(self._h, pin)
             except Exception:
                 pass
-        lgpio.gpio_claim_input(self._h, self._pin_a, lgpio.SET_PULL_UP)
-        lgpio.gpio_claim_input(self._h, self._pin_b, lgpio.SET_PULL_UP)
+        for pin, name in ((self._pin_a, "A"), (self._pin_b, "B")):
+            try:
+                lgpio.gpio_claim_input(self._h, pin, lgpio.SET_PULL_UP)
+            except Exception as e:
+                print(f"\n  ⚠️  GPIO{pin}({name}相) 无法声明：{e}")
+                print(f"      → 可能原因：SPI0 未禁用。请执行：")
+                print(f"        sudo raspi-config → Interface Options → SPI → No → 重启")
+                return False
         self._prev_a  = lgpio.gpio_read(self._h, self._pin_a)
         self._prev_b  = lgpio.gpio_read(self._h, self._pin_b)
         self._running = True
         self._thread  = threading.Thread(target=self._poll_loop, daemon=True)
         self._thread.start()
+        return True
 
     def _poll_loop(self):
         import lgpio
@@ -377,7 +388,8 @@ def test_encoder_pulse(car: CarController, name: str) -> bool:
 
     pins = ENCODER_PINS[name]
     enc = _EncoderCounter(_h, pins["pin_a"], pins["pin_b"])
-    enc.start()
+    if not enc.start():
+        return False
     try:
         label = _enc_label(name)
         print(f"    ▶ 正转 {_ENC_SPIN_DURATION}s，读取脉冲...", end="", flush=True)
@@ -554,7 +566,9 @@ def verify_encoder_wiring(car: CarController) -> None:
             continue
 
         enc = _EncoderCounter(_h, pins["pin_a"], pins["pin_b"])
-        enc.start()
+        if not enc.start():
+            results.append((label, "⛔ GPIO busy（SPI0 未禁用？）"))
+            continue
         car.motor_forward(name, TEST_SPEED)
         try:
             for _ in range(30):

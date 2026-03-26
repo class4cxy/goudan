@@ -61,7 +61,7 @@ class EncoderConfig:
     left_a:  int = int(os.environ.get("ENCODER_LEFT_A",   "4"))
     left_b:  int = int(os.environ.get("ENCODER_LEFT_B",  "11"))
     right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "19"))
-    right_b: int = int(os.environ.get("ENCODER_RIGHT_B",  "7"))
+    right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "10"))
     lines_per_rev: int = int(os.environ.get("ENCODER_LINES_PER_REV", "500"))
 
     @property
