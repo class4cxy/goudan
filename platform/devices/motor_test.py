@@ -81,9 +81,24 @@ _QUAD_TABLE: dict[tuple[int, int, int, int], int] = {
     (0, 0, 1, 0): -1, (1, 0, 1, 1): -1, (1, 1, 0, 1): -1, (0, 1, 0, 0): -1,
 }
 
-# 树莓派 5 用 gpiochip4（RP1），旧款用 gpiochip0
+# 自动检测 40pin GPIO chip 编号（RPi 5 实测为 gpiochip0，描述含 pinctrl-rp1）
 import os as _os
-_CHIP_NUM = int(_os.environ.get("GPIO_CHIP_NUM", "4" if _os.path.exists("/dev/gpiochip4") else "0"))
+import subprocess as _subprocess
+
+def _detect_gpio_chip() -> int:
+    override = _os.environ.get("GPIO_CHIP_NUM")
+    if override is not None:
+        return int(override)
+    try:
+        out = _subprocess.check_output(["gpiodetect"], text=True, timeout=3)
+        for line in out.splitlines():
+            if "pinctrl-rp1" in line or ("pinctrl" in line and "brcmstb" not in line):
+                return int(line.split()[0].replace("gpiochip", ""))
+    except Exception:
+        pass
+    return 0
+
+_CHIP_NUM = _detect_gpio_chip()
 
 # ── lgpio 初始化（编码器后端，支持树莓派 5）────────────────────────────
 try:
