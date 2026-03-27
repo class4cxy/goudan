@@ -40,13 +40,13 @@ export const takeRobotPhoto = tool({
 export const moveCameraMount = tool({
   description:
     "控制摄像头云台水平朝向（单轴舵机）。" +
-    "Pan（水平）0°=最左 / 110°=正前 / 180°=最右。",
+    "Pan（水平）0°=最左 / 97°=正前 / 180°=最右。",
   inputSchema: z.object({
     pan: z
       .number()
       .min(0)
       .max(180)
-      .describe("水平角度（0–180°，110=正前）"),
+      .describe("水平角度（0–180°，97=正前）"),
   }),
   execute: async ({ pan }) => {
     try {
@@ -99,7 +99,7 @@ export const closeCameraStream = tool({
 });
 
 export const centerCameraMount = tool({
-  description: "将摄像头云台归中（Pan=110°，正视前方）。",
+  description: "将摄像头云台归中（Pan=97°，正视前方）。",
   inputSchema: z.object({}),
   execute: async () => {
     try {

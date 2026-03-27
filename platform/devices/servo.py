@@ -2,7 +2,7 @@
 摄像头云台控制模块（水平单轴舵机）
 
 硬件：MAKEROBO 扩展板 PWM 舵机接口
-  GPIO 12 = 水平轴 Pan（左右旋转）
+  GPIO 13 = 水平轴 Pan（左右旋转，Pin 33 / PWM1，已实测确认）
 
 舵机 PWM 参数（SG90 / MG90S 兼容）：
   频率：50 Hz（20ms 周期）
@@ -55,16 +55,15 @@ class CameraConfig:
     pan: ServoConfig   # 水平轴
 
 
-# MAKEROBO 扩展板实测配置
-# Pan 反向安装：invert=True，physical = min + max - logical
-# Pan：0°=最左、110°=正前（物理 70°）、180°=最右
+# MAKEROBO 扩展板实测配置（已校准）
+# Pan：0°=最左、97°=正前（实测）、180°=最右
 DEFAULT_CAMERA_CONFIG = CameraConfig(
     pan=ServoConfig(
         pin=13,                   # 实测确认：GPIO 13 / Pin 33 / PWM1
         min_angle=0.0,
         max_angle=180.0,
-        default_angle=90.0,       # 物理中立位；如需偏移再通过 servo_test.py 校准后更新
-        invert=False,             # 校准前先不反转，实测方向后再决定
+        default_angle=97.0,       # 实测正前方（已校准）
+        invert=False,
         speed_deg_per_s=60.0,     # 60°/s：从中位到端点约 1.5s，平滑但不迟钝
     ),
 )
@@ -184,8 +183,8 @@ class CameraMount:
     """
     摄像头云台控制器（水平单轴 Pan）。
 
-    逻辑角度约定（invert=True，物理 = min + max - logical）：
-      Pan  0° = 最左  |  110° = 正前方（逻辑 → 物理 70°）  |  180° = 最右
+    逻辑角度约定：
+      Pan  0° = 最左  |  97° = 正前方（实测校准）  |  180° = 最右
 
     用法示例::
 

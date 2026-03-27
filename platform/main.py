@@ -529,7 +529,7 @@ class SetMotorRequest(BaseModel):
     speed: int | None = None
 
 class CameraLookAtRequest(BaseModel):
-    pan: float   # 水平角度 0–180（0=最左，110=正前，180=最右）
+    pan: float   # 水平角度 0–180（0=最左，97=正前，180=最右）
 
 class CameraMoveRequest(BaseModel):
     axis:  str    # pan
@@ -907,7 +907,7 @@ async def camera_look_at(req: CameraLookAtRequest):
     """
     设置云台水平朝向。
 
-    Pan 范围：0–180°（0=最左，110=正前，180=最右）← 逻辑角，invert 后物理 70°=正前
+    Pan 范围：0–180°（0=最左，97=正前（实测），180=最右）
     """
     actual = await asyncio.to_thread(camera.pan_to, req.pan)
     return {"ok": True, "pan": actual}
