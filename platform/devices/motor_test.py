@@ -71,8 +71,8 @@ MOTOR_NAMES = {
 ENCODER_PINS: dict[str, dict[str, int]] = {
     "front_left":  {"pin_a": 23, "pin_b": 16},  # M1 左前
     "front_right": {"pin_a": 14, "pin_b": 18},  # M2 右前（GPIO17=蜂鸣器；A=GPIO14 UART TX，B=GPIO18）
-    "rear_left":   {"pin_a":  4, "pin_b": 11},  # M3 左后（里程计左轮）
-    "rear_right":  {"pin_a": 19, "pin_b": 10},  # M4 右后（里程计右轮）GPIO7/8 被 spi0 CS 强占
+    "rear_left":   {"pin_a": 12, "pin_b": 11},  # M3 左后（里程计左轮）GPIO4=电源板GP04按钮，改用GPIO12
+    "rear_right":  {"pin_a": 20, "pin_b": 10},  # M4 右后（里程计右轮）GPIO19=电源板GP19按钮，改用GPIO20
 }
 
 # 正交解码状态转换表（4倍频）
