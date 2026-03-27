@@ -14,6 +14,7 @@ MAKEROBO 扩展板舵机接口（已实测确认）：
 用法：
   python3 servo_test.py              # 交互菜单
   python3 servo_test.py --center     # 水平轴归中后退出
+  python3 servo_test.py --probe      # 引脚扫描：逐一激活候选引脚找到实际连接的舵机
 """
 
 import argparse
@@ -141,6 +142,95 @@ def _run_manual(pwm, hard_min: float, hard_max: float, start_angle: float = 90.0
             print("  请输入数字（0–180）或 q 退出")
 
 
+# ── 引脚扫描探针 ──────────────────────────────────────────────────────
+
+# 候选引脚：扩展板两路舵机接口 + 附近可能被误接的引脚
+PROBE_PINS = [12, 13, 16, 19, 18, 26, 6]
+
+def probe_servo_pin():
+    """
+    逐一激活候选 GPIO 引脚，输出 50Hz PWM 并来回摆动，
+    确认哪个引脚实际连接了舵机。
+
+    每个引脚的测试序列：
+      90°（中立）→ 45°（左）→ 135°（右）→ 90°（归中）
+    整个序列约 2.5 秒，目视/听觉判断舵机是否响应。
+    """
+    print("\n" + "═" * 60)
+    print("  舵机引脚扫描探针")
+    print("  每个候选引脚依次输出 50Hz PWM，摆动约 2.5s。")
+    print("  观察哪个引脚触发了舵机，记录结果。")
+    print(f"  候选引脚：{PROBE_PINS}")
+    print("  提示：如 platform 服务正在运行，请先停止（防止 GPIO 冲突）。")
+    print("═" * 60)
+
+    try:
+        input("\n  准备好后按 Enter 开始扫描...")
+    except (EOFError, KeyboardInterrupt):
+        return
+
+    hit_pins: list[int] = []
+
+    for pin in PROBE_PINS:
+        print(f"\n  ── GPIO {pin:2d} ─────────────────────────────────")
+        print(f"  正在向 GPIO {pin} 发送舵机 PWM 信号（50Hz）…")
+
+        GPIO.setup(pin, GPIO.OUT)
+        pwm = GPIO.PWM(pin, PWM_FREQ)
+
+        # 中立 90°
+        pwm.start(_duty(90))
+        time.sleep(0.4)
+
+        # 向左 45°
+        print(f"  → 45°（左）")
+        pwm.ChangeDutyCycle(_duty(45))
+        time.sleep(0.6)
+
+        # 向右 135°
+        print(f"  → 135°（右）")
+        pwm.ChangeDutyCycle(_duty(135))
+        time.sleep(0.6)
+
+        # 回中 90°
+        print(f"  → 90°（中立）")
+        pwm.ChangeDutyCycle(_duty(90))
+        time.sleep(0.4)
+
+        pwm.stop()
+        GPIO.cleanup(pin)
+
+        # 询问结果
+        try:
+            ans = input(f"  GPIO {pin:2d}：舵机有响应吗？(y=有/n=无/q=退出) > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = "q"
+
+        if ans == "q":
+            print("  扫描中止。")
+            break
+        elif ans == "y":
+            hit_pins.append(pin)
+            print(f"  ✓ 记录：GPIO {pin} 有舵机响应！")
+
+    # 汇总
+    print("\n" + "═" * 60)
+    print("  【扫描结果汇总】")
+    if hit_pins:
+        for p in hit_pins:
+            print(f"  ✓ GPIO {p:2d}  → 舵机有响应  ← 应将 PAN_PIN 设为此值")
+        if len(hit_pins) == 1:
+            print(f"\n  建议：将 servo_test.py 顶部 PAN_PIN = {hit_pins[0]}")
+            print(f"        以及 servo.py DEFAULT_CAMERA_CONFIG 中 pin={hit_pins[0]}")
+    else:
+        print("  所有引脚均无响应。可能原因：")
+        print("    1. 舵机供电不足（确认电源接线）")
+        print("    2. 舵机信号线未插到树莓派 GPIO 引脚（确认接线方向）")
+        print("    3. 舵机已损坏（换一个测试）")
+        print("    4. platform 服务仍在运行导致 GPIO 冲突（停服务后重试）")
+    print("═" * 60)
+
+
 # ── 主菜单 ────────────────────────────────────────────────────────────
 
 MENU = """
@@ -149,6 +239,7 @@ MENU = """
 ╠══════════════════════════════════════════════════╣
 ║  1. 水平 Pan  全幅扫描（0°→180°→70°）           ║
 ║  2. 水平 Pan  手动定位（起始 70°=正前）          ║
+║  p. 引脚扫描（找不到舵机时用，扫描候选引脚）    ║
 ║  0. 水平轴归中（Pan 70°）                        ║
 ║  q. 退出                                        ║
 ╚══════════════════════════════════════════════════╝"""
@@ -158,6 +249,8 @@ def main():
     parser = argparse.ArgumentParser(description="摄像头舵机探针")
     parser.add_argument("--center", action="store_true",
                         help="水平轴归中后退出")
+    parser.add_argument("--probe", action="store_true",
+                        help="引脚扫描模式：逐一激活候选引脚确认舵机接线")
     args = parser.parse_args()
 
     print("\n摄像头舵机探针 — MAKEROBO 扩展板")
@@ -167,6 +260,10 @@ def main():
     try:
         if args.center:
             center_pan()
+            return
+
+        if args.probe:
+            probe_servo_pin()
             return
 
         while True:
@@ -182,6 +279,8 @@ def main():
                 sweep_pan()
             elif choice == "2":
                 manual_pan()
+            elif choice == "p":
+                probe_servo_pin()
             elif choice == "0":
                 center_pan()
             else:
