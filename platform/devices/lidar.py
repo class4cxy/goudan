@@ -358,8 +358,7 @@ class Lidar:
         start_raw    = struct.unpack_from("<H", pkt, 4)[0]
         end_raw      = struct.unpack_from("<H", pkt, 42)[0]
 
-        rpm        = speed_raw / 360.0        # 单位 °/s → RPM：÷360×60
-        rpm        = speed_raw * 60.0 / 36000.0  # speed_raw 单位为 °/s × 100，即 0.01°/s
+        rpm        = speed_raw * 60.0 / 360.0  # speed_raw 单位 °/s；RPM = (°/s) / 360 × 60
         start_deg  = start_raw / ANGLE_UNIT   # 转换为度
         end_deg    = end_raw   / ANGLE_UNIT
 
