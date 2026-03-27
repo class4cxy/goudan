@@ -582,6 +582,8 @@ def _bcm_to_pin(bcm: int) -> str:
 # ── 主入口 ─────────────────────────────────────────────────────────
 
 def main():
+    global DEFAULT_PWM_FREQ  # 允许运行时通过 --pwm-freq 覆盖模块级默认值
+
     parser = argparse.ArgumentParser(description="LD06 激光雷达真机测试")
     parser.add_argument("--port", default="", help="串口路径（如 /dev/ttyUSB0）")
     parser.add_argument("--test", type=int, default=0, help="直接运行指定测试（1-7）")
@@ -600,9 +602,6 @@ def main():
     args = parser.parse_args()
 
     motor_pin = -1 if args.no_motor else args.motor_pin
-
-    # 运行时覆盖模块级默认频率，使所有 make_config() 调用生效
-    global DEFAULT_PWM_FREQ
     DEFAULT_PWM_FREQ = args.pwm_freq
 
     print("\n╔══════════════════════════════════════════════════════════╗")
