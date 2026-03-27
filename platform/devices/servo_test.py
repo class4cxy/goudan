@@ -99,8 +99,8 @@ def center_pan():
 
 
 def sweep_pan():
-    """水平轴全幅扫描：0° → 180° → PAN_CENTER。"""
-    print(f"\n  水平 Pan（GPIO {PAN_PIN}）扫描：0° → 180° → {PAN_CENTER:.0f}°（正前）")
+    """水平轴全幅扫描：0° → 180° → PAN_CENTER（正前）。"""
+    print(f"\n  全幅扫描（GPIO {PAN_PIN}）：0° → 180° → {PAN_CENTER:.0f}°（正前）")
     pwm = _make_pwm(PAN_PIN, PAN_CENTER)
     time.sleep(0.3)
     _smooth_move(pwm, PAN_CENTER, 0)
@@ -115,31 +115,104 @@ def sweep_pan():
 
 def manual_pan():
     """手动输入角度控制水平轴。"""
-    print(f"\n  水平 Pan 手动定位（GPIO {PAN_PIN}）— 输入角度 0–180，q 退出")
+    print(f"\n  水平 Pan 手动定位（GPIO {PAN_PIN}）")
+    print(f"  输入：角度数字（0–180）｜< 最左端 ｜> 最右端 ｜c 归中 ｜q 退出")
     pwm = _make_pwm(PAN_PIN, PAN_CENTER)
     _run_manual(pwm, 0.0, 180.0, PAN_CENTER)
     pwm.stop()
     GPIO.cleanup(PAN_PIN)
 
 
-def _run_manual(pwm, hard_min: float, hard_max: float, start_angle: float = 90.0):
-    """通用手动角度控制循环。"""
-    current = start_angle
+def calibrate_limits():
+    """极限校准模式：直接输入占空比（%），找到舵机物理边界。
+
+    部分舵机物理极限超出标准 2.5–12.5% 范围，此模式绕过角度换算，
+    允许在 0.5–15.0% 之间自由调节，帮助找到真实的左右机械止点。
+    找到极限值后可据此更新 DUTY_MIN / DUTY_MAX 常量。
+    """
+    print(f"\n  占空比极限校准（GPIO {PAN_PIN}）")
+    print(f"  标准范围：{DUTY_MIN}%（0°）~ {DUTY_MAX}%（180°）")
+    print(f"  允许输入：0.5% – 15.0%（超出标准范围的值可能碰到机械止点）")
+    print(f"  输入：占空比数字（如 2.0）｜< 下限 0.5% ｜> 上限 15.0% ｜q 退出")
+
+    GPIO.setup(PAN_PIN, GPIO.OUT)
+    pwm = GPIO.PWM(PAN_PIN, PWM_FREQ)
+    duty_start = _duty(PAN_CENTER)
+    pwm.start(duty_start)
+    time.sleep(0.3)
+    current_duty = duty_start
+
+    def _duty_to_angle(d: float) -> float:
+        return (d - DUTY_MIN) / (DUTY_MAX - DUTY_MIN) * 180.0
+
+    print(f"  当前占空比 {current_duty:.2f}%（≈ {_duty_to_angle(current_duty):.1f}°）\n")
+
     while True:
         try:
-            raw = input(f"  当前 {current:.1f}° → 输入角度 [0-180] > ").strip().lower()
+            raw = input(f"  {current_duty:.2f}% > ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             break
         if raw in ("q", "quit"):
             break
+        if raw == "<":
+            target = 0.5
+        elif raw == ">":
+            target = 15.0
+        else:
+            try:
+                target = float(raw)
+            except ValueError:
+                print("  请输入占空比数值（如 2.5）或 < / > / q")
+                continue
+
+        target = max(0.5, min(15.0, target))
+        pwm.ChangeDutyCycle(target)
+        current_duty = target
+        angle_equiv = _duty_to_angle(current_duty)
+        print(f"  → {current_duty:.2f}%  （等效角度 {angle_equiv:.1f}°，标准范围外时仅供参考）")
+
+    pwm.stop()
+    GPIO.cleanup(PAN_PIN)
+    print(f"\n  如需更新极限值，修改 servo_test.py 顶部：")
+    print(f"    DUTY_MIN = <左端占空比>   # 对应 0°")
+    print(f"    DUTY_MAX = <右端占空比>   # 对应 180°")
+    print(f"  并同步修改 servo.py 中的 _DUTY_MIN / _DUTY_MAX。")
+
+
+def _run_manual(pwm, hard_min: float, hard_max: float, start_angle: float = 90.0):
+    """通用手动角度控制循环。
+
+    输入：
+      数字      — 绝对角度（钳位到 hard_min–hard_max）
+      < 或 min  — 跳到最小值
+      > 或 max  — 跳到最大值
+      c 或 ctr  — 归中（PAN_CENTER）
+      q         — 退出
+    """
+    current = start_angle
+    while True:
         try:
-            angle = float(raw)
-            angle = max(hard_min, min(hard_max, angle))
-            _smooth_move(pwm, current, angle, step=2.0)
-            current = angle
-            print(f"  → {current:.1f}°  (占空比 {_duty(current):.2f}%)")
-        except ValueError:
-            print("  请输入数字（0–180）或 q 退出")
+            raw = input(f"  {current:.1f}° > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if raw in ("q", "quit"):
+            break
+        if raw in ("<", "min"):
+            angle = hard_min
+        elif raw in (">", "max"):
+            angle = hard_max
+        elif raw in ("c", "ctr", "center"):
+            angle = PAN_CENTER
+        else:
+            try:
+                angle = float(raw)
+            except ValueError:
+                print("  请输入角度数字，或 < (最左) / > (最右) / c (归中) / q (退出)")
+                continue
+        angle = max(hard_min, min(hard_max, angle))
+        _smooth_move(pwm, current, angle, step=2.0)
+        current = angle
+        print(f"  → {current:.1f}°  (占空比 {_duty(current):.2f}%)")
 
 
 # ── 引脚扫描探针 ──────────────────────────────────────────────────────
@@ -330,14 +403,15 @@ def probe_servo_pin() -> None:
 
 # ── 主菜单 ────────────────────────────────────────────────────────────
 
-MENU = """
+MENU = f"""
 ╔══════════════════════════════════════════════════╗
 ║       摄像头舵机探针 — 交互菜单                  ║
 ╠══════════════════════════════════════════════════╣
-║  1. 水平 Pan  全幅扫描（0°→180°→70°）           ║
-║  2. 水平 Pan  手动定位（起始 70°=正前）          ║
+║  1. 全幅扫描（0° → 180° → {PAN_CENTER:.0f}°）              ║
+║  2. 手动角度定位（< 最左 / > 最右 / c 归中）    ║
+║  3. 占空比极限校准（找真实物理边界）            ║
 ║  p. 引脚全量扫描（找不到舵机时用）              ║
-║  0. 水平轴归中（Pan 70°）                        ║
+║  0. 归中（Pan {PAN_CENTER:.0f}°=正前）                     ║
 ║  q. 退出                                        ║
 ╚══════════════════════════════════════════════════╝"""
 
@@ -382,6 +456,8 @@ def main():
                 sweep_pan()
             elif choice == "2":
                 manual_pan()
+            elif choice == "3":
+                calibrate_limits()
             elif choice == "p":
                 probe_servo_pin()
             elif choice == "0":
