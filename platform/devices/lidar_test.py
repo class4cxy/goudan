@@ -437,6 +437,140 @@ def test_motor_control(port: str, motor_pin: int):
         print(f"  结论       : 停止后仍有数据，检查 PWM 线或 GPIO 配置")
 
 
+# ── 测试 7：GPIO 连通性验证（不依赖 PWM）────────────────────────────
+
+def test_gpio_connection(port: str, motor_pin: int):
+    """
+    纯 GPIO.output() 方式验证 PWM 线是否接对引脚。
+    不使用 PWM —— 规避 'bad PWM frequency' 错误，直接用高低电平观察 LD06 电机转速变化。
+
+    原理：
+      LD06 PWM 引脚 HIGH（3.3V）→ 占空比 100%，电机超速（RPM > 默认 10Hz）
+      LD06 PWM 引脚 LOW（0V）  → 占空比 0%，电机减速或停转
+      若 RPM 在 HIGH/LOW 切换间 **没有任何变化**，说明线未接到该引脚。
+    """
+    print(f"\n{DIVIDER}")
+    print("  测试 7 — GPIO 连通性验证（不依赖 PWM）")
+    print(f"  串口：{port}  待测引脚：GPIO{motor_pin}（Pin {_bcm_to_pin(motor_pin)}）")
+    print(DIVIDER)
+
+    if motor_pin < 0:
+        print("  ❌ 电机引脚未配置，请加 --motor-pin 参数")
+        return
+
+    try:
+        from devices.gpio_adapter import GPIO
+    except Exception as e:
+        print(f"  ❌ GPIO 初始化失败：{e}")
+        return
+
+    # ─── 步骤 1：设置引脚为输出，先拉 LOW ─────────────────────────
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+        GPIO.setup(motor_pin, GPIO.OUT)
+        GPIO.output(motor_pin, GPIO.LOW)
+        print(f"  GPIO{motor_pin} 已设为 OUTPUT，当前 LOW（0V）")
+    except Exception as e:
+        print(f"  ❌ GPIO.setup 失败：{e}")
+        print(f"     可能原因：RPi5 需要安装 rpi-lgpio：pip install rpi-lgpio")
+        return
+
+    # ─── 步骤 2：扫描 3s 采基线 RPM（LOW 状态）─────────────────────
+    print()
+    print("  [LOW 阶段] GPIO → LOW，采集 3s 基线 RPM...")
+    low_rpms: list[float] = []
+
+    def on_low(scan: LidarScan):
+        low_rpms.append(scan.rpm)
+
+    lidar = Lidar(LidarConfig(port=port, motor_pin=-1), on_scan=on_low)
+    lidar.start()
+
+    if lidar.is_simulation:
+        print("  ❌ 串口不可用")
+        try:
+            GPIO.cleanup()
+        except Exception:
+            pass
+        return
+
+    try:
+        time.sleep(3.0)
+    except KeyboardInterrupt:
+        lidar.stop()
+        return
+    lidar.stop()
+
+    avg_low = sum(low_rpms) / len(low_rpms) if low_rpms else 0.0
+    print(f"           LOW 平均 RPM = {avg_low:.1f}  ({len(low_rpms)} 圈)")
+
+    # ─── 步骤 3：切换 HIGH，再采 3s ───────────────────────────────
+    print()
+    print("  [HIGH 阶段] GPIO → HIGH（3.3V），采集 3s RPM...")
+    GPIO.output(motor_pin, GPIO.HIGH)
+
+    high_rpms: list[float] = []
+
+    def on_high(scan: LidarScan):
+        high_rpms.append(scan.rpm)
+
+    lidar2 = Lidar(LidarConfig(port=port, motor_pin=-1), on_scan=on_high)
+    lidar2.start()
+
+    try:
+        time.sleep(3.0)
+    except KeyboardInterrupt:
+        lidar2.stop()
+        GPIO.output(motor_pin, GPIO.LOW)
+        return
+    lidar2.stop()
+
+    avg_high = sum(high_rpms) / len(high_rpms) if high_rpms else 0.0
+    print(f"           HIGH 平均 RPM = {avg_high:.1f}  ({len(high_rpms)} 圈)")
+
+    # ─── 步骤 4：复位 LOW ────────────────────────────────────────
+    GPIO.output(motor_pin, GPIO.LOW)
+    print(f"\n  GPIO{motor_pin} 已复位 → LOW")
+
+    # ─── 步骤 5：判断连通性 ───────────────────────────────────────
+    print()
+    print(f"  ─── 连通性判断 ──────────────────────────")
+    rpm_delta = abs(avg_high - avg_low)
+    print(f"  LOW  平均 RPM : {avg_low:.1f}")
+    print(f"  HIGH 平均 RPM : {avg_high:.1f}")
+    print(f"  RPM 差值      : {rpm_delta:.1f}")
+    print()
+
+    if avg_low == 0.0 and avg_high == 0.0:
+        print("  ❌ 两段均无数据，检查串口连接")
+    elif rpm_delta < 30:
+        print("  ⚠️  HIGH/LOW 切换后 RPM 几乎无变化（差 < 30）")
+        print(f"     → GPIO{motor_pin} 可能未连接到 LD06 PWM 引脚")
+        print(f"     → 请确认导线插在 物理 Pin {_bcm_to_pin(motor_pin)} 上（从左上角数）")
+        print(f"     → 另一端插在 LD06 ZH1.5T-4P 连接器的 Pin 2（PWM）")
+    else:
+        print(f"  ✅ HIGH/LOW 切换 RPM 差值 {rpm_delta:.0f}，GPIO{motor_pin} 已正确连接到 LD06 PWM！")
+        print(f"     下一步：修复 'bad PWM frequency' 错误（见下方说明）")
+        print()
+        print("  PWM 修复方法（任选其一）：")
+        print("   A. 安装 rpi-lgpio（推荐，RPi5 官方兼容层）：")
+        print("      pip install rpi-lgpio")
+        print("   B. 安装 pigpio（DMA PWM，支持任意引脚任意频率）：")
+        print("      pip install pigpio  &&  sudo pigpiod")
+
+
+def _bcm_to_pin(bcm: int) -> str:
+    """BCM 编号 → 物理引脚编号（常用引脚）。"""
+    _map = {
+        2:3, 3:5, 4:7, 5:29, 6:31, 7:26, 8:24, 9:21,
+        10:19, 11:23, 12:32, 13:33, 14:8, 15:10, 16:36,
+        17:11, 18:12, 19:35, 20:38, 21:40, 22:15, 23:16,
+        24:18, 25:22, 26:37, 27:13,
+    }
+    return str(_map.get(bcm, "?"))
+
+
 # ── 主入口 ─────────────────────────────────────────────────────────
 
 def main():
@@ -489,12 +623,13 @@ def main():
             4: lambda: test_performance(port, motor_pin),
             5: lambda: test_save_json(port, motor_pin),
             6: lambda: test_motor_control(port, motor_pin),
+            7: lambda: test_gpio_connection(port, motor_pin),
         }
         fn = tests.get(args.test)
         if fn:
             fn()
         else:
-            print(f"  ❌ 无效测试编号：{args.test}（1-6）")
+            print(f"  ❌ 无效测试编号：{args.test}（1-7）")
         return
 
     # 交互式菜单
@@ -507,6 +642,7 @@ def main():
         print("  [4] 性能统计（扫描频率、点数、RPM）")
         print("  [5] 保存一圈数据到 JSON")
         print("  [6] 电机控制专项测试（启动→扫描→停止验证）")
+        print("  [7] GPIO 连通性验证（不依赖 PWM，先跑这个！）")
         print("  [0] 退出")
         print(DIVIDER)
         print("  请选择：", end="")
@@ -527,6 +663,8 @@ def main():
             test_save_json(port, motor_pin)
         elif choice == "6":
             test_motor_control(port, motor_pin)
+        elif choice == "7":
+            test_gpio_connection(port, motor_pin)
         else:
             print(f"  无效选项：{choice}")
 
