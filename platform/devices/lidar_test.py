@@ -46,16 +46,24 @@ DIVIDER = "─" * 60
 # GPIO15（Pin 10，UART RX）：唯一空闲引脚，UART 控制台已移除，可正常用作普通 GPIO
 # 禁止使用 GPIO18（蜂鸣器）、GPIO12（左后编码A）、GPIO20/21（超声波）
 DEFAULT_MOTOR_PIN = 15
-DEFAULT_PWM_FREQ  = 25000   # Hz
+# lgpio 软件 PWM 上限 10kHz；LD06 规格要求 20~50kHz。
+# 若 lgpio 报 'bad PWM frequency'，改用 pigpio（DMA PWM，无频率上限）：
+#   sudo apt install pigpiod && sudo systemctl enable --now pigpiod
+#   pip install pigpio
+DEFAULT_PWM_FREQ  = 1000    # Hz：先用 1kHz 验证 LD06 是否响应，再视情况提频
 DEFAULT_PWM_DUTY  = 60.0    # %，约 10Hz 扫描速率
 
 
-def make_config(port: str, motor_pin: int, pwm_duty: float = DEFAULT_PWM_DUTY) -> LidarConfig:
-    """构造 LidarConfig，电机引脚 -1 表示悬空（常转，内部调速）。"""
+def make_config(port: str, motor_pin: int,
+                pwm_freq: int = 0,
+                pwm_duty: float = DEFAULT_PWM_DUTY) -> LidarConfig:
+    """构造 LidarConfig，电机引脚 -1 表示悬空（常转，内部调速）。
+    pwm_freq=0 表示使用当前 DEFAULT_PWM_FREQ（支持运行时 --pwm-freq 覆盖）。
+    """
     return LidarConfig(
         port=port,
         motor_pin=motor_pin,
-        motor_pwm_freq=DEFAULT_PWM_FREQ,
+        motor_pwm_freq=pwm_freq or DEFAULT_PWM_FREQ,
         motor_pwm_duty=pwm_duty,
     )
 
@@ -576,7 +584,7 @@ def _bcm_to_pin(bcm: int) -> str:
 def main():
     parser = argparse.ArgumentParser(description="LD06 激光雷达真机测试")
     parser.add_argument("--port", default="", help="串口路径（如 /dev/ttyUSB0）")
-    parser.add_argument("--test", type=int, default=0, help="直接运行指定测试（1-6）")
+    parser.add_argument("--test", type=int, default=0, help="直接运行指定测试（1-7）")
     parser.add_argument(
         "--motor-pin", type=int, default=DEFAULT_MOTOR_PIN,
         help=f"电机控制 GPIO 引脚 BCM 编号（默认 {DEFAULT_MOTOR_PIN}）",
@@ -585,9 +593,17 @@ def main():
         "--no-motor", action="store_true",
         help="不控制电机（PWM 悬空，电机常转，内部自动调速）",
     )
+    parser.add_argument(
+        "--pwm-freq", type=int, default=DEFAULT_PWM_FREQ,
+        help=f"PWM 频率 Hz（默认 {DEFAULT_PWM_FREQ}；lgpio 软件 PWM 上限 10000）",
+    )
     args = parser.parse_args()
 
     motor_pin = -1 if args.no_motor else args.motor_pin
+
+    # 运行时覆盖模块级默认频率，使所有 make_config() 调用生效
+    global DEFAULT_PWM_FREQ
+    DEFAULT_PWM_FREQ = args.pwm_freq
 
     print("\n╔══════════════════════════════════════════════════════════╗")
     print("║          LD06 激光雷达真机测试工具                       ║")
