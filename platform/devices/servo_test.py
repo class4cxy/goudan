@@ -143,104 +143,143 @@ def _run_manual(pwm, hard_min: float, hard_max: float, start_angle: float = 90.0
 
 
 # ── 引脚扫描探针 ──────────────────────────────────────────────────────
-
-# 已知电机引脚（chassis.py 占用），不做舵机测试
-MOTOR_PINS = {
-    24: "M1-IN1(左前正转)", 25: "M1-IN2(左前反转)",
-    27: "M2-IN1(右前正转)", 26: "M2-IN2(右前反转)",
-     5: "M3-IN1(左后正转)",  6: "M3-IN2(左后反转)",
-    22: "M4-IN1(右后正转)",  9: "M4-IN2(右后反转)",
+#
+# 树莓派 5 BCM → 物理引脚对照 + 当前项目占用情况
+# 格式：BCM: (物理Pin, 说明, 是否安全测试)
+#
+#   安全等级：
+#     "servo"  — 预期舵机引脚，首先测试
+#     "free"   — 未使用/规划编码器，可安全测试
+#     "motor"  — 电机引脚，测试时车轮会抖动（仍要测，但提醒用户区分）
+#     "skip"   — 系统/特殊用途，跳过（I2C/SPI内核/蜂鸣器/超声波）
+#
+PIN_MAP: dict[int, tuple[int, str, str]] = {
+     2: ( 3, "I2C SDA (INA219)",             "skip"),
+     3: ( 5, "I2C SCL (INA219)",             "skip"),
+     4: ( 7, "空闲 / 规划左后编码A",          "free"),
+     5: (29, "电机 M3-IN1 左后正转",          "motor"),
+     6: (31, "电机 M3-IN2 左后反转",          "motor"),
+     7: (26, "SPI CE1 内核占用",              "skip"),
+     8: (24, "SPI CE0 内核占用",              "skip"),
+     9: (21, "电机 M4-IN2 右后反转",          "motor"),
+    10: (19, "扩展板RGB灯SPI数据(禁用)",       "skip"),
+    11: (23, "空闲 / 规划左后编码B",          "free"),
+    12: (32, "舵机Pan槽位 (PWM0)",            "servo"),
+    13: (33, "舵机Tilt槽位 (PWM1)",           "servo"),
+    14: ( 8, "UART TX / 规划右前编码A",       "free"),
+    15: (10, "UART RX (空闲)",               "free"),
+    16: (36, "规划左前编码B",                 "free"),
+    17: (11, "板载蜂鸣器 (实测确认)",          "skip"),
+    18: (12, "板载蜂鸣器/右前编码B (禁用)",    "skip"),
+    19: (35, "规划右后编码A",                 "free"),
+    20: (38, "超声波 Trig",                  "skip"),
+    21: (40, "超声波 Echo",                  "skip"),
+    22: (15, "电机 M4-IN1 右后正转",          "motor"),
+    23: (16, "规划左前编码A",                 "free"),
+    24: (18, "电机 M1-IN1 左前正转",          "motor"),
+    25: (22, "电机 M1-IN2 左前反转",          "motor"),
+    26: (37, "电机 M2-IN2 右前反转",          "motor"),
+    27: (13, "电机 M2-IN1 右前正转",          "motor"),
 }
 
-# 全量候选引脚：跳过 I2C(2/3)、SPI(7/8)、UART(14/15)、电机引脚、蜂鸣器(17)
-# 包含所有尚未排除的 GPIO（编码器规划脚也纳入，排查阶段优先于规划）
-PROBE_PINS = [4, 10, 11, 12, 13, 14, 16, 17, 18, 19, 23]
+# 扫描顺序：servo → free → motor（从最可能到最不可能）
+_SCAN_ORDER = (
+    [bcm for bcm, (_, _, t) in PIN_MAP.items() if t == "servo"] +
+    [bcm for bcm, (_, _, t) in PIN_MAP.items() if t == "free"] +
+    [bcm for bcm, (_, _, t) in PIN_MAP.items() if t == "motor"]
+)
 
 
-def _pwm_sweep(pin: int, hold_s: float = 0.8):
-    """对指定引脚输出舵机 PWM 摆动序列，hold_s 控制每个位置的驻留时长。"""
+def _pwm_sweep_pin(pin: int, hold_s: float = 0.8) -> None:
+    """
+    对指定引脚输出 50Hz 舵机 PWM 摆动序列。
+    不调用 GPIO.cleanup()，避免 rpi-lgpio 在 RPi5 上重置 BCM 模式。
+    """
     GPIO.setup(pin, GPIO.OUT)
     pwm = GPIO.PWM(pin, PWM_FREQ)
     pwm.start(_duty(90))
-    time.sleep(hold_s * 0.5)
-    print("  → 45°（左）")
+    time.sleep(hold_s * 0.4)
     pwm.ChangeDutyCycle(_duty(45))
     time.sleep(hold_s)
-    print("  → 135°（右）")
     pwm.ChangeDutyCycle(_duty(135))
     time.sleep(hold_s)
-    print("  → 90°（中立）")
     pwm.ChangeDutyCycle(_duty(90))
-    time.sleep(hold_s * 0.5)
+    time.sleep(hold_s * 0.4)
     pwm.stop()
-    GPIO.cleanup(pin)
-    # rpi-lgpio cleanup 可能重置 setmode，重新设置防止后续引脚失效
-    try:
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
-    except Exception:
-        pass
 
 
-def probe_single_pin(pin: int):
-    """对单个引脚持续输出 PWM 8 秒，用于手动核验接线。"""
-    print(f"\n  对 GPIO {pin} 持续输出舵机 PWM 8 秒（45°→135° 来回慢摆）…")
-    print("  此时用手将舵机信号线插到各接口，若云台动则说明该接口对应此引脚。")
+def probe_single_pin(pin: int) -> None:
+    """对单个引脚持续慢摆 12 秒，用于热插拔诊断。"""
+    phys = PIN_MAP.get(pin, (0, "未知", "free"))[0]
+    desc = PIN_MAP.get(pin, (0, "未知", "free"))[1]
+    print(f"\n  GPIO {pin} (Pin {phys})  {desc}")
+    print("  持续输出 50Hz 舵机 PWM，来回慢摆 12 秒…")
+    print("  现在把舵机信号线（橙/黄色）接到树莓派 Pin 32（GPIO 12）或其他引脚，")
+    print("  看哪个位置让舵机动起来。")
     GPIO.setup(pin, GPIO.OUT)
     pwm = GPIO.PWM(pin, PWM_FREQ)
     pwm.start(_duty(90))
-    deadline = time.time() + 8.0
-    angle, direction = 90.0, 1.0
+    deadline = time.time() + 12.0
+    angle, direction = 90.0, 0.3
     while time.time() < deadline:
-        angle += direction * 0.5
-        if angle >= 135:
-            direction = -1.0
-        elif angle <= 45:
-            direction = 1.0
+        angle += direction
+        if angle >= 130:
+            direction = -0.3
+        elif angle <= 50:
+            direction = 0.3
         pwm.ChangeDutyCycle(_duty(angle))
         time.sleep(0.02)
     pwm.stop()
-    GPIO.cleanup(pin)
-    try:
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
-    except Exception:
-        pass
     print("  完成。")
 
 
-def probe_servo_pin():
+def probe_servo_pin() -> None:
     """
-    全量引脚扫描：逐一激活候选 GPIO，输出 50Hz PWM 并来回摆动，
-    找到实际连接舵机的引脚。
+    全量引脚扫描：遍历所有可用 GPIO（按 servo→free→motor 顺序），
+    输出 50Hz 舵机 PWM 摆动，确认哪个引脚实际连接了舵机。
 
-    判断标准：
-      ✓ 有效响应 = 摄像头支架旋转（看到转动 或 听到舵机齿轮声/嗡嗡声）
-      ✗ 无效响应 = 车轮/电机抖动（排除，不算）
+    关键改进（v3）：
+    - 不调用 GPIO.cleanup() 防止 rpi-lgpio 重置 BCM 模式
+    - 扫描所有之前未测试的引脚（GPIO 4/11/14/15/23 等）
+    - 电机引脚也纳入（带提醒），彻底排除遗漏
+    - 每个引脚显示物理 Pin 编号，方便对照接线
     """
-    print("\n" + "═" * 60)
-    print("  舵机引脚全量扫描")
-    print("  ✓ 有效 = 摄像头支架旋转 / 舵机发出嗡嗡声")
-    print("  ✗ 无效 = 车轮/电机抖动（不要误报）")
-    print(f"  候选引脚：{PROBE_PINS}")
-    print("  请先停止 platform 服务，避免 GPIO 冲突。")
-    print("═" * 60)
+    print("\n" + "═" * 64)
+    print("  舵机引脚全量扫描 v3")
+    print("  判断标准：")
+    print("    ✓ 有效 = 摄像头支架/云台旋转（或听到舵机嗡嗡声）")
+    print("    ✗ 无效 = 车轮/电机抖动（不算，明确区分）")
+    print("  注意：测试电机引脚时车轮会动，属正常现象，请只关注舵机。")
+    print(f"  扫描数量：{len(_SCAN_ORDER)} 个引脚")
+    print("  确认 platform 服务已停止，否则 GPIO 冲突会干扰结果。")
+    print("═" * 64)
+
+    # 打印引脚分组预览
+    servo_pins = [p for p in _SCAN_ORDER if PIN_MAP[p][2] == "servo"]
+    free_pins  = [p for p in _SCAN_ORDER if PIN_MAP[p][2] == "free"]
+    motor_pins = [p for p in _SCAN_ORDER if PIN_MAP[p][2] == "motor"]
+    print(f"\n  【舵机槽位】{servo_pins}")
+    print(f"  【空闲引脚】{free_pins}")
+    print(f"  【电机引脚】{motor_pins}（车轮会动，仍需测）")
 
     try:
-        input("\n  准备好后按 Enter 开始扫描...")
+        input("\n  准备好后按 Enter 开始扫描…")
     except (EOFError, KeyboardInterrupt):
         return
 
     hit_pins: list[int] = []
 
-    for pin in PROBE_PINS:
-        print(f"\n  ── GPIO {pin:2d} ─────────────────────────────────")
-        print(f"  → 发送 50Hz PWM …")
-        _pwm_sweep(pin, hold_s=0.8)
+    for pin in _SCAN_ORDER:
+        phys, desc, kind = PIN_MAP[pin]
+        prefix = "⚠️ " if kind == "motor" else "   "
+        print(f"\n  ── GPIO {pin:2d}  Pin {phys:2d}  {prefix}{desc} ──")
+        if kind == "motor":
+            print("     此为电机引脚，车轮可能会抖动，请只看云台是否转。")
+
+        _pwm_sweep_pin(pin, hold_s=0.9)
 
         try:
-            print("  云台/摄像头支架有旋转吗？")
-            ans = input(f"  (y=转了 / n=没动 / q=退出) > ").strip().lower()
+            ans = input("  云台有转动？(y=有/n=没有/q=退出) > ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             ans = "q"
 
@@ -249,37 +288,44 @@ def probe_servo_pin():
             break
         elif ans == "y":
             hit_pins.append(pin)
-            print(f"  ✓ GPIO {pin} 有云台旋转！")
+            print(f"  ✓ GPIO {pin} (Pin {phys}) → 云台响应！")
 
-    # 汇总
-    print("\n" + "═" * 60)
+    # ── 汇总 ──────────────────────────────────────────────────────────
+    print("\n" + "═" * 64)
     print("  【扫描结果汇总】")
     if hit_pins:
+        print()
         for p in hit_pins:
-            print(f"  ✓ GPIO {p:2d} → 云台确认响应")
-        if len(hit_pins) == 1:
-            p = hit_pins[0]
-            print(f"\n  建议更新：")
-            print(f"    servo_test.py 顶部：PAN_PIN = {p}")
-            print(f"    servo.py DEFAULT_CAMERA_CONFIG：pin={p}")
+            phys, desc, kind = PIN_MAP[p]
+            tag = "（电机引脚，可能是误报）" if kind == "motor" else ""
+            print(f"  ✓ GPIO {p:2d}  Pin {phys:2d}  {desc} {tag}")
+        real = [p for p in hit_pins if PIN_MAP[p][2] != "motor"]
+        if real:
+            p = real[0]
+            phys = PIN_MAP[p][0]
+            print(f"\n  → 确认舵机连接在 GPIO {p}（物理 Pin {phys}）")
+            print(f"    请更新以下两处：")
+            print(f"      servo_test.py 顶部：PAN_PIN = {p}")
+            print(f"      servo.py DEFAULT_CAMERA_CONFIG：pin={p}")
         else:
-            print("\n  多个引脚有响应，请选择最明显的一个更新 PAN_PIN。")
+            print("\n  所有响应引脚均为电机引脚，可能是车轮抖动误报。")
+            print("  请重新扫描，仅在看到摄像头支架旋转时按 y。")
     else:
-        print("  所有引脚均无云台旋转响应。")
         print()
-        print("  ── 下一步：手动热插拔诊断 ──────────────────────")
-        print("  运行以下命令，脚本对 GPIO 12 持续输出 PWM 信号 8 秒：")
+        print("  所有引脚均无云台响应。")
         print()
-        print("    python3 servo_test.py --live 12")
+        print("  ▶ 最终诊断步骤：确认舵机本身是否正常")
         print()
-        print("  在这 8 秒内，用手逐一把舵机信号线（橙/黄色）")
-        print("  插到树莓派 40pin 排针的各个引脚，哪个引脚让云台动了")
-        print("  就说明接线应该接在那里。")
+        print("  1. 用万用表或 LED 测试舵机电源线（红线=VCC，棕/黑=GND）是否有电压")
+        print("  2. 手动旋转云台时能感受到阻力吗？")
+        print("     有阻力  → 舵机有电但信号线未接通，继续排查 SIG 线")
+        print("     无阻力  → 舵机没有通电，检查 VCC/GND 接线")
         print()
-        print("  如果 8 秒内完全没有任何响应，请检查：")
-        print("  1. 舵机红线（VCC）和棕/黑线（GND）是否有电（用万用表量）")
-        print("  2. 换一个舵机测试（排查舵机本身损坏）")
-    print("═" * 60)
+        print("  3. 运行热插拔诊断（对 GPIO 12 持续输出 12s PWM）：")
+        print("        python3 servo_test.py --live 12")
+        print("     在这 12 秒内，把舵机信号线（橙/黄色）挨个插到")
+        print("     树莓派 40pin 排针，哪个引脚让云台动了就是正确引脚。")
+    print("═" * 64)
 
 
 # ── 主菜单 ────────────────────────────────────────────────────────────
