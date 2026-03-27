@@ -43,8 +43,9 @@ from lidar import Lidar, LidarConfig, LidarScan, LidarPoint
 DIVIDER = "─" * 60
 
 # ── 默认电机控制引脚（与 HARDWARE.md §4 保持一致）─────────────────
-# GPIO12（Pin 32，硬件 PWM0）：当前空闲，不与蜂鸣器（GPIO18）冲突
-DEFAULT_MOTOR_PIN = 12
+# GPIO15（Pin 10，UART RX）：唯一空闲引脚，UART 控制台已移除，可正常用作普通 GPIO
+# 禁止使用 GPIO18（蜂鸣器）、GPIO12（左后编码A）、GPIO20/21（超声波）
+DEFAULT_MOTOR_PIN = 15
 DEFAULT_PWM_FREQ  = 25000   # Hz
 DEFAULT_PWM_DUTY  = 60.0    # %，约 10Hz 扫描速率
 
