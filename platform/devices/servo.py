@@ -43,6 +43,9 @@ class ServoConfig:
     max_angle: float = 180.0   # 可用最大角度（度），硬件/机械限制
     default_angle: float = 90.0  # 上电默认角度（逻辑角度，归中位置）
     invert: bool = False         # True = 舵机安装方向与角度约定相反，自动镜像物理信号
+    speed_deg_per_s: float = 120.0
+    # 受控移动速度（度/秒）。SG90 机械最大速度约 600°/s。
+    # 0 = 直接跳到目标（旧行为，最快）；典型值：30=慢，60=中，120=偏快。
 
 
 @dataclass
@@ -57,11 +60,12 @@ class CameraConfig:
 # Pan：0°=最左、110°=正前（物理 70°）、180°=最右
 DEFAULT_CAMERA_CONFIG = CameraConfig(
     pan=ServoConfig(
-        pin=12,
+        pin=13,                   # 实测确认：GPIO 13 / Pin 33 / PWM1
         min_angle=0.0,
         max_angle=180.0,
-        default_angle=110.0,   # 逻辑正前方（对应物理 70°）
-        invert=True,
+        default_angle=90.0,       # 物理中立位；如需偏移再通过 servo_test.py 校准后更新
+        invert=False,             # 校准前先不反转，实测方向后再决定
+        speed_deg_per_s=60.0,     # 60°/s：从中位到端点约 1.5s，平滑但不迟钝
     ),
 )
 
@@ -76,8 +80,10 @@ class Servo:
     rpi-lgpio stop()+start() 重启行为不稳定，改为常驻更可靠。
     """
 
-    # 舵机到位等待时间（秒）：SG90 全程约 0.1s/60°，300ms 对大多数移动已够
-    SETTLE_S: float = 0.3
+    # 最终到位后额外稳定等待（秒）；渐进移动时已有步进延迟，此值仅用于末位稳定
+    SETTLE_S: float = 0.05
+    # 渐进移动每步角度（度）；越小越平滑，越小 CPU 调用越频繁
+    _STEP_DEG: float = 1.0
 
     def __init__(self, name: str, config: ServoConfig) -> None:
         self.name = name
@@ -86,6 +92,7 @@ class Servo:
         self._max = config.max_angle
         self._default = config.default_angle
         self._invert = config.invert
+        self._speed = config.speed_deg_per_s
         self._pwm: object | None = None
         self._current_angle: float = config.default_angle
 
@@ -108,7 +115,8 @@ class Servo:
         """
         移动到目标逻辑角度。
 
-        含 time.sleep(SETTLE_S) 阻塞等待，异步上下文中应通过 asyncio.to_thread 调用。
+        当 speed_deg_per_s > 0 时以受控速度渐进移动，否则直接跳到目标。
+        含阻塞 sleep，异步上下文中应通过 asyncio.to_thread 调用。
 
         Returns:
             实际设置的逻辑角度（钳位后）
@@ -119,11 +127,27 @@ class Servo:
                 "[舵机-%s] %.1f° 超出范围 [%.1f°, %.1f°]，钳位至 %.1f°",
                 self.name, angle, self._min, self._max, clamped,
             )
-        duty = _angle_to_duty(self._to_physical(clamped))
-        logger.debug("[舵机-%s] → %.1f°（物理=%.1f°，duty=%.2f%%）", self.name, clamped, self._to_physical(clamped), duty)
-        self._pwm.ChangeDutyCycle(duty)
+
+        total_deg = abs(clamped - self._current_angle)
+        if self._speed > 0 and total_deg > self._STEP_DEG:
+            # 渐进移动：每步 _STEP_DEG 度，按 speed_deg_per_s 控速
+            step_delay = self._STEP_DEG / self._speed
+            direction = 1.0 if clamped > self._current_angle else -1.0
+            pos = self._current_angle
+            while abs(clamped - pos) > self._STEP_DEG:
+                pos += direction * self._STEP_DEG
+                self._pwm.ChangeDutyCycle(_angle_to_duty(self._to_physical(pos)))
+                time.sleep(step_delay)
+            logger.debug(
+                "[舵机-%s] → %.1f°（物理=%.1f°，%.0f°/s，耗时约 %.2fs）",
+                self.name, clamped, self._to_physical(clamped),
+                self._speed, total_deg / self._speed,
+            )
+
+        # 最终精确落点
+        self._pwm.ChangeDutyCycle(_angle_to_duty(self._to_physical(clamped)))
         self._current_angle = clamped
-        time.sleep(self.SETTLE_S)   # 等待舵机到位
+        time.sleep(self.SETTLE_S)
         return clamped
 
     def move_by(self, delta: float) -> float:

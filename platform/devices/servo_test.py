@@ -3,7 +3,7 @@
 舵机探针 — 摄像头水平云台调试。
 
 MAKEROBO 扩展板舵机接口（已实测确认）：
-  GPIO 12 = 水平轴 Pan（左右旋转）
+  GPIO 13 = 水平轴 Pan（左右旋转，Pin 33 / PWM1）
 
 舵机 PWM 参数（SG90 / MG90S）：
   频率：50 Hz（周期 20ms）
@@ -20,18 +20,18 @@ MAKEROBO 扩展板舵机接口（已实测确认）：
 import argparse
 import time
 
-PAN_PIN    = 12   # 水平轴
+PAN_PIN    = 13   # 水平轴（实测确认：Pin 33 / GPIO 13 / PWM1）
 PWM_FREQ   = 50   # Hz，舵机标准频率
 DUTY_MIN   = 2.5  # % → 0°
 DUTY_MID   = 7.5  # % → 90°
 DUTY_MAX   = 12.5 # % → 180°
-STEP_DELAY = 0.02 # 秒，平滑扫描每步延迟
+STEP_DELAY = 0.017 # 秒/度，平滑扫描每步延迟（≈ 60°/s，与 servo.py speed_deg_per_s 一致）
 
 # ── 实测物理标定值 ────────────────────────────────────────────────────
 # 注意：此脚本直接操作物理 PWM 角度，与 Platform API 的「逻辑角度」不同。
 # Platform 层：Pan invert=True → physical = min + max - logical
-# Pan 逻辑 110° ↔ 物理 70°
-PAN_CENTER  = 70.0  # 物理正前方（Platform API pan=110）
+# Pan 逻辑 110° ↔ 物理 70°（待重新校准，当前为旧值）
+PAN_CENTER  = 90.0  # 物理中立位（校准前先用 90° 居中，再通过选项 2 手动校准正前方）
 
 # ── GPIO 初始化 ───────────────────────────────────────────────────────
 try:
@@ -164,8 +164,8 @@ PIN_MAP: dict[int, tuple[int, str, str]] = {
      9: (21, "电机 M4-IN2 右后反转",          "motor"),
     10: (19, "扩展板RGB灯SPI数据(禁用)",       "skip"),
     11: (23, "空闲 / 规划左后编码B",          "free"),
-    12: (32, "舵机Pan槽位 (PWM0)",            "servo"),
-    13: (33, "舵机Tilt槽位 (PWM1)",           "servo"),
+    12: (32, "PWM0 空闲（原规划Pan，实测非舵机）", "free"),
+    13: (33, "舵机Pan槽位 (PWM1)【实测确认】",   "servo"),
     14: ( 8, "UART TX / 规划右前编码A",       "free"),
     15: (10, "UART RX (空闲)",               "free"),
     16: (36, "规划左前编码B",                 "free"),
@@ -214,7 +214,7 @@ def probe_single_pin(pin: int) -> None:
     desc = PIN_MAP.get(pin, (0, "未知", "free"))[1]
     print(f"\n  GPIO {pin} (Pin {phys})  {desc}")
     print("  持续输出 50Hz 舵机 PWM，来回慢摆 12 秒…")
-    print("  现在把舵机信号线（橙/黄色）接到树莓派 Pin 32（GPIO 12）或其他引脚，")
+    print("  现在把舵机信号线（橙/黄色）接到树莓派 Pin 33（GPIO 13）或其他引脚，")
     print("  看哪个位置让舵机动起来。")
     GPIO.setup(pin, GPIO.OUT)
     pwm = GPIO.PWM(pin, PWM_FREQ)
@@ -321,8 +321,8 @@ def probe_servo_pin() -> None:
         print("     有阻力  → 舵机有电但信号线未接通，继续排查 SIG 线")
         print("     无阻力  → 舵机没有通电，检查 VCC/GND 接线")
         print()
-        print("  3. 运行热插拔诊断（对 GPIO 12 持续输出 12s PWM）：")
-        print("        python3 servo_test.py --live 12")
+        print("  3. 运行热插拔诊断（对 GPIO 13 持续输出 12s PWM）：")
+        print("        python3 servo_test.py --live 13")
         print("     在这 12 秒内，把舵机信号线（橙/黄色）挨个插到")
         print("     树莓派 40pin 排针，哪个引脚让云台动了就是正确引脚。")
     print("═" * 64)
