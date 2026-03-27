@@ -61,7 +61,7 @@ class EncoderConfig:
     left_a:  int = int(os.environ.get("ENCODER_LEFT_A",   "12"))  # M3 左后 A（GPIO4=电源板GP04按钮，禁用）
     left_b:  int = int(os.environ.get("ENCODER_LEFT_B",  "11"))  # M3 左后 B
     right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "20"))  # M4 右后 A（GPIO19=电源板GP19按钮，禁用）
-    right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "10"))  # M4 右后 B（GPIO7/8=spi0 CS强占）
+    right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "21"))  # M4 右后 B（GPIO10=RGB灯SPI MOSI禁用，改用GPIO21）
     lines_per_rev: int = int(os.environ.get("ENCODER_LINES_PER_REV", "500"))
 
     @property
