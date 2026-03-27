@@ -1,19 +1,14 @@
 """
-摄像头云台控制模块（双轴舵机）
+摄像头云台控制模块（水平单轴舵机）
 
-硬件：MAKEROBO 扩展板两路 PWM 舵机接口
+硬件：MAKEROBO 扩展板 PWM 舵机接口
   GPIO 12 = 水平轴 Pan（左右旋转）
-  GPIO 13 = 垂直轴 Tilt（上下俯仰）
 
 舵机 PWM 参数（SG90 / MG90S 兼容）：
   频率：50 Hz（20ms 周期）
   脉宽 0.5ms → 占空比  2.5% → 0°
   脉宽 1.5ms → 占空比  7.5% → 90°（中立/正前方）
   脉宽 2.5ms → 占空比 12.5% → 180°
-
-垂直轴硬件限制：
-  摄像头支架有物理遮挡，可用范围约 ±15°（共 30°），
-  默认安全区间 75°–105°，超出范围的角度请求会自动钳位，不会损伤舵机。
 """
 
 from __future__ import annotations
@@ -52,29 +47,20 @@ class ServoConfig:
 
 @dataclass
 class CameraConfig:
-    """摄像头云台双轴配置。"""
+    """摄像头云台配置（水平单轴）。"""
 
     pan: ServoConfig   # 水平轴
-    tilt: ServoConfig  # 垂直轴
 
 
 # MAKEROBO 扩展板实测配置
-# Pan / Tilt 均反向安装：invert=True，physical = min + max - logical
+# Pan 反向安装：invert=True，physical = min + max - logical
 # Pan：0°=最左、110°=正前（物理 70°）、180°=最右
-# Tilt：2°=最低俯视、5°=水平正视（物理 PWM 85°）、88°=最高仰视
 DEFAULT_CAMERA_CONFIG = CameraConfig(
     pan=ServoConfig(
         pin=12,
         min_angle=0.0,
         max_angle=180.0,
         default_angle=110.0,   # 逻辑正前方（对应物理 70°）
-        invert=True,
-    ),
-    tilt=ServoConfig(
-        pin=13,
-        min_angle=2.0,
-        max_angle=88.0,
-        default_angle=5.0,     # 逻辑水平正视（物理标定 85°；2+88-85=5）
         invert=True,
     ),
 )
@@ -184,85 +170,52 @@ class Servo:
         return self._max
 
 
-# ── 双轴云台 ──────────────────────────────────────────────────────────
+# ── 水平单轴云台 ──────────────────────────────────────────────────────
 
 class CameraMount:
     """
-    摄像头云台控制器（水平 Pan + 垂直 Tilt）。
+    摄像头云台控制器（水平单轴 Pan）。
 
-    逻辑角度约定（API 层，Pan/Tilt 均 invert 镜像后送 PWM）：
+    逻辑角度约定（invert=True，物理 = min + max - logical）：
       Pan  0° = 最左  |  110° = 正前方（逻辑 → 物理 70°）  |  180° = 最右
-      Tilt 2° = 最低俯视  |  5° = 水平正视（逻辑 → 物理 85°）  |  88° = 最高仰视
 
     用法示例::
 
         cam = CameraMount()
         cam.pan_to(45)                       # 向左转 45°
-        cam.tilt_to(95)                      # 轻微上仰
-        cam.look_at(pan=90, tilt=90)         # 正视前方
         cam.pan_by(-10)                      # 向左偏移 10°
         await cam.sweep_pan(60, 120, step=3) # 水平扫描
-        cam.center()                         # 双轴归中
+        cam.center()                         # 归中
         cam.cleanup()                        # 程序退出前调用
     """
 
     def __init__(self, config: CameraConfig = DEFAULT_CAMERA_CONFIG) -> None:
-        self._pan_servo  = Servo("pan",  config.pan)
-        self._tilt_servo = Servo("tilt", config.tilt)
+        self._pan_servo = Servo("pan", config.pan)
         self._pan_servo.setup()
-        self._tilt_servo.setup()
         logger.info(
-            "摄像头云台初始化完成（%s）"
-            "  Pan  GPIO%d [%.0f°–%.0f°]"
-            "  Tilt GPIO%d [%.0f°–%.0f°]",
+            "摄像头云台初始化完成（%s）  Pan GPIO%d [%.0f°–%.0f°]",
             "模拟模式" if SIMULATION else "GPIO 模式",
-            config.pan.pin,  config.pan.min_angle,  config.pan.max_angle,
-            config.tilt.pin, config.tilt.min_angle, config.tilt.max_angle,
+            config.pan.pin, config.pan.min_angle, config.pan.max_angle,
         )
 
-    # ── 单轴绝对定位 ──────────────────────────────────────────────
+    # ── 绝对定位 ──────────────────────────────────────────────────
 
     def pan_to(self, angle: float) -> float:
-        """水平转到指定角度（0°=最左，90°=正前，180°=最右）。"""
+        """水平转到指定角度（0°=最左，110°=正前，180°=最右）。"""
         actual = self._pan_servo.set_angle(angle)
         logger.debug("[云台] Pan → %.1f°", actual)
         return actual
 
-    def tilt_to(self, angle: float) -> float:
-        """
-        垂直俯仰到指定角度（角度超出硬件范围时自动钳位）。
-
-        Args:
-            angle: 目标角度，安全范围 75°–105°
-        """
-        actual = self._tilt_servo.set_angle(angle)
-        logger.debug("[云台] Tilt → %.1f°", actual)
-        return actual
-
-    # ── 单轴相对偏移 ──────────────────────────────────────────────
+    # ── 相对偏移 ──────────────────────────────────────────────────
 
     def pan_by(self, delta: float) -> float:
         """水平相对偏移（正=右，负=左）。"""
         return self._pan_servo.move_by(delta)
 
-    def tilt_by(self, delta: float) -> float:
-        """垂直相对偏移（正=上仰，负=下俯）。"""
-        return self._tilt_servo.move_by(delta)
-
-    # ── 双轴联动 ──────────────────────────────────────────────────
-
-    def look_at(self, pan: float, tilt: float) -> dict[str, float]:
-        """同时设置水平和垂直角度，返回实际角度字典。"""
-        return {
-            "pan":  self.pan_to(pan),
-            "tilt": self.tilt_to(tilt),
-        }
-
     def center(self) -> None:
-        """双轴归中（正视前方）。"""
+        """归中（正视前方）。"""
         self._pan_servo.center()
-        self._tilt_servo.center()
-        logger.debug("[云台] 双轴归中")
+        logger.debug("[云台] 归中")
 
     # ── 异步扫描 ──────────────────────────────────────────────────
 
@@ -285,38 +238,10 @@ class CameraMount:
         if step == 0:
             return
         if (to_angle - from_angle) * step < 0:
-            step = -step   # 自动修正方向
+            step = -step
         angle = from_angle
         while (step > 0 and angle <= to_angle) or (step < 0 and angle >= to_angle):
             self.pan_to(angle)
-            await asyncio.sleep(delay)
-            angle += step
-
-    async def sweep_tilt(
-        self,
-        from_angle: float | None = None,
-        to_angle: float | None = None,
-        step: float = 3.0,
-        delay: float = 0.05,
-    ) -> None:
-        """
-        垂直扫描（默认在硬件安全范围内扫描）。
-
-        Args:
-            from_angle: 起始角度，None = 下限（75°）
-            to_angle:   终止角度，None = 上限（105°）
-            step:       步进（度）
-            delay:      每步等待时间（秒）
-        """
-        fa = from_angle if from_angle is not None else self._tilt_servo.min_angle
-        ta = to_angle   if to_angle   is not None else self._tilt_servo.max_angle
-        if step == 0:
-            return
-        if (ta - fa) * step < 0:
-            step = -step
-        angle = fa
-        while (step > 0 and angle <= ta) or (step < 0 and angle >= fa):
-            self.tilt_to(angle)
             await asyncio.sleep(delay)
             angle += step
 
@@ -324,24 +249,19 @@ class CameraMount:
 
     @property
     def status(self) -> dict[str, float]:
-        """当前双轴角度。"""
-        return {
-            "pan":  self._pan_servo.current_angle,
-            "tilt": self._tilt_servo.current_angle,
-        }
+        """当前水平角度。"""
+        return {"pan": self._pan_servo.current_angle}
 
     @property
     def limits(self) -> dict[str, dict[str, float]]:
-        """双轴角度硬件限制范围。"""
+        """水平轴角度硬件限制范围。"""
         return {
-            "pan":  {"min": self._pan_servo.min_angle,  "max": self._pan_servo.max_angle},
-            "tilt": {"min": self._tilt_servo.min_angle, "max": self._tilt_servo.max_angle},
+            "pan": {"min": self._pan_servo.min_angle, "max": self._pan_servo.max_angle},
         }
 
     # ── 资源清理 ──────────────────────────────────────────────────
 
     def cleanup(self) -> None:
-        """双轴归中后释放 GPIO 资源。程序退出前必须调用。"""
+        """归中后释放 GPIO 资源。程序退出前必须调用。"""
         self._pan_servo.cleanup()
-        self._tilt_servo.cleanup()
         logger.info("云台 GPIO 已清理")

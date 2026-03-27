@@ -360,8 +360,8 @@ export const TakeRobotPhotoToolUI = makeAssistantToolUI<
 });
 
 export const MoveCameraMountToolUI = makeAssistantToolUI<
-  { pan?: number; tilt?: number },
-  { success: boolean; pan?: number; tilt?: number; error?: string }
+  { pan: number },
+  { success: boolean; pan?: number; error?: string }
 >({
   toolName: "moveCameraMount",
   render({ args, result, status: execStatus }) {
@@ -369,12 +369,7 @@ export const MoveCameraMountToolUI = makeAssistantToolUI<
     return (
       <ToolCard icon={ScanEyeIcon} title="调整云台" loading={loading}>
         <div className="flex gap-2 text-xs flex-wrap">
-          {args.pan !== undefined && (
-            <Badge variant="outline">水平 {args.pan}°</Badge>
-          )}
-          {args.tilt !== undefined && (
-            <Badge variant="outline">俯仰 {args.tilt}°</Badge>
-          )}
+          <Badge variant="outline">水平 {args.pan}°</Badge>
         </div>
         {!loading && result && !result.success && (
           <p className="text-xs text-red-400 mt-1">{result.error}</p>
@@ -606,7 +601,7 @@ export const GetMapStatusToolUI = makeAssistantToolUI<
 
 export const CenterCameraMountToolUI = makeAssistantToolUI<
   Record<string, never>,
-  { success: boolean; status?: { pan: number; tilt: number }; error?: string }
+  { success: boolean; status?: { pan: number }; error?: string }
 >({
   toolName: "centerCameraMount",
   render({ result, status: execStatus }) {
@@ -615,7 +610,7 @@ export const CenterCameraMountToolUI = makeAssistantToolUI<
       <ToolCard icon={ScanEyeIcon} title="云台归中" loading={loading}>
         {!loading && result?.success && result.status && (
           <p className="text-xs text-muted-foreground">
-            Pan {result.status.pan}° · Tilt {result.status.tilt}°
+            Pan {result.status.pan}°
           </p>
         )}
         {!loading && result && !result.success && (

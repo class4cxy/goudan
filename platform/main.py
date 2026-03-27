@@ -529,12 +529,11 @@ class SetMotorRequest(BaseModel):
     speed: int | None = None
 
 class CameraLookAtRequest(BaseModel):
-    pan:  float | None = None   # 水平角度 0–180，None=不改变
-    tilt: float | None = None   # 垂直角度（硬件限制 75–105），None=不改变
+    pan: float   # 水平角度 0–180（0=最左，110=正前，180=最右）
 
 class CameraMoveRequest(BaseModel):
-    axis:  str    # pan | tilt
-    delta: float  # 相对偏移量（度），正=右/上，负=左/下
+    axis:  str    # pan
+    delta: float  # 相对偏移量（度），正=右，负=左
 
 class BluetoothConnectRequest(BaseModel):
     mac: str      # 设备 MAC 地址，格式 XX:XX:XX:XX:XX:XX
@@ -906,36 +905,26 @@ async def motor_status():
 @app.post("/camera/look_at")
 async def camera_look_at(req: CameraLookAtRequest):
     """
-    设置云台朝向。pan/tilt 均可省略（省略=保持当前值）。
+    设置云台水平朝向。
 
-    Pan  范围：0–180°（0=最左，110=正前，180=最右）  ← 逻辑角，invert 后物理 70°=正前
-    Tilt 范围：2–88°（2=最低俯视，5=水平正视，88=最高仰视）  ← 逻辑角，invert 后物理约 85°=水平正视
+    Pan 范围：0–180°（0=最左，110=正前，180=最右）← 逻辑角，invert 后物理 70°=正前
     """
-    result: dict = {}
-    if req.pan is not None:
-        result["pan"] = await asyncio.to_thread(camera.pan_to, req.pan)
-    if req.tilt is not None:
-        result["tilt"] = await asyncio.to_thread(camera.tilt_to, req.tilt)
-    if not result:
-        raise HTTPException(status_code=400, detail="请至少指定 pan 或 tilt")
-    return {"ok": True, **result}
+    actual = await asyncio.to_thread(camera.pan_to, req.pan)
+    return {"ok": True, "pan": actual}
 
 
 @app.post("/camera/move")
 async def camera_move(req: CameraMoveRequest):
-    """相对偏移云台（axis=pan|tilt，delta 为度数，正=右/上，负=左/下）。"""
-    if req.axis == "pan":
-        actual = await asyncio.to_thread(camera.pan_by, req.delta)
-    elif req.axis == "tilt":
-        actual = await asyncio.to_thread(camera.tilt_by, req.delta)
-    else:
-        raise HTTPException(status_code=400, detail="axis 须为 pan 或 tilt")
+    """相对偏移云台水平角度（axis=pan，delta 为度数，正=右，负=左）。"""
+    if req.axis != "pan":
+        raise HTTPException(status_code=400, detail="axis 须为 pan")
+    actual = await asyncio.to_thread(camera.pan_by, req.delta)
     return {"ok": True, "axis": req.axis, "angle": actual}
 
 
 @app.post("/camera/center")
 async def camera_center():
-    """云台双轴归中（正视前方）。"""
+    """云台归中（正视前方）。"""
     await asyncio.to_thread(camera.center)
     return {"ok": True, "status": camera.status}
 
@@ -1516,25 +1505,22 @@ async def _handle_action(message: dict) -> None:
 
     elif msg_type == "action.camera":
         # payload 示例：
-        #   look_at:  {"command":"look_at","pan":90,"tilt":90}
+        #   look_at:  {"command":"look_at","pan":90}
         #   move:     {"command":"move","axis":"pan","delta":-10}
         #   center:   {"command":"center"}
         #   snapshot: {"command":"snapshot"}
         command = payload.get("command", "look_at")
         try:
             if command == "look_at":
-                pan  = payload.get("pan")
-                tilt = payload.get("tilt")
-                if pan  is not None: await asyncio.to_thread(camera.pan_to,  float(pan))
-                if tilt is not None: await asyncio.to_thread(camera.tilt_to, float(tilt))
-                logger.info("[WS] 云台 look_at pan=%s tilt=%s", pan, tilt)
+                pan = payload.get("pan")
+                if pan is not None:
+                    await asyncio.to_thread(camera.pan_to, float(pan))
+                logger.info("[WS] 云台 look_at pan=%s", pan)
             elif command == "move":
                 axis  = payload.get("axis", "pan")
                 delta = float(payload.get("delta", 0))
                 if axis == "pan":
                     await asyncio.to_thread(camera.pan_by, delta)
-                else:
-                    await asyncio.to_thread(camera.tilt_by, delta)
                 logger.info("[WS] 云台 move axis=%s delta=%s", axis, delta)
             elif command == "center":
                 await asyncio.to_thread(camera.center)

@@ -12,7 +12,7 @@ Encoder — 500线正交编码器驱动（lgpio 后端，支持树莓派 5）
   四轮底盘只需接左右各一路编码器（选后轮，受力更均匀）：
     左后轮编码器：A → ENCODER_LEFT_A（默认 GPIO4），B → ENCODER_LEFT_B（默认 GPIO11）
     右后轮编码器：A → ENCODER_RIGHT_A（默认 GPIO19），B → ENCODER_RIGHT_B（默认 GPIO7）
-  引脚定稿见 docs/HARDWARE.md §7.1.1；GPIO13 已被舵机 Tilt 占用，禁止接编码器。
+  引脚定稿见 docs/HARDWARE.md §7.1.1；GPIO12 已被舵机 Pan 占用，禁止接编码器。
   编码器 VCC 接树莓派 3.3V（Pin 1 或 Pin 17），不要接 5V。
 
 lgpio 安装：

@@ -3,8 +3,8 @@
  * =========================================
  * 对接 platform 的 /camera/* REST 接口：
  *   takeRobotPhoto    — 拍照，返回 base64 JPEG
- *   moveCameraMount   — 绝对定位云台（pan / tilt）
- *   centerCameraMount — 云台双轴归中
+ *   moveCameraMount   — 水平定位云台（pan）
+ *   centerCameraMount — 云台归中
  */
 
 import { tool } from "ai";
@@ -39,30 +39,21 @@ export const takeRobotPhoto = tool({
 
 export const moveCameraMount = tool({
   description:
-    "控制摄像头云台朝向（双轴舵机）。" +
-    "Pan（水平）0°=最左 / 110°=正前 / 180°=最右；" +
-    "Tilt（垂直）2°=最低俯视 / 5°=水平正视 / 88°=最高仰视（水平正视对应舵机物理约 85°）。" +
-    "两个参数均可省略（省略则该轴保持当前角度）。",
+    "控制摄像头云台水平朝向（单轴舵机）。" +
+    "Pan（水平）0°=最左 / 110°=正前 / 180°=最右。",
   inputSchema: z.object({
     pan: z
       .number()
       .min(0)
       .max(180)
-      .optional()
       .describe("水平角度（0–180°，110=正前）"),
-    tilt: z
-      .number()
-      .min(2)
-      .max(88)
-      .optional()
-      .describe("垂直俯仰角度（2–88°，5=水平正视）"),
   }),
-  execute: async ({ pan, tilt }) => {
+  execute: async ({ pan }) => {
     try {
       const res = await fetch(`${PLATFORM_URL}/camera/look_at`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pan, tilt }),
+        body: JSON.stringify({ pan }),
         signal: AbortSignal.timeout(5_000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -108,8 +99,7 @@ export const closeCameraStream = tool({
 });
 
 export const centerCameraMount = tool({
-  description:
-    "将摄像头云台双轴归中（Pan=110°，Tilt=5° 逻辑角=水平正视，物理约 85°）。",
+  description: "将摄像头云台归中（Pan=110°，正视前方）。",
   inputSchema: z.object({}),
   execute: async () => {
     try {
@@ -118,7 +108,7 @@ export const centerCameraMount = tool({
         signal: AbortSignal.timeout(5_000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { ok: boolean; status: { pan: number; tilt: number } };
+      const data = (await res.json()) as { ok: boolean; status: { pan: number } };
       return { success: true, status: data.status };
     } catch (err) {
       return { success: false, error: String(err) };
