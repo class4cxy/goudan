@@ -45,12 +45,11 @@ DIVIDER = "─" * 60
 # ── 默认电机控制引脚（与 HARDWARE.md §4 保持一致）─────────────────
 # GPIO15（Pin 10，UART RX）：唯一空闲引脚，UART 控制台已移除，可正常用作普通 GPIO
 # 禁止使用 GPIO18（蜂鸣器）、GPIO12（左后编码A）、GPIO20/21（超声波）
-DEFAULT_MOTOR_PIN = 15
-# lgpio 软件 PWM 上限 10kHz；LD06 规格要求 20~50kHz。
-# 若 lgpio 报 'bad PWM frequency'，改用 pigpio（DMA PWM，无频率上限）：
-#   sudo apt install pigpiod && sudo systemctl enable --now pigpiod
-#   pip install pigpio
-DEFAULT_PWM_FREQ  = 1000    # Hz：先用 1kHz 验证 LD06 是否响应，再视情况提频
+# GPIO12（Pin 32，硬件 PWM0）：RPi5 原生硬件 PWM，支持 25kHz，唯一可用方案。
+# 实测：LD06 只认 20kHz+ 信号；lgpio 软件 PWM 上限 10kHz；pigpio 不支持 RPi5。
+# GPIO12 原规划为左后轮编码器 A，编码器代码未实现前临时用于激光雷达电机控制。
+DEFAULT_MOTOR_PIN = 12
+DEFAULT_PWM_FREQ  = 25000   # Hz：LD06 规格 20~50kHz，GPIO12 硬件 PWM 原生支持
 DEFAULT_PWM_DUTY  = 60.0    # %，约 10Hz 扫描速率
 
 
