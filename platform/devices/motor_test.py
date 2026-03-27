@@ -71,7 +71,7 @@ MOTOR_NAMES = {
 ENCODER_PINS: dict[str, dict[str, int]] = {
     "front_left":  {"pin_a": 23, "pin_b": 16},  # M1 左前
     "front_right": {"pin_a": 14, "pin_b": 18},  # M2 右前（GPIO17=蜂鸣器；A=GPIO14 UART TX，B=GPIO18）
-    "rear_left":   {"pin_a": 12, "pin_b": 11},  # M3 左后（里程计左轮）GPIO4=电源板GP04按钮，改用GPIO12
+    "rear_left":   {"pin_a": 15, "pin_b": 11},  # M3 左后（里程计左轮）GPIO15=定稿（GPIO12 已释放，为空闲硬件PWM0）
     "rear_right":  {"pin_a": 20, "pin_b": 21},  # M4 右后（里程计右轮）GPIO10=RGB灯SPI MOSI，改用GPIO21
 }
 

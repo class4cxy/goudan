@@ -38,9 +38,6 @@ pyserial>=3.5
 # GPIO (树莓派引脚控制，底盘电机 + 摄像头云台 PWM)
 # RPi.GPIO 不支持树莓派 5（BCM2712），使用 rpi-lgpio 作为兼容替代
 rpi-lgpio>=0.6
-# pigpio：DMA 精准 PWM，支持任意 GPIO 任意频率（LD06 电机需要 25kHz）
-# 需额外启动守护进程：sudo systemctl enable --now pigpiod
-pigpio>=1.78
 
 # 电源监测 (INA219 电流/电压传感器，I2C)
 pi-ina219>=1.3.0

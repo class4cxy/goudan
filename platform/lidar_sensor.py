@@ -48,13 +48,7 @@ class LidarSensor:
                 #   180 = 线缆接口朝后（装反时设置）
                 #   90  = 线缆接口朝右
                 mount_angle_deg=float(os.environ.get("LIDAR_MOUNT_ANGLE", "0")),
-                # LIDAR_MOTOR_PIN：LD06 PWM 引脚对应的树莓派 GPIO（BCM 编号）。
-                #   -1（默认）= PWM 悬空，电机上电后持续旋转（原始行为）
-                #   ≥0        = 按需控制：start() 时驱动 PWM 转动，stop() 时拉低停转。
-                #   推荐接 GPIO18（硬件 PWM），也可用任意空闲 GPIO（软件 PWM）。
-                motor_pin=int(os.environ.get("LIDAR_MOTOR_PIN", "18")),
-                motor_pwm_freq=int(os.environ.get("LIDAR_MOTOR_PWM_FREQ", "25000")),
-                motor_pwm_duty=float(os.environ.get("LIDAR_MOTOR_PWM_DUTY", "60")),
+                # LD06 PWM 引脚实测无效（内部 PID 锁速），电机无法通过软件停止，悬空即可。
             ),
             on_scan=self._on_scan,
         )

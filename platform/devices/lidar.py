@@ -11,17 +11,17 @@ Lidar — LD06 激光雷达硬件抽象层
 不含任何 WebSocket / Spine / FastAPI 逻辑，纯硬件操作。
 
 接线说明（LD06 → CP2102 → 树莓派 USB）：
-  LD06 P5V  → CP2102 5V
-  LD06 GND  → CP2102 GND
-  LD06 Tx   → CP2102 RXD   ← 只需接收，发送方向
-  LD06 PWM  → 悬空（内部调速模式，默认 10Hz，电机常转）
-           或 → 树莓派 GPIO（BCM 编号，如 GPIO18）← 推荐：按需控制电机
+  LD06 P5V  → CP2102 5V（或扩展板 5V）
+  LD06 GND  → CP2102 GND（共地）
+  LD06 Tx   → CP2102 RXD   ← 只需接收
+  LD06 PWM  → 悬空         ← 实测该引脚无法控制电机（内部 PID 锁速 ~600 RPM）
 
-电机按需控制（推荐接线）：
-  将 LD06 PWM 引脚接到树莓派任意 GPIO（推荐 GPIO18，硬件 PWM）。
-  配置 LidarConfig.motor_pin 后，start() 时输出 PWM 驱动电机旋转，
-  stop() 时拉低 GPIO 停止电机，彻底消除待机时不必要的噪音和磨损。
-  PWM 频率建议 25kHz，占空比 60% ≈ 10Hz 扫描速率。
+电机控制说明：
+  LD06 电机由内部 MCU 的 PID 控制器锁定在约 600 RPM（10 Hz 扫描频率）。
+  实测验证：将 GPIO12 硬件 PWM0（25kHz）连接到 LD06 PWM 引脚，
+  无论占空比如何变化（0%~100%），电机转速始终维持 597 RPM，不受外部 PWM 控制。
+  如需真正停止电机，须在 5V 供电线串联 P-MOSFET 切断电源（硬件改造）。
+  软件层面：stop() 关闭串口停止数据流，电机在 LD06 通电期间持续旋转。
 
 依赖：pyserial（pip install pyserial）
 """
@@ -32,8 +32,6 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable
-
-from devices.gpio_adapter import GPIO
 
 logger = logging.getLogger(__name__)
 
@@ -126,12 +124,6 @@ class LidarConfig:
                                        #   180 → 线缆朝后（装反了）
                                        #   90  → 线缆朝右
                                        #  -90  → 线缆朝左
-    motor_pin: int = -1                # 电机控制 GPIO 引脚（BCM 编号）。
-                                       #   -1（默认）= PWM 悬空，电机常转（内部自动调速 10Hz）
-                                       #   ≥0 = 接到树莓派 GPIO 引脚（如 18），start() 驱动
-                                       #        PWM 转动，stop() 拉低停止电机。
-    motor_pwm_freq: int = 25000        # 电机 PWM 频率（Hz），LD06 推荐 25kHz
-    motor_pwm_duty: float = 60.0       # 电机 PWM 占空比（%），60% ≈ 10Hz 扫描速率
 
 
 DEFAULT_LIDAR_CONFIG = LidarConfig()
@@ -166,9 +158,6 @@ class Lidar:
         self._latest_scan: LidarScan | None = None
         self._lock = threading.Lock()
 
-        # 电机 PWM 对象（motor_pin >= 0 时创建）
-        self._motor_pwm = None
-
         # 帧累积状态（拼接多帧为一圈）
         self._scan_buffer: list[LidarPoint] = []
         self._scan_rpm_sum: float = 0.0
@@ -187,15 +176,11 @@ class Lidar:
         # 每次调用 start() 前重置模拟标志，允许硬件插入后重试
         self._is_simulation = False
 
-        # 先启动电机（有 motor_pin 配置时），让其在串口读取前达到稳定转速
-        self._motor_start()
-
         try:
             import serial
         except ImportError:
             logger.error("[Lidar] 缺少依赖 pyserial，请运行：pip install pyserial")
             self._is_simulation = True
-            self._motor_stop()
             return
 
         try:
@@ -208,7 +193,6 @@ class Lidar:
         except Exception as e:
             logger.warning(f"[Lidar] 串口打开失败（{e}），进入模拟模式")
             self._is_simulation = True
-            self._motor_stop()
             return
 
         self._stop_event.clear()
@@ -217,7 +201,7 @@ class Lidar:
         logger.info("[Lidar] 读取线程已启动")
 
     def stop(self) -> None:
-        """停止读取线程并关闭串口，然后停止电机。"""
+        """停止读取线程并关闭串口。LD06 电机在通电期间持续旋转，无法通过软件停止。"""
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=3.0)
@@ -225,87 +209,6 @@ class Lidar:
         if self._serial and self._serial.is_open:
             self._serial.close()
             logger.info("[Lidar] 串口已关闭")
-        # 串口关闭后再停电机，确保不丢最后几圈扫描数据
-        self._motor_stop()
-
-    # ─── 电机控制（内部，PWM 后端自动选择）────────────────────────────
-    # 优先级：pigpio（DMA，任意 GPIO 任意频率）> rpi-lgpio/RPi.GPIO（软件 PWM，上限 10kHz）
-    # LD06 电机 PWM 规格：20~50kHz；软件 PWM 不满足时自动降级，保留日志供排查。
-
-    def _motor_start(self) -> None:
-        """通过 PWM 驱动 LD06 电机开始旋转。motor_pin < 0 时为空操作。"""
-        pin = self._config.motor_pin
-        if pin < 0:
-            return
-
-        freq = self._config.motor_pwm_freq
-        duty = self._config.motor_pwm_duty
-
-        # ── 尝试 pigpio（DMA PWM，RPi5 推荐，无频率上限）──────────
-        try:
-            import pigpio  # type: ignore[import]
-            pi = pigpio.pi()
-            if pi.connected:
-                # pigpio set_PWM_frequency 返回实际设置的频率
-                actual_freq = pi.set_PWM_frequency(pin, freq)
-                # dutycycle: 0~255，按比例换算
-                pi.set_PWM_dutycycle(pin, int(duty / 100.0 * 255))
-                self._motor_pwm = pi          # 保存 pigpio.pi() 实例
-                logger.info(
-                    f"[Lidar] 电机已启动（pigpio DMA）：GPIO{pin}，"
-                    f"请求 {freq}Hz → 实际 {actual_freq}Hz @ {duty:.0f}%"
-                )
-                return
-            pi.stop()
-        except Exception as e:
-            logger.debug(f"[Lidar] pigpio 不可用（{e}），尝试 rpi-lgpio/RPi.GPIO")
-
-        # ── 回退：rpi-lgpio / RPi.GPIO 软件 PWM（上限 10kHz）──────
-        try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setwarnings(False)
-            GPIO.setup(pin, GPIO.OUT)
-            pwm = GPIO.PWM(pin, freq)
-            pwm.start(duty)
-            self._motor_pwm = pwm
-            logger.info(
-                f"[Lidar] 电机已启动（软件 PWM）：GPIO{pin}，"
-                f"{freq}Hz @ {duty:.0f}%"
-            )
-        except Exception as e:
-            logger.warning(
-                f"[Lidar] 电机启动失败（{e}）\n"
-                f"  → lgpio 软件 PWM 上限约 10kHz，当前请求 {freq}Hz\n"
-                f"  → 安装 pigpio 解决：sudo apt install pigpiod && "
-                f"sudo systemctl enable --now pigpiod && pip install pigpio"
-            )
-            self._motor_pwm = None
-
-    def _motor_stop(self) -> None:
-        """停止 PWM，LD06 电机随即停转。motor_pin < 0 时为空操作。"""
-        if self._config.motor_pin < 0:
-            return
-        pin = self._config.motor_pin
-        try:
-            if self._motor_pwm is not None:
-                # pigpio.pi() 实例：set_PWM_dutycycle(pin, 0) 停转
-                try:
-                    import pigpio  # type: ignore[import]
-                    if isinstance(self._motor_pwm, pigpio.pi):
-                        self._motor_pwm.set_PWM_dutycycle(pin, 0)
-                        self._motor_pwm.stop()
-                        self._motor_pwm = None
-                        logger.info(f"[Lidar] 电机已停止（pigpio）：GPIO{pin} duty→0")
-                        return
-                except Exception:
-                    pass
-                # RPi.GPIO / rpi-lgpio PWM 对象
-                self._motor_pwm.stop()
-                self._motor_pwm = None
-            GPIO.output(pin, GPIO.LOW)
-            logger.info(f"[Lidar] 电机已停止（软件 PWM）：GPIO{pin} → LOW")
-        except Exception as e:
-            logger.warning(f"[Lidar] 电机停止异常（{e}）")
 
     @property
     def is_simulation(self) -> bool:
@@ -328,8 +231,6 @@ class Lidar:
             "baud_rate": self._config.baud_rate,
             "is_simulation": self._is_simulation,
             "is_running": self.is_running,
-            "motor_pin": self._config.motor_pin,
-            "motor_spinning": self._motor_pwm is not None,
             "completed_scans": self._completed_scans,
             "latest_scan": {
                 "timestamp_ms": scan.timestamp_ms,
