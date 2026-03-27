@@ -338,12 +338,13 @@ def test_startup_timing():
 # ── 主入口 ─────────────────────────────────────────────────────────
 
 def main():
+    global SERIAL_PORT
+
     parser = argparse.ArgumentParser(description="LD06 PWM 有效性研究")
     parser.add_argument("--test", type=int, default=0, help="直接运行指定测试（1-4）")
     parser.add_argument("--port", default=SERIAL_PORT, help="串口设备")
     args = parser.parse_args()
 
-    global SERIAL_PORT
     SERIAL_PORT = args.port
 
     print("\n╔══════════════════════════════════════════════════════════╗")
