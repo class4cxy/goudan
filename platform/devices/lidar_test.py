@@ -36,7 +36,8 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent))         # platform/devices/ → import lidar
+sys.path.insert(0, str(Path(__file__).parent.parent))  # platform/ → import devices.gpio_adapter
 from lidar import Lidar, LidarConfig, LidarScan, LidarPoint
 
 DIVIDER = "─" * 60
