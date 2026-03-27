@@ -144,10 +144,6 @@ def _run_manual(pwm, hard_min: float, hard_max: float, start_angle: float = 90.0
 
 # ── 引脚扫描探针 ──────────────────────────────────────────────────────
 
-# 候选引脚：扩展板两路舵机接口 + 附近常被误接的引脚
-# 标注已知电机引脚，防止误判电机抖动为舵机响应
-PROBE_PINS = [12, 13, 16, 19, 18]  # 纯舵机候选（不含电机引脚）
-
 # 已知电机引脚（chassis.py 占用），不做舵机测试
 MOTOR_PINS = {
     24: "M1-IN1(左前正转)", 25: "M1-IN2(左前反转)",
@@ -156,25 +152,78 @@ MOTOR_PINS = {
     22: "M4-IN1(右后正转)",  9: "M4-IN2(右后反转)",
 }
 
+# 全量候选引脚：跳过 I2C(2/3)、SPI(7/8)、UART(14/15)、电机引脚、蜂鸣器(17)
+# 包含所有尚未排除的 GPIO（编码器规划脚也纳入，排查阶段优先于规划）
+PROBE_PINS = [4, 10, 11, 12, 13, 14, 16, 17, 18, 19, 23]
+
+
+def _pwm_sweep(pin: int, hold_s: float = 0.8):
+    """对指定引脚输出舵机 PWM 摆动序列，hold_s 控制每个位置的驻留时长。"""
+    GPIO.setup(pin, GPIO.OUT)
+    pwm = GPIO.PWM(pin, PWM_FREQ)
+    pwm.start(_duty(90))
+    time.sleep(hold_s * 0.5)
+    print("  → 45°（左）")
+    pwm.ChangeDutyCycle(_duty(45))
+    time.sleep(hold_s)
+    print("  → 135°（右）")
+    pwm.ChangeDutyCycle(_duty(135))
+    time.sleep(hold_s)
+    print("  → 90°（中立）")
+    pwm.ChangeDutyCycle(_duty(90))
+    time.sleep(hold_s * 0.5)
+    pwm.stop()
+    GPIO.cleanup(pin)
+    # rpi-lgpio cleanup 可能重置 setmode，重新设置防止后续引脚失效
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+    except Exception:
+        pass
+
+
+def probe_single_pin(pin: int):
+    """对单个引脚持续输出 PWM 8 秒，用于手动核验接线。"""
+    print(f"\n  对 GPIO {pin} 持续输出舵机 PWM 8 秒（45°→135° 来回慢摆）…")
+    print("  此时用手将舵机信号线插到各接口，若云台动则说明该接口对应此引脚。")
+    GPIO.setup(pin, GPIO.OUT)
+    pwm = GPIO.PWM(pin, PWM_FREQ)
+    pwm.start(_duty(90))
+    deadline = time.time() + 8.0
+    angle, direction = 90.0, 1.0
+    while time.time() < deadline:
+        angle += direction * 0.5
+        if angle >= 135:
+            direction = -1.0
+        elif angle <= 45:
+            direction = 1.0
+        pwm.ChangeDutyCycle(_duty(angle))
+        time.sleep(0.02)
+    pwm.stop()
+    GPIO.cleanup(pin)
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+    except Exception:
+        pass
+    print("  完成。")
+
 
 def probe_servo_pin():
     """
-    逐一激活候选 GPIO 引脚，输出 50Hz PWM 并来回摆动，
-    确认哪个引脚实际连接了舵机。
+    全量引脚扫描：逐一激活候选 GPIO，输出 50Hz PWM 并来回摆动，
+    找到实际连接舵机的引脚。
 
-    判断标准（重要）：
-      ✓ 舵机响应 = 摄像头支架/云台发生旋转，能看到或听到舵机齿轮声
-      ✗ 轮子/电机抖动 ≠ 舵机响应，不要把车轮动误报为舵机
-
-    每个引脚测试序列：90°→45°（左）→135°（右）→90°，约 2.5s
+    判断标准：
+      ✓ 有效响应 = 摄像头支架旋转（看到转动 或 听到舵机齿轮声/嗡嗡声）
+      ✗ 无效响应 = 车轮/电机抖动（排除，不算）
     """
     print("\n" + "═" * 60)
-    print("  舵机引脚扫描探针 v2")
-    print("  !! 判断标准 !!")
-    print("  ✓ 有效响应 = 摄像头支架旋转（看到云台转动 或 听到舵机嗡嗡声）")
-    print("  ✗ 无效响应 = 车轮/电机抖动（上次 GPIO26/GPIO6 就是电机误报）")
-    print(f"  本次候选引脚（已排除电机引脚）：{PROBE_PINS}")
-    print("  提示：确保 platform 服务已停止（避免 GPIO 冲突）。")
+    print("  舵机引脚全量扫描")
+    print("  ✓ 有效 = 摄像头支架旋转 / 舵机发出嗡嗡声")
+    print("  ✗ 无效 = 车轮/电机抖动（不要误报）")
+    print(f"  候选引脚：{PROBE_PINS}")
+    print("  请先停止 platform 服务，避免 GPIO 冲突。")
     print("═" * 60)
 
     try:
@@ -185,40 +234,13 @@ def probe_servo_pin():
     hit_pins: list[int] = []
 
     for pin in PROBE_PINS:
-        motor_note = f"  ⚠ 注意：此引脚为电机引脚（{MOTOR_PINS[pin]}）！" if pin in MOTOR_PINS else ""
         print(f"\n  ── GPIO {pin:2d} ─────────────────────────────────")
-        if motor_note:
-            print(motor_note)
-            print("     若看到车轮动，为正常现象，不算舵机响应。")
-        print(f"  正在向 GPIO {pin} 发送舵机 PWM（50Hz）…")
-
-        GPIO.setup(pin, GPIO.OUT)
-        pwm = GPIO.PWM(pin, PWM_FREQ)
-
-        pwm.start(_duty(90))
-        time.sleep(0.4)
-        print("  → 45°（左）")
-        pwm.ChangeDutyCycle(_duty(45))
-        time.sleep(0.7)
-        print("  → 135°（右）")
-        pwm.ChangeDutyCycle(_duty(135))
-        time.sleep(0.7)
-        print("  → 90°（中立）")
-        pwm.ChangeDutyCycle(_duty(90))
-        time.sleep(0.4)
-
-        pwm.stop()
-        GPIO.cleanup(pin)
-        # cleanup 后重新设置 BCM 模式，防止 rpi-lgpio 重置 setmode
-        try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setwarnings(False)
-        except Exception:
-            pass
+        print(f"  → 发送 50Hz PWM …")
+        _pwm_sweep(pin, hold_s=0.8)
 
         try:
-            print("  问：摄像头支架/云台有旋转吗？（不是车轮，是摄像头支架）")
-            ans = input(f"  GPIO {pin:2d}：(y=云台转了 / n=没动 / q=退出) > ").strip().lower()
+            print("  云台/摄像头支架有旋转吗？")
+            ans = input(f"  (y=转了 / n=没动 / q=退出) > ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             ans = "q"
 
@@ -227,36 +249,36 @@ def probe_servo_pin():
             break
         elif ans == "y":
             hit_pins.append(pin)
-            print(f"  ✓ 记录：GPIO {pin} → 云台有旋转！")
+            print(f"  ✓ GPIO {pin} 有云台旋转！")
 
     # 汇总
     print("\n" + "═" * 60)
     print("  【扫描结果汇总】")
-    real_hits = [p for p in hit_pins if p not in MOTOR_PINS]
-    if real_hits:
-        for p in real_hits:
-            print(f"  ✓ GPIO {p:2d}  → 云台舵机确认响应")
-        if len(real_hits) == 1:
-            p = real_hits[0]
-            print(f"\n  → 请更新以下两处：")
-            print(f"     servo_test.py  顶部：PAN_PIN = {p}")
-            print(f"     servo.py       DEFAULT_CAMERA_CONFIG 中：pin={p}")
+    if hit_pins:
+        for p in hit_pins:
+            print(f"  ✓ GPIO {p:2d} → 云台确认响应")
+        if len(hit_pins) == 1:
+            p = hit_pins[0]
+            print(f"\n  建议更新：")
+            print(f"    servo_test.py 顶部：PAN_PIN = {p}")
+            print(f"    servo.py DEFAULT_CAMERA_CONFIG：pin={p}")
+        else:
+            print("\n  多个引脚有响应，请选择最明显的一个更新 PAN_PIN。")
     else:
         print("  所有引脚均无云台旋转响应。")
         print()
-        print("  ▶ 最可能的原因：舵机信号线没有插到树莓派 GPIO")
+        print("  ── 下一步：手动热插拔诊断 ──────────────────────")
+        print("  运行以下命令，脚本对 GPIO 12 持续输出 PWM 信号 8 秒：")
         print()
-        print("  请按以下步骤检查物理接线：")
-        print("  1. 找到 MAKEROBO 扩展板上标有「舵机」或「SERVO」的 3pin 接口")
-        print("     （通常在板子一侧，有两排：VCC/GND/SIG）")
-        print("  2. 确认舵机的 3 根线已插入：")
-        print("     棕/黑 → GND")
-        print("     红    → VCC（5V 或 3.3V，看扩展板标注）")
-        print("     橙/黄/白 → SIG（信号线，必须接 GPIO）")
-        print("  3. 若舵机已插入扩展板 SERVO 口但仍无响应：")
-        print("     尝试换插第二个 SERVO 口（一个对应 GPIO12，另一个对应 GPIO13）")
-        print("  4. 若扩展板没有 SERVO 标记接口：")
-        print("     直接用杜邦线将舵机 SIG 线接到树莓派 GPIO 12（Pin 32）")
+        print("    python3 servo_test.py --live 12")
+        print()
+        print("  在这 8 秒内，用手逐一把舵机信号线（橙/黄色）")
+        print("  插到树莓派 40pin 排针的各个引脚，哪个引脚让云台动了")
+        print("  就说明接线应该接在那里。")
+        print()
+        print("  如果 8 秒内完全没有任何响应，请检查：")
+        print("  1. 舵机红线（VCC）和棕/黑线（GND）是否有电（用万用表量）")
+        print("  2. 换一个舵机测试（排查舵机本身损坏）")
     print("═" * 60)
 
 
@@ -268,7 +290,7 @@ MENU = """
 ╠══════════════════════════════════════════════════╣
 ║  1. 水平 Pan  全幅扫描（0°→180°→70°）           ║
 ║  2. 水平 Pan  手动定位（起始 70°=正前）          ║
-║  p. 引脚扫描（找不到舵机时用，扫描候选引脚）    ║
+║  p. 引脚全量扫描（找不到舵机时用）              ║
 ║  0. 水平轴归中（Pan 70°）                        ║
 ║  q. 退出                                        ║
 ╚══════════════════════════════════════════════════╝"""
@@ -279,7 +301,9 @@ def main():
     parser.add_argument("--center", action="store_true",
                         help="水平轴归中后退出")
     parser.add_argument("--probe", action="store_true",
-                        help="引脚扫描模式：逐一激活候选引脚确认舵机接线")
+                        help="引脚全量扫描：逐一激活候选引脚确认舵机接线")
+    parser.add_argument("--live", type=int, metavar="PIN",
+                        help="对指定引脚持续输出 PWM 8 秒（热插拔诊断用）")
     args = parser.parse_args()
 
     print("\n摄像头舵机探针 — MAKEROBO 扩展板")
@@ -293,6 +317,10 @@ def main():
 
         if args.probe:
             probe_servo_pin()
+            return
+
+        if args.live is not None:
+            probe_single_pin(args.live)
             return
 
         while True:
