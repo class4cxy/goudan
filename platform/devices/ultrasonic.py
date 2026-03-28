@@ -56,8 +56,8 @@ class UltrasonicReading:
 class UltrasonicConfig:
     """HC-SR04 配置。"""
 
-    trig_pin: int = 20
-    echo_pin: int = 21
+    trig_pin: int = 20   # GPIO20（Pin 38）扩展板超声波接口固定引脚，不可更改
+    echo_pin: int = 21   # GPIO21（Pin 40）扩展板超声波接口固定引脚，不可更改
     poll_interval_s: float = 0.2
     timeout_s: float = 0.03
     min_distance_cm: float = 2.0

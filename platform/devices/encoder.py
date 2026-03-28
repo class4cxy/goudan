@@ -9,11 +9,11 @@ Encoder — 500线正交编码器驱动（lgpio 后端，支持树莓派 5）
 
 接线说明（GMR 1:90 编码电机，6 线：M+/M− 接电机驱动口，另 4 线为编码器信号）：
   编码器 4 线：VCC(3.3V)、GND、A相、B相
-  四轮底盘只需接左右各一路编码器（选后轮，受力更均匀）：
-    左后轮编码器：A → ENCODER_LEFT_A（默认 GPIO4），B → ENCODER_LEFT_B（默认 GPIO11）
-    右后轮编码器：A → ENCODER_RIGHT_A（默认 GPIO19），B → ENCODER_RIGHT_B（默认 GPIO7）
-  引脚定稿见 docs/HARDWARE.md §7.1.1；GPIO12 已被舵机 Pan 占用，禁止接编码器。
-  编码器 VCC 接树莓派 3.3V（Pin 1 或 Pin 17），不要接 5V。
+  四轮底盘只需接左右各一路编码器，选前轮对称接法（M1/M2 同轴，差速精度最优）：
+    左前轮编码器（M1）：A → ENCODER_LEFT_A（默认 GPIO23），B → ENCODER_LEFT_B（默认 GPIO16）
+    右前轮编码器（M2）：A → ENCODER_RIGHT_A（默认 GPIO14），B → ENCODER_RIGHT_B（默认 GPIO18）
+  后轮 M3/M4 编码器线不接（GPIO20/21 被扩展板 HC-SR04 硬占，无可用 GPIO 对）。
+  引脚定稿见 docs/HARDWARE.md §2.1；编码器 VCC 接树莓派 3.3V（Pin 1 或 Pin 17），不要接 5V。
 
 lgpio 安装：
   sudo apt install -y python3-lgpio
@@ -58,10 +58,10 @@ _CHIP_NUM = _detect_gpio_chip()
 @dataclass
 class EncoderConfig:
     """双路编码器 GPIO 引脚配置（BCM 编号）。"""
-    left_a:  int = int(os.environ.get("ENCODER_LEFT_A",   "12"))  # M3 左后 A（GPIO4=电源板GP04按钮，禁用）
-    left_b:  int = int(os.environ.get("ENCODER_LEFT_B",  "11"))  # M3 左后 B
-    right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "20"))  # M4 右后 A（GPIO19=电源板GP19按钮，禁用）
-    right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "21"))  # M4 右后 B（GPIO10=RGB灯SPI MOSI禁用，改用GPIO21）
+    left_a:  int = int(os.environ.get("ENCODER_LEFT_A",   "23"))  # M1 左前 A → GPIO23（Pin 16，扩展板 GP23）
+    left_b:  int = int(os.environ.get("ENCODER_LEFT_B",  "16"))  # M1 左前 B → GPIO16（Pin 36，扩展板 GP16）
+    right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "14"))  # M2 右前 A → GPIO14（Pin 8，UART TX，控制台已移除）
+    right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "18"))  # M2 右前 B → GPIO18（Pin 12，空闲；⚠️ GPIO17=蜂鸣器禁用）
     lines_per_rev: int = int(os.environ.get("ENCODER_LINES_PER_REV", "500"))
 
     @property

@@ -15,6 +15,7 @@ import { addScheduledTaskTool, listScheduledTasksTool } from "@/core/cognition/t
 import { navigateTo } from "@/core/cognition/tools/motor";
 import { getPowerStatus } from "@/core/cognition/tools/power";
 import { startExploring, stopExploring, getMapStatus, getMapImage } from "@/core/cognition/tools/slam";
+import { startLocalize, getLocalizePose, navigateToCoordinates, getNavigationStatus, cancelNavigation } from "@/core/cognition/tools/navigation";
 import { searchWeb, fetchWebPage } from "@/core/cognition/tools/search";
 import type { ScheduledTask } from "@/lib/db";
 
@@ -40,6 +41,11 @@ export const ALL_TOOLS = {
   stopExploring,
   getMapStatus,
   getMapImage,
+  startLocalize,
+  getLocalizePose,
+  navigateToCoordinates,
+  getNavigationStatus,
+  cancelNavigation,
   searchWeb,
   fetchWebPage,
 };

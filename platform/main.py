@@ -15,6 +15,7 @@ import logging
 import os
 import time
 import urllib.parse
+import io
 import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -1620,16 +1621,8 @@ async def localize_start(req: LocalizeStartRequest):
         raise HTTPException(status_code=500, detail="距离变换计算失败（scipy 是否已安装？）")
 
     # 加载代价地图（供导航使用）
-    pgm_raw = pgm_path.read_bytes()
-    # 解析 PGM 跳过 header
-    lines = pgm_raw.split(b"\n")
-    skip = 0
-    for line in lines:
-        skip += 1
-        if not line.startswith(b"#") and skip >= 3:
-            if b" " in line or line.isdigit():
-                break
-    raw_pixels = b"\n".join(lines[skip:])
+    # 使用流式读法安全跳过 ASCII header，避免二进制像素体中 0x0A 被误当换行截断
+    raw_pixels = _read_pgm_pixels(pgm_path.read_bytes())
     await asyncio.to_thread(costmap.load_static, raw_pixels, map_size, mpp)
 
     # 启动 AMCL
@@ -1669,14 +1662,32 @@ async def localize_reset():
 # ── AMCL 订阅：将 AMCL 位姿广播到 WebSocket ──────────────────────
 # ═══════════════════════════════════════════════════════════════════
 
+def _read_pgm_pixels(pgm_bytes: bytes) -> bytes:
+    """
+    安全解析 PGM P5 文件，返回纯像素字节。
+
+    用流式读法逐行跳过 ASCII header（magic + 注释 + 宽高 + maxval），
+    剩余字节即为二进制像素数据，避免 split(b'\\n') 将灰度值 0x0A 误当换行截断。
+    """
+    buf = io.BytesIO(pgm_bytes)
+    header_fields = 0
+    while header_fields < 3:
+        line = buf.readline()
+        if not line.startswith(b"#"):
+            header_fields += 1
+    return buf.read()
+
+
 def _start_amcl_lidar_bridge():
     """将每圈 LiDAR 扫描同时喂给 AMCL（定位模式下）。"""
     original_on_scan = lidar_sensor._on_scan
 
     def patched_on_scan(scan):
+        # 先快照增量（不清零），SLAM 在 original_on_scan 内部会 get+clear
+        # AMCL 用快照，避免双消费竞态（两次 get_velocity_for_slam 第二次接近零）
+        vel = odometry.peek_velocity()
         original_on_scan(scan)
         if amcl.is_running:
-            vel = odometry.get_velocity_for_slam()
             amcl.update(scan, vel)
             loop = _main_loop
             if loop and loop.is_running():

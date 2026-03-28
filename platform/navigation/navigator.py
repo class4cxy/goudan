@@ -103,6 +103,7 @@ class Navigator:
         self._running  = False
         self._last_replan = 0.0
         self._nav_start:  float = 0.0
+        self._replan_fail_count: int = 0   # A* 连续失败次数，超阈值进入 FAILED
 
     # ─── 公共接口 ─────────────────────────────────────────────────
 
@@ -131,7 +132,7 @@ class Navigator:
         if not self._amcl.is_running:
             return {"ok": False, "message": "AMCL 未启动，请先调用 /localize/start"}
         if not self._costmap.is_loaded:
-            return {"ok": False, "message": "地图未加载，请先调用 /map/load"}
+            return {"ok": False, "message": "地图未加载，请先调用 /localize/start"}
 
         with self._lock:
             self._goal    = NavigationGoal(x_mm, y_mm, label)
@@ -139,6 +140,7 @@ class Navigator:
             self._path_idx = 0
             self._nav_start = time.monotonic()
             self._last_replan = 0.0
+            self._replan_fail_count = 0
             self._set_status(NavigationStatus.LOCALIZING if not self._amcl.is_converged
                              else NavigationStatus.NAVIGATING)
 
@@ -223,6 +225,10 @@ class Navigator:
         # ── ⑥ 选取当前子目标 ──────────────────────────────────────
         with self._lock:
             if not self._path_mm or self._path_idx >= len(self._path_mm):
+                # A* 连续失败超过阈值（约 30s）→ 进入 FAILED，避免静默卡住
+                self._replan_fail_count += 1
+                if self._replan_fail_count >= int(self._cfg.control_hz * 30):
+                    self._fail(f"A* 持续规划失败 {self._replan_fail_count} 次，目标不可达或地图异常")
                 return
             subgoal = self._path_mm[self._path_idx]
 
@@ -260,6 +266,7 @@ class Navigator:
                 self._path_mm  = result.path_mm
                 self._path_idx = 0
                 self._last_replan = time.monotonic()
+                self._replan_fail_count = 0
             logger.info(f"[Navigator] A* 规划成功，路径点数：{len(result.path_mm)}")
         else:
             logger.warning(f"[Navigator] A* 规划失败：{result.message}")

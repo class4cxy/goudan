@@ -6,8 +6,8 @@ Odometry — 差速轮式里程计
   2. 融合 IMU 陀螺仪 Z 轴，通过互补滤波补偿车轮打滑误差
   3. 基于差速运动学计算每步增量（dx_mm, dy_mm, dtheta_deg）
   4. 累积绝对位姿（x_mm, y_mm, theta_deg），坐标原点为启动位置
-  5. 提供 get_velocity_for_slam()：breezyslam update() 所需的 velocities 三元组
-  6. 提供 get_velocity_for_amcl()：AMCL 运动模型所需的同格式增量
+  5. 提供 get_velocity_for_slam()：读取并清零增量，breezyslam update() 所需的 velocities 三元组
+  6. 提供 peek_velocity()：只读不清零的增量快照（AMCL 等第二消费者调用，避免双消费竞态）
 
 关键参数（需实测后填入 .env）：
   ODOM_WHEEL_RADIUS_MM  车轮半径（mm）默认 33.0，需卡尺实测
@@ -169,7 +169,8 @@ class Odometry:
         读取并清零自上次调用以来的增量，返回 breezyslam velocities 格式：
             (dxy_mm, dtheta_degrees, dt_seconds)
 
-        在每次 slam.process_scan() 之前调用，AMCL 同理。
+        每次 slam.process_scan() 之前调用（唯一清零消费者）。
+        AMCL 等第二消费者请使用 peek_velocity()。
         """
         with self._lock:
             v = (self._slam_dxy_mm, self._slam_dtheta_deg, self._slam_dt_s)
@@ -177,6 +178,19 @@ class Odometry:
             self._slam_dtheta_deg = 0.0
             self._slam_dt_s       = 0.0
         return v
+
+    def peek_velocity(self) -> tuple[float, float, float]:
+        """
+        只读不清零：返回当前增量快照，不影响 get_velocity_for_slam() 的后续清零。
+
+        用于 AMCL 等需要与 SLAM 消费同一帧增量的场景，避免双消费竞态。
+        调用时序：
+            vel = odometry.peek_velocity()   # 先快照
+            original_on_scan(scan)           # SLAM 内部会 get+clear
+            amcl.update(scan, vel)           # AMCL 使用快照
+        """
+        with self._lock:
+            return (self._slam_dxy_mm, self._slam_dtheta_deg, self._slam_dt_s)
 
     def reset_pose(
         self,
