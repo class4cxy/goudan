@@ -30,7 +30,7 @@ const TURN_DEFAULT_DURATION = Number(process.env.TURN_DEFAULT_DURATION ?? '0.85'
 /** 掉头默认时长（秒），约 175°，可调 TURN_AROUND_DURATION 环境变量 */
 const TURN_AROUND_DURATION = Number(process.env.TURN_AROUND_DURATION ?? '1.75')
 /** 语音/手动控制默认速度（0–100），仅影响 navigateTo，与 Explorer 建图速度独立 */
-const MANUAL_DEFAULT_SPEED = Number(process.env.MANUAL_DEFAULT_SPEED ?? process.env.CHASSIS_DEFAULT_SPEED ?? '35')
+const MANUAL_DEFAULT_SPEED = Number(process.env.MANUAL_DEFAULT_SPEED ?? process.env.CHASSIS_DEFAULT_SPEED ?? '55')
 
 /**
  * navigateTo — 机器车移动控制
