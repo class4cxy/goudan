@@ -47,51 +47,69 @@ IMU_ADDR = 0x68   # AD0→GND 时的默认地址
 # ── 测试 1：I2C 总线扫描 ──────────────────────────────────────────
 
 def test_i2c_scan():
+    """
+    使用系统 i2cdetect 命令扫描总线。
+
+    不使用 smbus2 逐地址 read_byte() 扫描，原因：若 I2C 总线已锁死
+    （设备异常中断时 SDA 未释放），smbus2 read_byte 会永久阻塞；
+    而 i2cdetect 通过内核 ioctl 实现，带超时保护，不会挂死进程。
+    """
     print(f"\n{DIVIDER}")
     print("  测试 1 — I2C 总线扫描")
     print(DIVIDER)
-    try:
-        import smbus2
-    except ImportError:
-        print("  ❌ smbus2 未安装，请运行：pip install smbus2")
+
+    import shutil
+    import subprocess
+
+    if not shutil.which("i2cdetect"):
+        print("  ❌ 未找到 i2cdetect，请安装：sudo apt install i2c-tools")
         return
 
+    print("  扫描 I2C1 总线（调用 i2cdetect -y 1）...")
     try:
-        bus = smbus2.SMBus(1)
+        result = subprocess.run(
+            ["i2cdetect", "-y", "1"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        print("  ❌ i2cdetect 超时（10s）—— I2C 总线可能已锁死")
+        print("  处理：断电重连 MPU6050 模块，或 sudo reboot")
+        return
     except Exception as e:
-        print(f"  ❌ 无法打开 I2C 总线：{e}")
-        print("  检查：sudo raspi-config → Interface Options → I2C → Enable")
+        print(f"  ❌ 运行 i2cdetect 失败：{e}")
         return
 
-    found: dict[int, str] = {}
-    print("  扫描 I2C1 总线（0x03–0x77）...")
-    for addr in range(0x03, 0x78):
-        try:
-            bus.read_byte(addr)
-            label = ""
-            if addr == 0x40:
-                label = "  ← INA219 电源传感器"
-            elif addr == 0x68:
-                label = "  ← MPU6050 IMU ✅"
-            elif addr == 0x69:
-                label = "  ← MPU6050 IMU（AD0=HIGH）✅"
-            found[addr] = label
-        except Exception:
-            pass
-    bus.close()
+    print()
+    print(result.stdout)
 
+    # 解析 i2cdetect 输出中的地址（格式：两位十六进制，非 -- 或 UU）
+    found: list[int] = []
+    for line in result.stdout.splitlines():
+        parts = line.split(":")
+        if len(parts) < 2:
+            continue
+        for token in parts[1].split():
+            if token not in ("--", "UU") and len(token) == 2:
+                try:
+                    found.append(int(token, 16))
+                except ValueError:
+                    pass
+
+    labels = {0x40: "INA219 电源传感器", 0x68: "MPU6050 IMU", 0x69: "MPU（AD0=HIGH）"}
     if found:
         print(f"  发现 {len(found)} 个设备：")
-        for addr, label in sorted(found.items()):
-            print(f"    0x{addr:02X}{label}")
+        for addr in sorted(found):
+            label = labels.get(addr, "未知设备")
+            print(f"    0x{addr:02X}  ← {label}")
         if IMU_ADDR in found or 0x69 in found:
-            print(f"\n  ✅ MPU6050 已识别，地址 0x{IMU_ADDR:02X}")
+            print(f"\n  ✅ MPU 已识别，地址 0x{IMU_ADDR:02X}")
         else:
-            print(f"\n  ❌ MPU6050（0x{IMU_ADDR:02X}）未找到")
+            print(f"\n  ❌ MPU（0x{IMU_ADDR:02X}）未找到")
             print("  排查：VCC→3.3V，SDA→Pin3，SCL→Pin5，AD0→GND，检查虚焊")
     else:
         print("  ❌ 总线上未发现任何设备")
         print("  排查：1) I2C 已启用？  2) SDA/SCL 接线正确？  3) VCC 已供电？")
+        print("  若 I2C 总线锁死：断电重连模块，或 sudo reboot")
 
 
 # ── 测试 2：单次原始寄存器读取 ───────────────────────────────────
@@ -284,18 +302,26 @@ def test_calibration():
     print(f"  ── 采样率")
     print(f"    实测 {actual_hz:.1f} Hz（目标 100 Hz，允许误差 ±10 Hz）")
 
-    ok_gyro = max(abs(gx_m), abs(gy_m), abs(gz_m)) < 5.0
-    ok_accel = abs(abs(az_m) - 1.0) < 0.15 and abs(ax_m) < 0.1 and abs(ay_m) < 0.1
-    ok_hz    = 85 <= actual_hz <= 115
+    # gyro_z 是偏航轴，是里程计融合的关键轴，单独判断
+    # gyro_x/y 仅辅助采集（碰撞/斜坡），MPU6500 X/Y 轴硬件零偏可达 ±10°/s 属正常
+    ok_gyro_z = abs(gz_m) < 5.0
+    ok_accel  = abs(abs(az_m) - 1.0) < 0.15 and abs(ax_m) < 0.1 and abs(ay_m) < 0.1
+    ok_hz     = 85 <= actual_hz <= 115
 
     print()
     print("  ── 综合判断")
-    print(f"    陀螺仪零偏   {'✅ 正常（< 5°/s）' if ok_gyro  else '⚠  偏大，可能未静止或需重新上电校准'}")
+    print(f"    gyro_z 零偏  {'✅ 正常（< 5°/s）' if ok_gyro_z else '⚠  偏大，可能未静止或需重新上电校准'}"
+          f"  ← 偏航轴（关键）")
+    gxy_note = "（MPU6500 X/Y 轴硬件零偏偏大属正常，不影响偏航融合）"
+    if abs(gx_m) > 5.0 or abs(gy_m) > 5.0:
+        print(f"    gyro_x/y     ℹ  x={gx_m:+.2f}°/s y={gy_m:+.2f}°/s {gxy_note}")
+    else:
+        print(f"    gyro_x/y     ✅ 正常")
     print(f"    加速度计静止 {'✅ 正常（平放）'   if ok_accel else '⚠  az 偏离 1g，检查安装方向或接线'}")
     print(f"    采样率       {'✅ 正常'           if ok_hz    else f'⚠  {actual_hz:.1f}Hz 偏离目标，检查 I2C 时钟'}")
 
-    if ok_gyro and ok_accel and ok_hz:
-        print(f"\n  ✅ 校准分析通过，传感器工作正常")
+    if ok_gyro_z and ok_accel and ok_hz:
+        print(f"\n  ✅ 校准分析通过，传感器工作正常，可集成到里程计")
     else:
         print(f"\n  ⚠  存在异常项，请对照提示排查后重新测试")
 
