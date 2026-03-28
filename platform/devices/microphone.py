@@ -6,6 +6,7 @@ Microphone — 麦克风硬件抽象层
   2. VAD 检测语音活动（webrtcvad）
   3. 通过回调通知上层：语音开始 / 语音结束（携带原始 PCM bytes）
   4. mute/unmute 控制（外放时暂停 VAD 防止回声）
+  5. 可选：openWakeWord 本地唤醒词检测（on_wake_word 回调 + WAKE_WORD_MODEL 配置）
 
 不含任何 WebSocket / Spine 逻辑，纯硬件操作。
 
@@ -22,17 +23,27 @@ Microphone — 麦克风硬件抽象层
   - strict_voiced_ratio：片段结束后用更严格 VAD 二次复检，低于阈值丢弃
   三项门控均以 WARNING 记录，便于在生产日志中直接看到被丢弃的原因。
 
+openWakeWord 集成（可选）：
+  当 on_wake_word 回调与 wake_word_model 同时提供时，启动后台协程对连续音频流（非
+  VAD 门控）做实时关键词推理。命中后调用 on_wake_word(word, score)，并进入 1.5s
+  冷却防止同一次唤醒重复触发。mute 期间暂停推理，防止 TTS 回声触发。
+  模型可为内置预训练名称（如 "hey_jarvis"）或自定义 .onnx/.tflite 文件路径。
+  中文唤醒词（如"狗蛋"）需自行训练：见 platform/devices/wake_word_test.py --list
+
 性能说明：
   VAD 状态机在 sounddevice 音频回调线程中同步执行，仅在语音开始/结束事件时才通过
   run_coroutine_threadsafe 跨线程通知 asyncio 事件循环。
+  OWW 推理在独立 asyncio 协程中，通过 run_in_executor 避免阻塞事件循环。
   避免了每帧（33次/秒）跨线程投递协程导致的事件循环积压和 input overflow。
 
-依赖：sounddevice, webrtcvad, numpy
+依赖：sounddevice, webrtcvad, numpy; 可选: openwakeword
 """
 
 import asyncio
+import contextlib
 import logging
 import os
+import queue
 import time
 from collections.abc import Awaitable, Callable
 
@@ -75,6 +86,17 @@ MUTE_TIMEOUT_S = float(os.environ.get("MIC_MUTE_TIMEOUT_S", "25"))
 
 # 采样率回退顺序：先尝试 16000Hz，若不支持则尝试 48000Hz（3:1 整数比，可无损降采样）
 _PROBE_RATES = [16000, 48000]
+
+# ─── openWakeWord 配置 ────────────────────────────────────────────────────────
+# OWW 每次喂入 80ms 帧（1280 samples @ 16kHz），对连续音频流实时推理。
+OWW_CHUNK_MS = 80
+OWW_CHUNK_SIZE = int(SAMPLE_RATE * OWW_CHUNK_MS / 1000)   # 1280 samples
+# 命中后冷却：防止同一次唤醒词在后续几个 80ms 帧内重复触发
+OWW_COOLDOWN_S = float(os.environ.get("WAKE_WORD_COOLDOWN_S", "1.5"))
+# 检测阈值：0~1，越高越严格；默认 0.5
+WAKE_WORD_THRESHOLD = float(os.environ.get("WAKE_WORD_THRESHOLD", "0.5"))
+# 模型名称或文件路径；空字符串表示不启用 OWW
+WAKE_WORD_MODEL = os.environ.get("WAKE_WORD_MODEL", "")
 
 
 # ─── 工具函数 ─────────────────────────────────────────────────────────
@@ -163,12 +185,20 @@ class Microphone:
         on_speech_end: Callable[..., Awaitable[None]] | None = None,
         vad_aggressiveness: int = 1,
         device: str | None = DEFAULT_DEVICE,
+        on_wake_word: Callable[[str, float], Awaitable[None]] | None = None,
+        wake_word_model: str | None = None,
     ):
         self._on_speech_start = on_speech_start
         self._on_speech_end = on_speech_end
         self._vad_aggressiveness = vad_aggressiveness
         # device=None 时在 start() 内自动检测 USB 设备
         self._device = device
+
+        # openWakeWord（可选）：on_wake_word 和 wake_word_model 同时非空时启用
+        self._on_wake_word = on_wake_word
+        self._wake_word_model: str = (wake_word_model or WAKE_WORD_MODEL).strip()
+        # 音频帧队列：音频回调 → OWW 协程（线程安全 SimpleQueue）
+        self._oww_queue: queue.SimpleQueue[np.ndarray] | None = None
 
         self._is_muted = False
         self._is_speaking = False
@@ -261,12 +291,14 @@ class Microphone:
         # 每个 100ms 块解码后（降采样至 16kHz）包含的 30ms VAD 帧数
         vad_frames_per_block = BLOCK_DURATION_MS // FRAME_DURATION_MS
 
+        oww_enabled = bool(self._on_wake_word and self._wake_word_model)
         logger.info(
             f"[Microphone] 启动：设备={device!r}，"
             f"采集={native_rate}Hz，目标={SAMPLE_RATE}Hz，"
             f"降采样因子={downsample}，块大小={BLOCK_DURATION_MS}ms，"
             f"VAD 灵敏度={self._vad_aggressiveness}，"
-            f"二次门控={'on' if POST_VAD_ENABLED else 'off'}"
+            f"二次门控={'on' if POST_VAD_ENABLED else 'off'}，"
+            f"OWW={'on (' + self._wake_word_model + ')' if oww_enabled else 'off'}"
         )
 
         # 用于在回调线程积累 overflow 计数，每秒最多打印一次，避免 I/O 卡回调
@@ -277,6 +309,10 @@ class Microphone:
         # 设为 5s（原 10s）：USB 声卡与扬声器共享 ALSA hw 设备时，播放结束后
         # capture stream 可能被 PortAudio 内部 abort，早发现早重启减少监听盲窗。
         _CALLBACK_WATCHDOG_S = 5.0
+
+        # OWW 帧队列：在 _sd_callback（音频线程）填充，在 _oww_worker（asyncio）消费
+        if oww_enabled:
+            self._oww_queue = queue.SimpleQueue()
 
         def _sd_callback(indata: np.ndarray, frames: int, time_info, status):
             # 回调运行在 sounddevice 专用音频线程，必须快速返回。
@@ -289,11 +325,15 @@ class Microphone:
             if downsample > 1:
                 frame = _decimate(frame, downsample)
 
-            # 将 100ms 块拆分为 30ms VAD 帧逐帧处理
+            # 将 300ms 块拆分为 30ms VAD 帧逐帧处理
             for i in range(vad_frames_per_block):
                 chunk = frame[i * FRAME_SIZE : (i + 1) * FRAME_SIZE]
                 if len(chunk) == FRAME_SIZE:
                     self._process_frame_sync(chunk.tobytes())
+
+            # OWW：推送完整 16kHz 块（静音时不推送，防止 TTS 回声触发唤醒词）
+            if self._oww_queue is not None and not self._is_muted:
+                self._oww_queue.put_nowait(frame)
 
         def _flush_overflow_log():
             """定期把积累的 overflow 计数打印为一条 warning，避免在音频线程做 I/O。"""
@@ -302,37 +342,53 @@ class Microphone:
                 logger.warning(f"[Microphone] input overflow ×{count}（过去 5s）")
                 _overflow_count[0] = 0
 
-        with sd.InputStream(
-            samplerate=native_rate,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=native_blocksize,
-            latency="high",        # 更大的内部缓冲，进一步防止 overflow
-            callback=_sd_callback,
-            device=device,
-        ):
-            logger.info("[Microphone] 麦克风已开启，开始监听...")
-            while True:
-                await asyncio.sleep(5)
-                _flush_overflow_log()
-                # 看门狗：检测回调是否静默停止（ALSA xrun 恢复失败后 stream 死亡）
-                since_last_cb = time.monotonic() - _last_callback_at[0]
-                if since_last_cb > _CALLBACK_WATCHDOG_S:
-                    logger.error(
-                        "[Microphone] 回调静默 %.0fs，ALSA stream 可能已死亡，触发重启",
-                        since_last_cb,
-                    )
-                    return  # 退出 _run，由 start() 的重启循环接管
-                # mute 超时兜底：防止 Speaker 异常导致麦克风永久静音
-                if self._is_muted and self._muted_at > 0 and MUTE_TIMEOUT_S > 0:
-                    elapsed = time.monotonic() - self._muted_at
-                    if elapsed >= MUTE_TIMEOUT_S:
-                        logger.warning(
-                            "[Microphone] mute 超时（%.0fs >= %.0fs），强制 unmute，避免录音休眠",
-                            elapsed, MUTE_TIMEOUT_S,
+        # 启动 OWW 推理协程（仅当启用时）
+        oww_task: asyncio.Task | None = None
+        if oww_enabled:
+            oww_task = asyncio.create_task(
+                self._oww_worker(self._wake_word_model),
+                name="oww-worker",
+            )
+
+        try:
+            with sd.InputStream(
+                samplerate=native_rate,
+                channels=CHANNELS,
+                dtype="int16",
+                blocksize=native_blocksize,
+                latency="high",        # 更大的内部缓冲，进一步防止 overflow
+                callback=_sd_callback,
+                device=device,
+            ):
+                logger.info("[Microphone] 麦克风已开启，开始监听...")
+                while True:
+                    await asyncio.sleep(5)
+                    _flush_overflow_log()
+                    # 看门狗：检测回调是否静默停止（ALSA xrun 恢复失败后 stream 死亡）
+                    since_last_cb = time.monotonic() - _last_callback_at[0]
+                    if since_last_cb > _CALLBACK_WATCHDOG_S:
+                        logger.error(
+                            "[Microphone] 回调静默 %.0fs，ALSA stream 可能已死亡，触发重启",
+                            since_last_cb,
                         )
-                        self._is_muted = False
-                        self._unmute_at = time.monotonic()
+                        return  # 退出 _run，由 start() 的重启循环接管
+                    # mute 超时兜底：防止 Speaker 异常导致麦克风永久静音
+                    if self._is_muted and self._muted_at > 0 and MUTE_TIMEOUT_S > 0:
+                        elapsed = time.monotonic() - self._muted_at
+                        if elapsed >= MUTE_TIMEOUT_S:
+                            logger.warning(
+                                "[Microphone] mute 超时（%.0fs >= %.0fs），强制 unmute，避免录音休眠",
+                                elapsed, MUTE_TIMEOUT_S,
+                            )
+                            self._is_muted = False
+                            self._unmute_at = time.monotonic()
+        finally:
+            # stream 退出时（正常或异常）清理 OWW 协程和队列
+            if oww_task is not None:
+                oww_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await oww_task
+            self._oww_queue = None
 
     # ─── 内部 VAD 状态机（同步，运行在音频回调线程）────────────────────
 
@@ -466,6 +522,81 @@ class Microphone:
         self._speech_buffer.clear()
         self._silent_frames = 0
         self._voiced_frames = 0
+
+    # ─── openWakeWord 推理协程 ─────────────────────────────────────────────
+
+    async def _oww_worker(self, model_name: str) -> None:
+        """
+        持续从 _oww_queue 取音频帧，每 80ms 推理一次 OWW 模型。
+
+        - 运行在 asyncio 事件循环（独立 Task），通过 run_in_executor 做 CPU 推理
+        - 命中且冷却结束时调用 on_wake_word(word, score)
+        - 被 cancel 时静默退出（由 _run 的 finally 块触发）
+        """
+        try:
+            from openwakeword.model import Model as OWWModel
+        except ImportError:
+            logger.warning(
+                "[Microphone/OWW] openwakeword 未安装，唤醒词检测不可用。"
+                "安装：pip install openwakeword"
+            )
+            return
+
+        try:
+            oww = OWWModel(wakeword_models=[model_name], inference_framework="onnx")
+            logger.info(
+                "[Microphone/OWW] 模型已加载：%r，阈值=%.2f，冷却=%.1fs",
+                model_name, WAKE_WORD_THRESHOLD, OWW_COOLDOWN_S,
+            )
+        except Exception as e:
+            logger.error("[Microphone/OWW] 模型加载失败：%s", e)
+            return
+
+        loop = asyncio.get_running_loop()
+        oww_buf = np.array([], dtype=np.int16)
+        last_detect_at: float = 0.0
+
+        try:
+            while True:
+                await asyncio.sleep(0.02)   # 20ms 轮询，低于 OWW_CHUNK_MS
+
+                if self._oww_queue is None:
+                    continue
+
+                # 排空队列，积累进缓冲
+                while True:
+                    try:
+                        oww_buf = np.concatenate([oww_buf, self._oww_queue.get_nowait()])
+                    except queue.Empty:
+                        break
+
+                # 逐 80ms 块推理
+                while len(oww_buf) >= OWW_CHUNK_SIZE:
+                    feed = oww_buf[:OWW_CHUNK_SIZE]
+                    oww_buf = oww_buf[OWW_CHUNK_SIZE:]
+
+                    try:
+                        predictions: dict[str, float] = await loop.run_in_executor(
+                            None, oww.predict, feed
+                        )
+                    except Exception as e:
+                        logger.debug("[Microphone/OWW] 推理异常：%s", e)
+                        continue
+
+                    now = time.monotonic()
+                    for word, score in predictions.items():
+                        if score >= WAKE_WORD_THRESHOLD:
+                            if (now - last_detect_at) < OWW_COOLDOWN_S:
+                                continue   # 冷却中，跳过
+                            last_detect_at = now
+                            logger.info(
+                                "[Microphone/OWW] 命中唤醒词：%r 得分=%.3f", word, score
+                            )
+                            if self._on_wake_word:
+                                await self._on_wake_word(word, float(score))
+
+        except asyncio.CancelledError:
+            logger.debug("[Microphone/OWW] worker 已停止")
 
 
 def _compute_rms_dbfs(raw_pcm: bytes) -> float:

@@ -3,7 +3,7 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-dotenv>=1.0.0
 
-# 音频感官层 (AudioSensor)
+# 音频感官层 (AudioSensor / Microphone)
 # ⚠️  系统依赖（pip 前需先安装）：
 #   sudo apt install -y libportaudio2 python3-dev gcc
 #   libportaudio2：sounddevice 底层音频引擎（OSError: cannot find PortAudio）
@@ -11,6 +11,12 @@ python-dotenv>=1.0.0
 sounddevice>=0.5.0
 webrtcvad>=2.0.10
 numpy>=1.26.0
+
+# 本地唤醒词检测（openWakeWord，可选）
+# 启用条件：.env 中设置 WAKE_WORD_MODEL=<模型名或路径>
+# 首次运行时自动下载预训练模型（~50MB，需联网）；自定义中文模型需额外训练
+# 真机测试：python platform/devices/wake_word_test.py --list
+openwakeword>=0.6.0
 
 # 音频效应器 (AudioEffector / Speaker)
 # edge-tts：云端 TTS（默认 SPEAKER_TTS_ENGINE=edge-tts）
