@@ -16,7 +16,15 @@ numpy>=1.26.0
 # 启用条件：.env 中设置 WAKE_WORD_MODEL=<模型名或路径>
 # 首次运行时自动下载预训练模型（~50MB，需联网）；自定义中文模型需额外训练
 # 真机测试：python platform/devices/wake_word_test.py --list
-openwakeword>=0.6.0
+#
+# ⚠️  树莓派/Linux 上 tflite-runtime 无官方 wheel，必须拆成两步安装：
+#   步骤一（跳过 tflite-runtime 依赖）：
+#     pip3 install openwakeword --no-deps --break-system-packages -i https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn
+#   步骤二（手动补 openwakeword 的实际运行依赖，已在下方声明）：
+#     pip3 install -r requirements.txt --break-system-packages -i https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn
+# openwakeword 的运行依赖（onnxruntime 已在上方 Piper 部分声明，此处补充其余缺失项）：
+scipy>=1.10.0
+tqdm>=4.0.0
 
 # 音频效应器 (AudioEffector / Speaker)
 # edge-tts：云端 TTS（默认 SPEAKER_TTS_ENGINE=edge-tts）
