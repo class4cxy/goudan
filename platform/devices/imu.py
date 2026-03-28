@@ -1,18 +1,22 @@
 """
-IMU — MPU6050 陀螺仪/加速度计驱动
-====================================
+IMU — MPU6050/MPU6500 陀螺仪/加速度计驱动
+==========================================
 职责：
-  - 通过 I2C（smbus2）读取 MPU6050 传感器寄存器
+  - 通过 I2C（smbus2）读取 MPU6050/MPU6500 传感器寄存器
   - 后台线程 100Hz 持续采样，外部可随时读取最新数据
   - 启动时自动静止校准陀螺仪零偏（Z 轴）
   - 非树莓派或 I2C 不可用时自动降级为模拟模式
 
-接线说明（MPU6050 与树莓派5）：
-  MPU6050 VCC → 3.3V
-  MPU6050 GND → GND
-  MPU6050 SDA → GPIO 2（I2C1 SDA，物理引脚 3）
-  MPU6050 SCL → GPIO 3（I2C1 SCL，物理引脚 5）
-  MPU6050 AD0 → GND（I2C 地址 0x68；接 3.3V 则为 0x69）
+芯片兼容说明：
+  MPU6050（WHO_AM_I=0x68）和 MPU6500（WHO_AM_I=0x70）寄存器兼容，
+  GY-521 模块可能搭载其中任意一款，均可正常使用。
+
+接线说明（MPU6050/6500 与树莓派5）：
+  MPU VCC → 3.3V
+  MPU GND → GND
+  MPU SDA → GPIO 2（I2C1 SDA，物理引脚 3）
+  MPU SCL → GPIO 3（I2C1 SCL，物理引脚 5）
+  MPU AD0 → GND（I2C 地址 0x68；接 3.3V 则为 0x69）
 
 启用 I2C：
   sudo raspi-config → Interface Options → I2C → Enable
@@ -66,9 +70,12 @@ class ImuReading:
 
 class Imu:
     """
-    MPU6050 驱动，后台 100Hz 采样。
+    MPU6050/MPU6500 驱动，后台 100Hz 采样。
 
-    线程安全：_sample_loop 写 _latest，外部通过 get_latest() 读取。
+    线程安全：
+      - _i2c_lock：串行化所有 SMBus 操作，防止采样线程与校准主线程并发访问
+        导致 I2C 总线冲突（Errno 121 Remote I/O error → Errno 110 总线锁死）。
+      - _lock：保护 _latest 读写。
     非树莓派或 smbus2 未安装时自动降级，get_latest() 返回 None。
     """
 
@@ -80,7 +87,8 @@ class Imu:
         self._addr = i2c_addr or int(addr_str, 16)
         self._bus            = None
         self._is_simulation  = False
-        self._lock           = threading.Lock()
+        self._i2c_lock       = threading.Lock()   # 保护 SMBus 并发访问
+        self._lock           = threading.Lock()   # 保护 _latest 读写
         self._latest: ImuReading | None = None
         self._thread: threading.Thread | None = None
         self._running        = False
@@ -133,18 +141,22 @@ class Imu:
     # ─── 内部：设备初始化 ─────────────────────────────────────────
 
     def _init_device(self) -> None:
-        """唤醒 MPU6050 并配置量程 & 采样率。"""
-        self._bus.write_byte_data(self._addr, _REG_PWR_MGMT_1,   0x00)  # 退出睡眠
-        time.sleep(0.1)
-        # 采样率 = 陀螺仪输出频率 / (SMPLRT_DIV + 1)
-        # 配置低通滤波后陀螺仪输出频率 = 1000Hz，目标 100Hz → DIV = 9
-        self._bus.write_byte_data(self._addr, _REG_SMPLRT_DIV,   0x09)
-        self._bus.write_byte_data(self._addr, _REG_CONFIG,        0x03)  # 低通 44Hz
-        self._bus.write_byte_data(self._addr, _REG_GYRO_CONFIG,   _GYRO_FS_250_DEG)
-        self._bus.write_byte_data(self._addr, _REG_ACCEL_CONFIG,  0x00)  # ±2g
+        """复位并唤醒 MPU6050/MPU6500，配置量程 & 采样率。"""
+        with self._i2c_lock:
+            # 先软复位，确保从干净状态启动（防止上次异常导致内部状态混乱）
+            self._bus.write_byte_data(self._addr, _REG_PWR_MGMT_1, 0x80)  # DEVICE_RESET
+            time.sleep(0.15)
+            self._bus.write_byte_data(self._addr, _REG_PWR_MGMT_1, 0x00)  # 退出睡眠
+            time.sleep(0.15)
+            # 采样率 = 陀螺仪输出频率 / (SMPLRT_DIV + 1)
+            # 配置低通滤波后陀螺仪输出频率 = 1000Hz，目标 100Hz → DIV = 9
+            self._bus.write_byte_data(self._addr, _REG_SMPLRT_DIV,  0x09)
+            self._bus.write_byte_data(self._addr, _REG_CONFIG,       0x03)  # 低通 44Hz
+            self._bus.write_byte_data(self._addr, _REG_GYRO_CONFIG,  _GYRO_FS_250_DEG)
+            self._bus.write_byte_data(self._addr, _REG_ACCEL_CONFIG, 0x00)  # ±2g
 
     def _read_raw(self) -> ImuReading:
-        """读取 14 字节原始数据并转换为物理量。"""
+        """读取 14 字节原始数据并转换为物理量（持有 _i2c_lock 期间调用）。"""
         data = self._bus.read_i2c_block_data(self._addr, _REG_ACCEL_XOUT_H, 14)
 
         def to_int16(hi: int, lo: int) -> int:
@@ -161,9 +173,16 @@ class Imu:
         return ImuReading(gx, gy, gz, ax, ay, az, time.monotonic())
 
     def _calibrate_gyro(self) -> None:
-        """静止 N 帧平均，估算并记录陀螺仪 Z 轴零偏。"""
+        """静止 N 帧平均，估算并记录陀螺仪 Z 轴零偏。
+
+        采样间隔 10ms（与 _sample_loop 错开），避免与采样线程竞争 _i2c_lock。
+        """
         try:
-            samples = [self._read_raw().gyro_z for _ in range(_CALIBRATION_FRAMES)]
+            samples: list[float] = []
+            for _ in range(_CALIBRATION_FRAMES):
+                with self._i2c_lock:
+                    samples.append(self._read_raw().gyro_z)
+                time.sleep(0.01)   # 10ms 间隔，让采样线程有机会获锁
             self._gyro_bias_z = sum(samples) / len(samples)
         except Exception as e:
             logger.warning(f"[IMU] 零偏校准失败：{e}")
@@ -175,7 +194,8 @@ class Imu:
         while self._running:
             t0 = time.monotonic()
             try:
-                raw = self._read_raw()
+                with self._i2c_lock:
+                    raw = self._read_raw()
                 reading = ImuReading(
                     gyro_x=raw.gyro_x,
                     gyro_y=raw.gyro_y,

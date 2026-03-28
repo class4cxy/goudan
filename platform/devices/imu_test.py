@@ -108,9 +108,12 @@ def test_raw_register():
         return
 
     try:
-        # 读 WHO_AM_I 寄存器（0x75），MPU6050 应返回 0x68
+        # 读 WHO_AM_I 寄存器（0x75）
+        # MPU6050 → 0x68；MPU6500（GY-521 常见替代芯片）→ 0x70；两者寄存器兼容
         who = bus.read_byte_data(IMU_ADDR, 0x75)
-        print(f"  WHO_AM_I  = 0x{who:02X}  {'✅ 正确（应为 0x68）' if who == 0x68 else '❌ 异常'}")
+        _KNOWN = {0x68: "MPU6050 ✅", 0x70: "MPU6500 ✅（与 MPU6050 寄存器兼容）"}
+        who_label = _KNOWN.get(who, f"❌ 未知芯片（0x{who:02X}），请核查型号")
+        print(f"  WHO_AM_I  = 0x{who:02X}  ← {who_label}")
 
         # 唤醒设备（清除睡眠位）
         bus.write_byte_data(IMU_ADDR, 0x6B, 0x00)
