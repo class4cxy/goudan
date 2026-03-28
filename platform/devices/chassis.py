@@ -14,9 +14,12 @@
 差速转向逻辑：
   前进(forward)    → 四轮同方向正转
   后退(backward)   → 四轮同方向反转
-  左转(turn_left)  → 左侧轮反转 / 右侧轮正转（原地左旋）
-  右转(turn_right) → 右侧轮反转 / 左侧轮正转（原地右旋）
+  左转(turn_left)  → 左侧轮停止 / 右侧轮正转（Pivot 左转，绕左轮轴心旋转）
+  右转(turn_right) → 右侧轮停止 / 左侧轮正转（Pivot 右转，绕右轮轴心旋转）
   停止(stop)       → 四轮制动
+
+Pivot 转向适用于橡胶轮底盘（普通橡胶轮无法横向打滑，对称差速转向无效）。
+转弯半径 = 车身宽度的一半；转速约为对称差速的一半，转向时长需相应调整。
 
 默认 GPIO 引脚（BCM 编号）见 DEFAULT_CONFIG，与 motor_test.py 保持一致。
 """
@@ -117,22 +120,24 @@ class Chassis:
         logger.debug("[底盘] 后退 speed=%d", s)
 
     def turn_left(self, speed: int | None = None) -> None:
-        """原地左转：左侧轮反转，右侧轮正转。"""
+        """Pivot 左转：左侧轮停止，右侧轮正转，绕左轮轴心旋转。
+        适用于橡胶轮底盘（无法横向打滑），转弯半径为车宽一半。"""
         s = self._resolve_speed(speed)
-        self._motors["front_left"].backward(s)
-        self._motors["rear_left"].backward(s)
+        self._motors["front_left"].stop()
+        self._motors["rear_left"].stop()
         self._motors["front_right"].forward(s)
         self._motors["rear_right"].forward(s)
-        logger.debug("[底盘] 左转 speed=%d", s)
+        logger.debug("[底盘] 左转(Pivot) speed=%d", s)
 
     def turn_right(self, speed: int | None = None) -> None:
-        """原地右转：右侧轮反转，左侧轮正转。"""
+        """Pivot 右转：右侧轮停止，左侧轮正转，绕右轮轴心旋转。
+        适用于橡胶轮底盘（无法横向打滑），转弯半径为车宽一半。"""
         s = self._resolve_speed(speed)
         self._motors["front_left"].forward(s)
         self._motors["rear_left"].forward(s)
-        self._motors["front_right"].backward(s)
-        self._motors["rear_right"].backward(s)
-        logger.debug("[底盘] 右转 speed=%d", s)
+        self._motors["front_right"].stop()
+        self._motors["rear_right"].stop()
+        logger.debug("[底盘] 右转(Pivot) speed=%d", s)
 
     def stop(self) -> None:
         """所有电机制动停止。"""
