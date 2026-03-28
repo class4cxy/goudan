@@ -171,6 +171,7 @@ class Imu:
 
     def _sample_loop(self) -> None:
         interval = 1.0 / self.SAMPLE_HZ
+        consecutive_errors = 0
         while self._running:
             t0 = time.monotonic()
             try:
@@ -186,16 +187,36 @@ class Imu:
                 )
                 with self._lock:
                     self._latest = reading
+                consecutive_errors = 0
             except Exception as e:
-                logger.debug(f"[IMU] 采样异常：{e}")
+                consecutive_errors += 1
+                # 连续失败 10 次（~0.1s）升级为 WARNING，避免静默冻结
+                if consecutive_errors == 10:
+                    logger.warning(f"[IMU] 采样连续失败 {consecutive_errors} 次，数据已冻结：{e}")
+                elif consecutive_errors % 100 == 0:
+                    logger.warning(f"[IMU] 采样持续失败（{consecutive_errors} 次），最后错误：{e}")
+                else:
+                    logger.debug(f"[IMU] 采样异常：{e}")
             elapsed = time.monotonic() - t0
             time.sleep(max(0.0, interval - elapsed))
 
     # ─── 公共接口 ────────────────────────────────────────────────
 
+    # 数据超过此秒数未更新则视为陈旧（I2C 断开后避免返回冻结数据）
+    STALE_THRESHOLD_S = 1.0
+
     def get_latest(self) -> ImuReading | None:
-        """返回最新一次采样数据（线程安全），未采样时返回 None。"""
+        """
+        返回最新一次采样数据（线程安全）。
+
+        若超过 STALE_THRESHOLD_S 秒未刷新（I2C 故障导致数据冻结），返回 None。
+        """
         with self._lock:
+            if self._latest is None:
+                return None
+            age = time.monotonic() - self._latest.timestamp
+            if age > self.STALE_THRESHOLD_S:
+                return None
             return self._latest
 
     @property
