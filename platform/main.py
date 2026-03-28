@@ -125,7 +125,12 @@ ws_manager = ConnectionManager()
 audio_effector = AudioEffector(ws_manager=ws_manager)
 bluetooth_manager = BluetoothManager()
 _chassis_speed = int(os.environ.get("CHASSIS_DEFAULT_SPEED", "35"))
-chassis = Chassis(replace(DEFAULT_CONFIG, default_speed=_chassis_speed))
+_chassis_turn = os.environ.get("CHASSIS_TURN_STYLE", "tank").strip().lower()
+if _chassis_turn not in ("tank", "pivot"):
+    _chassis_turn = "tank"
+chassis = Chassis(
+    replace(DEFAULT_CONFIG, default_speed=_chassis_speed, turn_style=_chassis_turn)
+)
 camera  = CameraMount(DEFAULT_CAMERA_CONFIG)
 
 # 摄像头采集实例（source / snapshot_dir 从环境变量覆盖）

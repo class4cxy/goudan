@@ -69,7 +69,8 @@ const FORWARD_SPEED_HIGH_LIDAR = 22
 
 // ── 运动参数 ─────────────────────────────────────────────────────
 const FORWARD_SPEED      = Number(process.env.EXPLORER_FORWARD_SPEED ?? '28')
-const TURN_SPEED         = Number(process.env.EXPLORER_TURN_SPEED ?? '30')
+/** 1:90 减速 + 高摩擦时 Pivot 单侧推易停转；与文档「最低有效 ~50」对齐，默认略高于 50 */
+const TURN_SPEED         = Number(process.env.EXPLORER_TURN_SPEED ?? '52')
 /**
  * 正常脉冲前进时长（秒）。
  * 脱困后使用更长的 ESCAPE_BURST_DURATION，把机器人真正带离障碍区域。

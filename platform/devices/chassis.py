@@ -11,15 +11,20 @@
   │ [RL]    [RR] │  ← 后轮
   └──────────────┘
 
-差速转向逻辑：
+运动指令逻辑：
   前进(forward)    → 四轮同方向正转
   后退(backward)   → 四轮同方向反转
-  左转(turn_left)  → 左侧轮停止 / 右侧轮正转（Pivot 左转，绕左轮轴心旋转）
-  右转(turn_right) → 右侧轮停止 / 左侧轮正转（Pivot 右转，绕右轮轴心旋转）
   停止(stop)       → 四轮制动
 
-Pivot 转向适用于橡胶轮底盘（普通橡胶轮无法横向打滑，对称差速转向无效）。
-转弯半径 = 车身宽度的一半；转速约为对称差速的一半，转向时长需相应调整。
+转向由 CHASSIS_TURN_STYLE 选择（见 ChassisConfig.turn_style）：
+
+  tank（默认）— 差速原地转：左转 = 左侧反转 + 右侧正转；右转相反。
+    两侧电机都出力，更易克服减速电机 + 高摩擦下的「单侧推不动」问题。
+
+  pivot — 单侧制动转：一侧 stop() 制动、另一侧 forward()，绕制动侧摆动。
+    部分橡胶轮场景下对称差速会打滑空转时可改回 pivot 尝试。
+
+默认改为 tank 的原因：实测 Pivot 时静摩擦大、PWM 偏低会出现「轻轻一顶就停转、原地几乎不转」。
 
 默认 GPIO 引脚（BCM 编号）见 DEFAULT_CONFIG，与 motor_test.py 保持一致。
 """
@@ -55,6 +60,8 @@ class ChassisConfig:
     rear_left: MotorPins
     rear_right: MotorPins
     default_speed: int = 60  # 全局默认速度（0–100）
+    # 转向模式：tank=两侧反向差速（默认）；pivot=一侧制动一侧正转
+    turn_style: str = "tank"
 
 
 # MAKEROBO 功能扩展板实测引脚（Phase A GPIO 探针确认，BCM 编号）
@@ -87,6 +94,14 @@ class Chassis:
 
         self._config = config
         self._default_speed = config.default_speed
+        _style = (config.turn_style or "tank").strip().lower()
+        if _style not in ("tank", "pivot"):
+            logger.warning(
+                "[底盘] 未知 turn_style=%r，有效值 tank/pivot，已回退 tank",
+                config.turn_style,
+            )
+            _style = "tank"
+        self._turn_style = _style
         self._motors: dict[str, Motor] = {
             "front_left": Motor("front_left", config.front_left),
             "front_right": Motor("front_right", config.front_right),
@@ -99,8 +114,9 @@ class Chassis:
         self._timed_task: asyncio.Task | None = None
 
         logger.info(
-            "底盘初始化完成（%s）",
+            "底盘初始化完成（%s，转向=%s）",
             "模拟模式" if SIMULATION else "GPIO 真实引脚",
+            self._turn_style,
         )
 
     # ── 整车运动指令 ──────────────────────────────────────────────
@@ -120,24 +136,36 @@ class Chassis:
         logger.debug("[底盘] 后退 speed=%d", s)
 
     def turn_left(self, speed: int | None = None) -> None:
-        """Pivot 左转：左侧轮停止，右侧轮正转，绕左轮轴心旋转。
-        适用于橡胶轮底盘（无法横向打滑），转弯半径为车宽一半。"""
+        """左转：默认 tank 差速（左后右前）；pivot 时为左侧制动、右侧正转。"""
         s = self._resolve_speed(speed)
-        self._motors["front_left"].stop()
-        self._motors["rear_left"].stop()
-        self._motors["front_right"].forward(s)
-        self._motors["rear_right"].forward(s)
-        logger.debug("[底盘] 左转(Pivot) speed=%d", s)
+        if self._turn_style == "pivot":
+            self._motors["front_left"].stop()
+            self._motors["rear_left"].stop()
+            self._motors["front_right"].forward(s)
+            self._motors["rear_right"].forward(s)
+            logger.debug("[底盘] 左转(pivot) speed=%d", s)
+        else:
+            self._motors["front_left"].backward(s)
+            self._motors["rear_left"].backward(s)
+            self._motors["front_right"].forward(s)
+            self._motors["rear_right"].forward(s)
+            logger.debug("[底盘] 左转(tank) speed=%d", s)
 
     def turn_right(self, speed: int | None = None) -> None:
-        """Pivot 右转：右侧轮停止，左侧轮正转，绕右轮轴心旋转。
-        适用于橡胶轮底盘（无法横向打滑），转弯半径为车宽一半。"""
+        """右转：默认 tank 差速（左前右后）；pivot 时为右侧制动、左侧正转。"""
         s = self._resolve_speed(speed)
-        self._motors["front_left"].forward(s)
-        self._motors["rear_left"].forward(s)
-        self._motors["front_right"].stop()
-        self._motors["rear_right"].stop()
-        logger.debug("[底盘] 右转(Pivot) speed=%d", s)
+        if self._turn_style == "pivot":
+            self._motors["front_left"].forward(s)
+            self._motors["rear_left"].forward(s)
+            self._motors["front_right"].stop()
+            self._motors["rear_right"].stop()
+            logger.debug("[底盘] 右转(pivot) speed=%d", s)
+        else:
+            self._motors["front_left"].forward(s)
+            self._motors["rear_left"].forward(s)
+            self._motors["front_right"].backward(s)
+            self._motors["rear_right"].backward(s)
+            logger.debug("[底盘] 右转(tank) speed=%d", s)
 
     def stop(self) -> None:
         """所有电机制动停止。"""
