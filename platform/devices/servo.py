@@ -74,13 +74,14 @@ DEFAULT_CAMERA_CONFIG = CameraConfig(
 class Servo:
     """单轴舵机控制器。
 
-    PWM 常驻策略：setup() 后 PWM 信号持续输出，set_angle 直接 ChangeDutyCycle。
-    原「脉冲到位即停」模式是为了消除多路软件 PWM 互相干扰，现仅一路硬件 PWM，
-    rpi-lgpio stop()+start() 重启行为不稳定，改为常驻更可靠。
+    防抖策略：到位稳定后调用 ChangeDutyCycle(0) 将占空比置零，
+    舵机靠齿轮摩擦锁住位置，不再响应电源纹波/电机噪声引发的抖动。
+    不调用 pwm.stop()（rpi-lgpio stop+start 重启行为不稳定），
+    仅将占空比归零，PWM 对象保持活跃，下次移动直接 ChangeDutyCycle 恢复。
     """
 
-    # 最终到位后额外稳定等待（秒）；渐进移动时已有步进延迟，此值仅用于末位稳定
-    SETTLE_S: float = 0.05
+    # 最终到位后机械稳定等待（秒）；稳定后随即将占空比置零
+    SETTLE_S: float = 0.15
     # 渐进移动每步角度（度）；越小越平滑，越小 CPU 调用越频繁
     _STEP_DEG: float = 1.0
 
@@ -100,11 +101,12 @@ class Servo:
         return (self._min + self._max - logical) if self._invert else logical
 
     def setup(self) -> None:
-        """初始化 GPIO，将舵机移到默认角度，PWM 保持常驻输出。"""
+        """初始化 GPIO，将舵机移到默认角度，稳定后置零占空比防抖。"""
         GPIO.setup(self._pin, GPIO.OUT)
         self._pwm = GPIO.PWM(self._pin, _PWM_FREQ)
         self._pwm.start(_angle_to_duty(self._to_physical(self._default)))
-        time.sleep(self.SETTLE_S)   # 等待舵机到达默认位置
+        time.sleep(self.SETTLE_S)
+        self._pwm.ChangeDutyCycle(0)   # 到位后置零，防底盘电机噪声引发抖动
         logger.debug(
             "[舵机-%s] 初始化完成，默认角度=%.1f°（物理=%.1f°，invert=%s）",
             self.name, self._default, self._to_physical(self._default), self._invert,
@@ -147,6 +149,8 @@ class Servo:
         self._pwm.ChangeDutyCycle(_angle_to_duty(self._to_physical(clamped)))
         self._current_angle = clamped
         time.sleep(self.SETTLE_S)
+        # 到位稳定后置零占空比：舵机靠齿轮摩擦锁位，切断电气噪声来源防抖
+        self._pwm.ChangeDutyCycle(0)
         return clamped
 
     def move_by(self, delta: float) -> float:
