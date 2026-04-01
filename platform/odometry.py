@@ -72,6 +72,9 @@ class Odometry:
         self._slam_dtheta_deg: float = 0.0
         self._slam_dt_s:       float = 0.0
 
+        # 独立行驶路程累计器（供闭环运动控制专用，读取后清零）
+        self._travel_mm: float = 0.0
+
         self._running = False
         self._thread: threading.Thread | None = None
         self._last_t  = 0.0
@@ -154,6 +157,9 @@ class Odometry:
             self._slam_dtheta_deg += abs(dtheta_deg)
             self._slam_dt_s       += dt
 
+            # 累积行驶路程（闭环运动控制专用，不受 SLAM 消费影响）
+            self._travel_mm += abs(dxy_mm)
+
     # ─── 公共接口 ─────────────────────────────────────────────────
 
     def get_pose(self) -> OdometryPose:
@@ -178,6 +184,18 @@ class Odometry:
             self._slam_dxy_mm     = 0.0
             self._slam_dtheta_deg = 0.0
             self._slam_dt_s       = 0.0
+        return v
+
+    def get_and_reset_travel(self) -> float:
+        """
+        读取并清零行驶路程累计器（mm）。
+
+        仅供 /motor/drive 闭环距离控制使用，独立于 SLAM 消费者。
+        返回自上次调用以来车轮走过的总路程（取绝对值，不含旋转）。
+        """
+        with self._lock:
+            v = self._travel_mm
+            self._travel_mm = 0.0
         return v
 
     def peek_velocity(self) -> tuple[float, float, float]:
