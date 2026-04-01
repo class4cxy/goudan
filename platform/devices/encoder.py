@@ -24,6 +24,7 @@ lgpio 安装：
 
 import os
 import threading
+import time
 import logging
 from dataclasses import dataclass
 
@@ -62,7 +63,7 @@ class EncoderConfig:
     left_b:  int = int(os.environ.get("ENCODER_LEFT_B",  "16"))  # M1 左前 B → GPIO16（Pin 36，扩展板 GP16）
     right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "14"))  # M2 右前 A → GPIO14（Pin 8，UART TX，控制台已移除）
     right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "18"))  # M2 右前 B → GPIO18（Pin 12，空闲；⚠️ GPIO17=蜂鸣器禁用）
-    lines_per_rev: int = int(os.environ.get("ENCODER_LINES_PER_REV", "500"))
+    lines_per_rev: int = int(os.environ.get("ENCODER_LINES_PER_REV", "1666"))
 
     @property
     def ticks_per_rev(self) -> int:
@@ -106,12 +107,35 @@ class _WheelEncoder:
         )
         self._thread.start()
 
+    # 去抖动：检测到跳变后，再读 N 次确认状态稳定才计数。
+    # 目的：过滤电机 PWM 耦合到编码器信号线上的电气噪声毛刺。
+    # 每次确认间隔 50μs，N=3 → 总去抖时间 150μs。
+    # 真实信号（100RPM 轮速 @ 2000tick/rev → 3333tick/s → 300μs/tick）远长于此，不影响精度。
+    _DEBOUNCE_READS   = 3
+    _DEBOUNCE_DELAY_S = 50e-6   # 50 μs
+
     def _poll_loop(self) -> None:
         import lgpio
         while self._running:
             curr_a = lgpio.gpio_read(self._h, self._pin_a)
             curr_b = lgpio.gpio_read(self._h, self._pin_b)
             if curr_a != self._prev_a or curr_b != self._prev_b:
+                # 去抖：重复读取确认电平稳定，排除 PWM 噪声毛刺
+                stable = True
+                for _ in range(self._DEBOUNCE_READS):
+                    time.sleep(self._DEBOUNCE_DELAY_S)
+                    if (lgpio.gpio_read(self._h, self._pin_a) != curr_a or
+                            lgpio.gpio_read(self._h, self._pin_b) != curr_b):
+                        stable = False
+                        break
+                if not stable:
+                    # 毛刺，丢弃此次跳变，重新读取真实电平
+                    curr_a = lgpio.gpio_read(self._h, self._pin_a)
+                    curr_b = lgpio.gpio_read(self._h, self._pin_b)
+                    self._prev_a = curr_a
+                    self._prev_b = curr_b
+                    continue
+
                 delta = _QUAD_TABLE.get(
                     (self._prev_a, self._prev_b, curr_a, curr_b), 0
                 )
