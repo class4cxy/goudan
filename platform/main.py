@@ -534,6 +534,13 @@ class SetMotorRequest(BaseModel):
     direction: str        # forward / backward / stop
     speed: int | None = None
 
+class MotorDriveRequest(BaseModel):
+    """闭环精确运动请求（distance_mm 和 angle_deg 二选一）。"""
+    distance_mm: float | None = None  # 正=前进，负=后退（里程计闭环）
+    angle_deg: float | None = None    # 正=左转，负=右转（IMU 闭环）
+    speed: int = 50                   # 0–100
+    timeout_s: float = 30.0          # 安全超时（防止里程计失效时卡死）
+
 class CameraLookAtRequest(BaseModel):
     pan: float   # 水平角度 0–180（0=最左，97=正前，180=最右）
 
@@ -883,6 +890,84 @@ async def motor_command(req: MotorCommandRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/motor/drive")
+async def motor_drive(req: MotorDriveRequest):
+    """
+    闭环精确运动接口。
+
+    - distance_mm: 按里程计（编码器）闭环前进/后退指定毫米数
+    - angle_deg:   按 IMU（陀螺仪）闭环左/右转指定角度
+
+    两者互斥，同时传入时以 distance_mm 优先。
+    speed 为电机功率（0–100），timeout_s 为安全超时（里程计失效时兜底停止）。
+    """
+    import math as _math
+
+    if req.distance_mm is None and req.angle_deg is None:
+        raise HTTPException(status_code=400, detail="distance_mm 和 angle_deg 至少提供一个")
+
+    speed = max(0, min(100, req.speed))
+
+    try:
+        if req.distance_mm is not None:
+            # ── 里程计闭环直行 ─────────────────────────────────────────
+            target_mm = abs(req.distance_mm)
+            direction = "forward" if req.distance_mm >= 0 else "backward"
+            start = odometry.get_pose()
+            chassis._dispatch(direction, speed)
+            deadline = asyncio.get_event_loop().time() + req.timeout_s
+            traveled = 0.0
+            while asyncio.get_event_loop().time() < deadline:
+                await asyncio.sleep(0.02)
+                curr = odometry.get_pose()
+                traveled = _math.hypot(curr.x_mm - start.x_mm, curr.y_mm - start.y_mm)
+                if traveled >= target_mm:
+                    break
+            chassis.stop()
+            return {
+                "ok": True,
+                "mode": "distance",
+                "target_mm": req.distance_mm,
+                "traveled_mm": round(traveled, 1),
+                "timeout": asyncio.get_event_loop().time() >= deadline,
+            }
+
+        else:
+            # ── IMU 闭环转向 ───────────────────────────────────────────
+            target_deg = abs(req.angle_deg)
+            direction = "turn_left" if req.angle_deg >= 0 else "turn_right"
+            start_theta = odometry.get_pose().theta_deg
+            accumulated = 0.0
+            prev_theta = start_theta
+            chassis._dispatch(direction, speed)
+            deadline = asyncio.get_event_loop().time() + req.timeout_s
+            while asyncio.get_event_loop().time() < deadline:
+                await asyncio.sleep(0.02)
+                curr_theta = odometry.get_pose().theta_deg
+                # 处理 ±180° 跨越
+                delta = curr_theta - prev_theta
+                if delta > 180:
+                    delta -= 360
+                elif delta < -180:
+                    delta += 360
+                accumulated += abs(delta)
+                prev_theta = curr_theta
+                if accumulated >= target_deg:
+                    break
+            chassis.stop()
+            return {
+                "ok": True,
+                "mode": "angle",
+                "target_deg": req.angle_deg,
+                "rotated_deg": round(accumulated, 1),
+                "timeout": asyncio.get_event_loop().time() >= deadline,
+            }
+
+    except Exception as e:
+        chassis.stop()
         raise HTTPException(status_code=500, detail=str(e))
 
 

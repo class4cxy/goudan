@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class OdometryConfig:
-    wheel_radius_mm: float = float(os.environ.get("ODOM_WHEEL_RADIUS_MM", "33.0"))
+    wheel_radius_mm: float = float(os.environ.get("ODOM_WHEEL_RADIUS_MM", "34.0"))
     wheel_base_mm:   float = float(os.environ.get("ODOM_WHEEL_BASE_MM",  "160.0"))
     imu_weight:      float = float(os.environ.get("ODOM_IMU_WEIGHT",       "0.3"))
     update_hz:       int   = int(os.environ.get("ODOM_UPDATE_HZ",          "50"))
@@ -149,9 +149,9 @@ class Odometry:
             self._pose.theta_deg  = (theta_new + 180.0) % 360.0 - 180.0
 
             # 累积 SLAM/AMCL 用的增量
-            # dxy_mm 取绝对值（路程始终为正）；dtheta_deg 保留符号（净旋转，左负右正）
+            # breezyslam velocities 期望位移幅度（非有符号增量），两者均取绝对值
             self._slam_dxy_mm     += abs(dxy_mm)
-            self._slam_dtheta_deg += dtheta_deg
+            self._slam_dtheta_deg += abs(dtheta_deg)
             self._slam_dt_s       += dt
 
     # ─── 公共接口 ─────────────────────────────────────────────────

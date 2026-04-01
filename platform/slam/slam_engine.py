@@ -81,8 +81,8 @@ class SlamConfig:
     # breezyslam 算法参数
     map_quality: int       = 30      # 地图更新强度 0–255；慢速场景降低可减少错误匹配烙印
     hole_width_mm: float   = 320.0   # 最小可通行孔宽（mm）；机器车宽约 300mm，加 20mm 余量
-    sigma_xy_mm: float     = 30.0    # 位置不确定度（mm）；慢速移动时每帧位移<5mm，无需大搜索半径
-    sigma_theta_deg: float = 5.0     # 角度不确定度（度）；慢速移动时角速度小，无需±20°随机跳跃
+    sigma_xy_mm: float     = 60.0    # 位置不确定度（mm）；慢速移动适中值，原 100 太大易误匹配
+    sigma_theta_deg: float = 15.0    # 角度不确定度（度）；原 20 太大，5 太小导致爆炸，15 为折中
     max_search_iter: int   = 1500    # RMHC 搜索迭代上限，默认 1000，提高可增强定位稳定性
 
     # 广播频率
@@ -106,8 +106,8 @@ def config_from_env() -> SlamConfig:
         map_size_pixels=int(os.environ.get("SLAM_MAP_SIZE_PIXELS", "1000")),
         map_size_meters=float(os.environ.get("SLAM_MAP_SIZE_METERS", "20")),
         map_quality=int(os.environ.get("SLAM_MAP_QUALITY", "30")),
-        sigma_xy_mm=float(os.environ.get("SLAM_SIGMA_XY_MM", "30")),
-        sigma_theta_deg=float(os.environ.get("SLAM_SIGMA_THETA_DEG", "5")),
+        sigma_xy_mm=float(os.environ.get("SLAM_SIGMA_XY_MM", "60")),
+        sigma_theta_deg=float(os.environ.get("SLAM_SIGMA_THETA_DEG", "15")),
         max_search_iter=int(os.environ.get("SLAM_MAX_SEARCH_ITER", "1500")),
     )
 
