@@ -3,7 +3,10 @@
 import { makeAssistantToolUI } from "@assistant-ui/react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { RoughRenderer, type DrawScene } from "@/components/chat/rough-renderer";
 import {
+  PencilRulerIcon,
+  PencilIcon,
   BatteryChargingIcon,
   CheckCircle2Icon,
   CalendarPlusIcon,
@@ -710,6 +713,121 @@ export const CloseCameraStreamToolUI = makeAssistantToolUI<
           <p className="text-xs text-muted-foreground">已关闭</p>
         )}
       </ToolCard>
+    );
+  },
+});
+
+// ── Drawing Loading Animation ─────────────────────────────────────
+
+const STROKES = [
+  { w: 150, delay: 0 },
+  { w: 110, delay: 350 },
+  { w: 170, delay: 700 },
+  { w: 90,  delay: 200 },
+  { w: 135, delay: 500 },
+];
+
+function DrawingLoader({ title }: { title: string }) {
+  return (
+    <Card className="my-2 w-fit animate-fade-in overflow-hidden">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-sm text-muted-foreground">
+          <PencilRulerIcon className="h-4 w-4 text-primary" />
+          {title ? `绘制中：${title}` : "绘制中…"}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-3 pt-0">
+        {/* 素描纸区域 */}
+        <div className="relative w-56 h-36 rounded-lg overflow-hidden border border-amber-200/60"
+             style={{ background: "linear-gradient(135deg, #fffef7 0%, #fefce8 100%)" }}>
+          <style>{`
+            @keyframes drawStroke {
+              0%   { transform: scaleX(0); opacity: 0; }
+              12%  { opacity: 1; }
+              60%  { transform: scaleX(1); opacity: 1; }
+              88%  { transform: scaleX(1); opacity: 0.25; }
+              100% { transform: scaleX(0); opacity: 0; }
+            }
+            @keyframes pencilBounce {
+              0%, 100% { transform: translate(0, 0) rotate(-42deg); }
+              30%       { transform: translate(6px, -3px) rotate(-38deg); }
+              60%       { transform: translate(-3px, 2px) rotate(-45deg); }
+            }
+          `}</style>
+
+          {/* 逐笔画出的线条 */}
+          <div className="flex flex-col gap-2.5 px-5 py-4 h-full justify-center">
+            {STROKES.map(({ w, delay }, i) => (
+              <div
+                key={i}
+                className="h-1 rounded-full origin-left"
+                style={{
+                  width: w,
+                  background: i % 2 === 0
+                    ? "rgba(100,100,100,0.45)"
+                    : "rgba(140,100,60,0.35)",
+                  animation: `drawStroke 2.2s ease-in-out ${delay}ms infinite`,
+                }}
+              />
+            ))}
+          </div>
+
+          {/* 铅笔图标 */}
+          <div
+            className="absolute bottom-3 right-3"
+            style={{ animation: "pencilBounce 1.8s ease-in-out infinite" }}
+          >
+            <PencilIcon className="h-5 w-5 text-amber-600" />
+          </div>
+
+          {/* 角落装饰点 */}
+          <div className="absolute top-2 right-3 h-1.5 w-1.5 rounded-full bg-amber-300/50" />
+          <div className="absolute top-4 right-6 h-1 w-1 rounded-full bg-amber-200/60" />
+        </div>
+
+        <p className="mt-2 text-center text-[11px] text-muted-foreground animate-pulse">
+          AI 正在构思画面，请稍候…
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Draw Scene Tool UI ────────────────────────────────────────────
+
+export const DrawSceneToolUI = makeAssistantToolUI<
+  { width: number; height: number; background?: string; title?: string; commands: unknown[] },
+  { success: boolean; scene: DrawScene }
+>({
+  toolName: "drawScene",
+  render({ args, result, status: execStatus }) {
+    const loading = execStatus.type === "running";
+    const title = args.title ?? "手绘图";
+
+    if (loading) return <DrawingLoader title={title} />;
+
+    if (!result?.success || !result.scene) {
+      return (
+        <ToolCard icon={PencilRulerIcon} title="绘图失败">
+          <p className="text-xs text-red-400">绘图数据生成失败</p>
+        </ToolCard>
+      );
+    }
+
+    return (
+      <Card className="my-2 w-full animate-fade-in overflow-hidden">
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-sm text-muted-foreground">
+            <PencilRulerIcon className="h-4 w-4 text-primary" />
+            {title}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-3 pt-0">
+          <div className="overflow-x-auto rounded-md w-fit max-w-full">
+            <RoughRenderer scene={result.scene} />
+          </div>
+        </CardContent>
+      </Card>
     );
   },
 });

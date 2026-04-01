@@ -89,7 +89,7 @@ export async function POST(req: Request) {
       }
     },
 
-    onFinish: async ({ steps }) => {
+    onFinish: async ({ steps, usage }) => {
       // 通知 Spine：文字对话轮次完成
       notifyChatComplete(threadId);
 
@@ -146,6 +146,15 @@ export async function POST(req: Request) {
       queries.createThread.run(threadId);
       queries.saveThreadMessages.run(threadId, JSON.stringify(allMessages));
       queries.touchThread.run(threadId);
+
+      // 累积本轮 token 消耗（跨多步求和后写入）
+      if (usage) {
+        queries.addThreadTokens.run(
+          usage.inputTokens ?? 0,
+          usage.outputTokens ?? 0,
+          threadId,
+        );
+      }
 
       // 异步压缩（fire-and-forget，不阻塞响应流）
       if (buffer) {

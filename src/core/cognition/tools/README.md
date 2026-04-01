@@ -15,7 +15,7 @@ LLM 推理层，包含模型配置、工具注册表和 Prompt 设计。
 
 ---
 
-## 工具注册表（15 个工具）
+## 工具注册表（16 个工具）
 
 | 工具 | 文件 | 后端 |
 |------|------|------|
@@ -34,6 +34,7 @@ LLM 推理层，包含模型配置、工具注册表和 Prompt 设计。
 | `addScheduledTask` | `scheduler-tool.ts` | node-cron + SQLite |
 | `listScheduledTasks` | `scheduler-tool.ts` | SQLite |
 | `navigateTo` | `motor.ts` | **Spine.publish**（唯一走 Spine 的工具）|
+| `drawScene` | `draw.ts` | 纯前端渲染（Rough.js），服务端透传 JSON |
 
 `navigateTo` 是架构上的特例：它不直接调用硬件，而是发布 `action.navigate` 事件到 Spine，保持 Agent 与电机执行的解耦。
 
@@ -95,5 +96,5 @@ messages[]
   └─ rawTail：最近 20 条未压缩消息  ← ConversationBuffer.getRawTail()
 
 tools
-  └─ ALL_TOOLS（15 个工具）
+  └─ ALL_TOOLS（16 个工具）
 ```

@@ -88,6 +88,14 @@ export interface Thread {
   title: string | null;
   created_at: number;
   updated_at: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+function formatTokens(n: number): string {
+  if (n === 0) return "";
+  if (n < 1000) return `${n}`;
+  return `${(n / 1000).toFixed(1)}k`;
 }
 
 interface ThreadListProps {
@@ -154,29 +162,40 @@ function ThreadList({ activeThreadId, onSelect, onNew, refresh }: ThreadListProp
             暂无历史会话
           </p>
         ) : (
-          threads.map((t) => (
-            <div
-              key={t.id}
-              onClick={() => onSelect(t.id)}
-              className={cn(
-                "group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors text-xs",
-                t.id === activeThreadId
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-zinc-800 hover:text-foreground"
-              )}
-            >
-              <MessageSquareIcon className="h-3 w-3 shrink-0" />
-              <span className="flex-1 truncate">
-                {t.title ?? "新对话"}
-              </span>
-              <button
-                onClick={(e) => void handleDelete(e, t.id)}
-                className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:text-red-400"
+          threads.map((t) => {
+            const totalTokens = (t.input_tokens ?? 0) + (t.output_tokens ?? 0);
+            const tokenLabel = formatTokens(totalTokens);
+            return (
+              <div
+                key={t.id}
+                onClick={() => onSelect(t.id)}
+                className={cn(
+                  "group flex items-start gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors text-xs",
+                  t.id === activeThreadId
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-zinc-800 hover:text-foreground"
+                )}
               >
-                <Trash2Icon className="h-3 w-3" />
-              </button>
-            </div>
-          ))
+                <MessageSquareIcon className="h-3 w-3 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <span className="block truncate">
+                    {t.title ?? "新对话"}
+                  </span>
+                  {tokenLabel && (
+                    <span className="block text-[10px] text-muted-foreground/60 mt-0.5 font-mono">
+                      {tokenLabel} tokens
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={(e) => void handleDelete(e, t.id)}
+                  className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:text-red-400 mt-0.5 shrink-0"
+                >
+                  <Trash2Icon className="h-3 w-3" />
+                </button>
+              </div>
+            );
+          })
         )}
       </div>
     </div>

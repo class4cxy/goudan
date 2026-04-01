@@ -17,6 +17,7 @@ import { getPowerStatus } from "@/core/cognition/tools/power";
 import { startExploring, stopExploring, getMapStatus, getMapImage } from "@/core/cognition/tools/slam";
 import { startLocalize, getLocalizePose, navigateToCoordinates, getNavigationStatus, cancelNavigation } from "@/core/cognition/tools/navigation";
 import { searchWeb, fetchWebPage } from "@/core/cognition/tools/search";
+import { drawScene } from "@/core/cognition/tools/draw";
 import type { ScheduledTask } from "@/lib/db";
 
 export const ALL_TOOLS = {
@@ -48,6 +49,7 @@ export const ALL_TOOLS = {
   cancelNavigation,
   searchWeb,
   fetchWebPage,
+  drawScene,
 };
 
 /** 将 tools 注入 brain/task，由 scheduler 调用 */

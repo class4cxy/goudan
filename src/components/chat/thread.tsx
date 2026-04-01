@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { useAgentDisplayName } from "@/components/agent-display-context";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { voiceModeStore } from "@/components/chat/voice-mode-store";
+import { useDebugMode } from "@/components/debug-context";
 import {
   RobotStatusToolUI,
   CleanRoomsToolUI,
@@ -39,6 +40,7 @@ import {
   GetMapImageToolUI,
   OpenCameraStreamToolUI,
   CloseCameraStreamToolUI,
+  DrawSceneToolUI,
 } from "@/components/chat/tool-uis";
 
 // ── Voice mode toggle ─────────────────────────────────────────────
@@ -163,13 +165,43 @@ function VoiceModeHint() {
 }
 
 // ── Generic tool fallback ─────────────────────────────────────────
-const FallbackToolUI: ToolCallMessagePartComponent = ({ toolName, status }) => {
+// Debug 模式下，ChatThread 不注册任何自定义 Tool UI，所有工具均走此组件。
+const FallbackToolUI: ToolCallMessagePartComponent = ({ toolName, args, result, status }) => {
   const running = status.type === "running" || status.type === "requires-action";
+  const [open, setOpen] = useState(false);
+
   return (
-    <div className="my-2 flex items-center gap-2 rounded-lg border border-border bg-zinc-900 px-3 py-2 text-xs text-muted-foreground">
-      <span className={cn("h-1.5 w-1.5 rounded-full", running ? "bg-yellow-400 animate-pulse" : "bg-emerald-500")} />
-      <span className="font-mono">{toolName}</span>
-      {running && <span>执行中...</span>}
+    <div className="my-2 rounded-lg border border-border bg-zinc-900 text-xs text-muted-foreground overflow-hidden">
+      {/* 状态行（点击折叠/展开） */}
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-zinc-800 transition-colors text-left"
+      >
+        <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", running ? "bg-yellow-400 animate-pulse" : "bg-emerald-500")} />
+        <span className="font-mono flex-1">{toolName}</span>
+        {running && <span>执行中...</span>}
+        <ChevronDownIcon className={cn("h-3 w-3 shrink-0 transition-transform", open && "rotate-180")} />
+      </button>
+
+      {/* 传参 + 返回值面板 */}
+      {open && (
+        <div className="border-t border-border/60 divide-y divide-border/40">
+          <div className="px-3 py-2">
+            <p className="mb-1 text-[10px] uppercase tracking-widest text-yellow-400/80 font-semibold">LLM 传参 (args)</p>
+            <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-zinc-300 leading-relaxed">
+              {args !== undefined ? JSON.stringify(args, null, 2) : <span className="text-zinc-500 italic">（无参数）</span>}
+            </pre>
+          </div>
+          {!running && (
+            <div className="px-3 py-2">
+              <p className="mb-1 text-[10px] uppercase tracking-widest text-emerald-400/80 font-semibold">工具返回 (result)</p>
+              <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-zinc-300 leading-relaxed">
+                {result !== undefined ? JSON.stringify(result, null, 2) : <span className="text-zinc-500 italic">（等待结果）</span>}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -284,28 +316,34 @@ function WelcomeScreen() {
 // ── Main Thread ───────────────────────────────────────────────────
 export function ChatThread() {
   const agentName = useAgentDisplayName();
+  const isDebug = useDebugMode();
   return (
     <>
-      {/* Register custom tool UIs (renders nothing, hooks into context) */}
-      <RobotStatusToolUI />
-      <CleanRoomsToolUI />
-      <FullCleanToolUI />
-      <PauseToolUI />
-      <ResumeToolUI />
-      <ReturnHomeToolUI />
-      <GetRoomsToolUI />
-      <TakeRobotPhotoToolUI />
-      <MoveCameraMountToolUI />
-      <CenterCameraMountToolUI />
-      <AddTaskToolUI />
-      <ListTasksToolUI />
-      <CleaningHistoryToolUI />
-      <StartExploringToolUI />
-      <StopExploringToolUI />
-      <GetMapStatusToolUI />
-      <GetMapImageToolUI />
-      <OpenCameraStreamToolUI />
-      <CloseCameraStreamToolUI />
+      {/* Debug 模式下跳过所有自定义 Tool UI 注册，由 FallbackToolUI 统一接管 */}
+      {!isDebug && (
+        <>
+          <RobotStatusToolUI />
+          <CleanRoomsToolUI />
+          <FullCleanToolUI />
+          <PauseToolUI />
+          <ResumeToolUI />
+          <ReturnHomeToolUI />
+          <GetRoomsToolUI />
+          <TakeRobotPhotoToolUI />
+          <MoveCameraMountToolUI />
+          <CenterCameraMountToolUI />
+          <AddTaskToolUI />
+          <ListTasksToolUI />
+          <CleaningHistoryToolUI />
+          <StartExploringToolUI />
+          <StopExploringToolUI />
+          <GetMapStatusToolUI />
+          <GetMapImageToolUI />
+          <OpenCameraStreamToolUI />
+          <CloseCameraStreamToolUI />
+          <DrawSceneToolUI />
+        </>
+      )}
 
       <ThreadPrimitive.Root className="flex h-full flex-col bg-zinc-950 group">
         <ThreadPrimitive.Viewport className="flex-1 overflow-y-auto">

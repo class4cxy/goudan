@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { AgentDisplayNameProvider } from "@/components/agent-display-context";
+import { DebugProvider } from "@/components/debug-context";
 import { agentDisplayName } from "@/lib/agent-display";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -16,7 +17,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="zh-CN" className="dark" suppressHydrationWarning>
       <body className="antialiased">
-        <AgentDisplayNameProvider value={displayName}>{children}</AgentDisplayNameProvider>
+        <DebugProvider>
+          <AgentDisplayNameProvider value={displayName}>{children}</AgentDisplayNameProvider>
+        </DebugProvider>
       </body>
     </html>
   );

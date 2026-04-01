@@ -13,6 +13,10 @@ if (process.env.NODE_ENV !== "production") globalForDb._db = db;
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
+// 迁移：为 threads 表追加 token 统计列（旧数据库兼容）
+try { db.exec("ALTER TABLE threads ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0"); } catch { /* 列已存在 */ }
+try { db.exec("ALTER TABLE threads ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0"); } catch { /* 列已存在 */ }
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,6 +134,8 @@ export interface Thread {
   title: string | null;
   created_at: number;
   updated_at: number;
+  input_tokens: number;
+  output_tokens: number;
 }
 
 export interface ConversationChunk {
@@ -260,6 +266,9 @@ export const queries = {
     "UPDATE threads SET updated_at = unixepoch() WHERE id = ?"
   ),
   deleteThread: db.prepare("DELETE FROM threads WHERE id = ?"),
+  addThreadTokens: db.prepare(
+    "UPDATE threads SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ? WHERE id = ?"
+  ),
 
   // Thread messages (full UIMessage[] stored as JSON)
   saveThreadMessages: db.prepare(

@@ -149,8 +149,9 @@ class Odometry:
             self._pose.theta_deg  = (theta_new + 180.0) % 360.0 - 180.0
 
             # 累积 SLAM/AMCL 用的增量
+            # dxy_mm 取绝对值（路程始终为正）；dtheta_deg 保留符号（净旋转，左负右正）
             self._slam_dxy_mm     += abs(dxy_mm)
-            self._slam_dtheta_deg += abs(dtheta_deg)
+            self._slam_dtheta_deg += dtheta_deg
             self._slam_dt_s       += dt
 
     # ─── 公共接口 ─────────────────────────────────────────────────
