@@ -1010,6 +1010,101 @@ async def motor_drive(req: MotorDriveRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/motor/sensor_test")
+async def motor_sensor_test(duration_s: float = 3.0):
+    """
+    传感器诊断接口（不驱动电机，纯数据采集）。
+
+    用法：手动旋转或推动机器车，同时调用此接口，
+    duration_s 秒后返回 IMU 和编码器的原始采样报告。
+
+    重点诊断项：
+      - imu_simulation: true 说明 IMU 未接入或 smbus2 未安装
+      - encoder_simulation: true 说明编码器未接入或 lgpio 未安装
+      - imu_gyro_z_peak: 手动旋转时应有明显数值（>10 °/s）
+      - imu_integrated_deg: 旋转 90° 时应接近 90
+      - encoder_left_ticks / encoder_right_ticks: 推动时应有脉冲变化
+      - encoder_distance_mm: 推动 100mm 时应接近 100
+    """
+    duration_s = max(1.0, min(30.0, duration_s))
+    loop = asyncio.get_running_loop()
+
+    # ── 采样 ────────────────────────────────────────────────────────
+    imu_samples: list[dict] = []
+    enc_left_total  = 0
+    enc_right_total = 0
+    imu_integrated  = 0.0
+    prev_t = loop.time()
+
+    deadline = loop.time() + duration_s
+    while loop.time() < deadline:
+        await asyncio.sleep(0.01)   # 10ms 轮询（100Hz）
+
+        # IMU
+        r = imu.get_latest()
+        now = loop.time()
+        dt  = now - prev_t
+        prev_t = now
+        if r is not None:
+            imu_samples.append({
+                "gyro_z": round(r.gyro_z, 3),
+                "accel_x": round(r.accel_x, 3),
+                "accel_y": round(r.accel_y, 3),
+            })
+            imu_integrated += r.gyro_z * dt   # 有符号积分（正=CCW）
+
+        # 编码器（直接读，不清零 odometry 主循环的计数）
+        # 注意：read_and_reset 会清零，与 odometry 线程竞争，
+        # 这里只读 odometry 的 travel 累计器来估算
+        enc_left_total  = encoder.status.get("ticks_per_rev", 0)   # 仅作配置确认
+
+    # 通过 odometry travel 累计距离
+    traveled_mm = odometry.get_and_reset_travel()
+
+    # ── 汇总 ────────────────────────────────────────────────────────
+    gyro_z_values = [s["gyro_z"] for s in imu_samples]
+    gyro_z_peak   = max((abs(v) for v in gyro_z_values), default=0.0)
+    gyro_z_mean   = sum(gyro_z_values) / len(gyro_z_values) if gyro_z_values else 0.0
+
+    return {
+        "ok": True,
+        "duration_s": round(duration_s, 1),
+        "imu": {
+            "simulation":        imu.is_simulation,
+            "sample_count":      len(imu_samples),
+            "gyro_z_peak_dps":   round(gyro_z_peak, 2),
+            "gyro_z_mean_dps":   round(gyro_z_mean, 3),
+            "gyro_z_bias":       round(imu.status.get("gyro_bias_z", 0), 4),
+            "integrated_deg":    round(imu_integrated, 1),
+            "latest":            imu.status.get("latest"),
+            "diagnosis": (
+                "✅ IMU 正常（有角速度读数）" if gyro_z_peak > 1.0
+                else "⚠️ IMU 读数接近零，请检查：① MPU6050 接线 ② smbus2 安装 ③ I2C 是否启用"
+                if not imu.is_simulation
+                else "❌ IMU 运行在模拟模式（smbus2 未安装或 I2C 硬件不可用）"
+            ),
+        },
+        "encoder": {
+            "simulation":        encoder.is_simulation,
+            "ticks_per_rev":     encoder.status.get("ticks_per_rev"),
+            "gpio_chip":         encoder.status.get("gpio_chip"),
+            "pins":              encoder.status.get("pins"),
+            "traveled_mm":       round(traveled_mm, 1),
+            "diagnosis": (
+                "✅ 编码器正常（检测到位移）" if traveled_mm > 1.0
+                else "⚠️ 编码器无位移读数，请检查：① A/B 相接线 ② lgpio 安装 ③ 是否手动推动了车轮"
+                if not encoder.is_simulation
+                else "❌ 编码器运行在模拟模式（lgpio 未安装或 GPIO 不可用）"
+            ),
+        },
+        "odometry": odometry.status,
+        "instructions": {
+            "imu_test":     f"手动旋转机器车约 90°，{duration_s}s 内完成，查看 integrated_deg 是否接近 90",
+            "encoder_test": f"手动推动机器车约 100mm，{duration_s}s 内完成，查看 traveled_mm 是否接近 100",
+        },
+    }
+
+
 @app.post("/motor/set")
 async def motor_set(req: SetMotorRequest):
     """精细控制单个电机，用于调试或特殊动作。"""
