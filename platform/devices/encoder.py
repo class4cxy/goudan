@@ -19,7 +19,9 @@ lgpio 安装：
   sudo apt install -y python3-lgpio
 
 树莓派 5 GPIO 芯片编号：
-  /dev/gpiochip4（RP1 芯片）—— 脚本自动检测，无需手动配置。
+  lgpio 枚举从 0 开始，RPi5 的 RP1 控制器实测为 gpiochip0（描述含 pinctrl-rp1）。
+  旧版内核/第三方文档可能写作 gpiochip4，但 lgpio API 下编号是 0。
+  脚本自动检测，可通过 GPIO_CHIP_NUM 环境变量手动覆盖。
 """
 
 import os
@@ -115,6 +117,10 @@ class _WheelEncoder:
     _DEBOUNCE_READS = max(1, int(os.environ.get("ENCODER_DEBOUNCE_READS", "1")))
     _DEBOUNCE_DELAY_S = max(0.0, float(os.environ.get("ENCODER_DEBOUNCE_DELAY_US", "20"))) / 1_000_000.0
 
+    # 无跳变时的空闲轮询间隔（100μs）。
+    # 500rpm × 90(减速比) × 4(倍频) / 60 ≈ 3000 ticks/s → 采样需 >6000Hz → 100μs = 10000Hz，不漏脉冲。
+    _IDLE_SLEEP_S = 0.0001
+
     def _poll_loop(self) -> None:
         import lgpio
         while self._running:
@@ -145,6 +151,8 @@ class _WheelEncoder:
                         self._ticks += delta
                 self._prev_a = curr_a
                 self._prev_b = curr_b
+            else:
+                time.sleep(self._IDLE_SLEEP_S)
 
     def stop(self) -> None:
         self._running = False
