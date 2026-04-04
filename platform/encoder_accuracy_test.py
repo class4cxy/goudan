@@ -74,7 +74,7 @@ WHEEL_BASE_MM:   float = 160.0
 # 数据显示右快——数据与现实矛盾，说明右编码器有噪声干扰，数据不可信。
 # 先清零，待 DEBOUNCE_US=3 重测后，按新数据（应与物理观测一致）填入。
 CHASSIS_LEFT_SCALE:  float = 1.0
-CHASSIS_RIGHT_SCALE: float = 1.0
+CHASSIS_RIGHT_SCALE: float = 0.96
 
 # ── 测试参数 ──────────────────────────────────────────────────────────────────
 

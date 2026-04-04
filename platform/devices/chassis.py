@@ -63,10 +63,11 @@ class ChassisConfig:
     # 转向模式：tank=两侧反向差速（默认）；pivot=一侧制动一侧正转
     turn_style: str = "tank"
     # 直线补偿：实测右轮偏快，right_scale = L/R 使右侧 PWM 降档对齐左轮
-    # 实测（DEBOUNCE_US=3，speed=40%）：对称比 0.97+，两侧均衡，无需补偿
-    # ⚠ 不要低于 0.85×speed，否则右电机进入死区导致间歇失速和里程计漂移
+    # 实测（DEBOUNCE_US=3，speed=40%）：L=1506mm R=1571mm → right_scale=1506/1571=0.959
+    # scale=1.0 时左偏（右快）；scale=0.96 补偿后两侧对齐
+    # ⚠ 不要低于 0.85，否则右电机进入死区导致间歇失速和里程计漂移
     left_scale:  float = 1.0
-    right_scale: float = 1.0
+    right_scale: float = 0.96
     # 低速死区补偿：speed>0 时映射到 [min_effective_pwm, 100]（0=禁用）
     min_effective_pwm: int = 0
 
