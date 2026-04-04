@@ -60,20 +60,26 @@ _CHIP_NUM = _detect_gpio_chip()
 
 @dataclass
 class EncoderConfig:
-    """双路编码器 GPIO 引脚配置（BCM 编号）。"""
-    left_a:  int = int(os.environ.get("ENCODER_LEFT_A",   "23"))  # M3 左后 A → GPIO23（Pin 16，扩展板 GP23）
-    left_b:  int = int(os.environ.get("ENCODER_LEFT_B",  "16"))  # M3 左后 B → GPIO16（Pin 36，扩展板 GP16）
-    right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "20"))  # M4 右后 白线A → GPIO20（Pin 38；原 HC-SR04 TRIG，超声波已禁用）
-    right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "21"))  # M4 右后 黄线B → GPIO21（Pin 40；原 HC-SR04 ECHO，超声波已禁用）
-    # 白线→A/黄线→B 为标准接法，right_invert 默认 False；
-    # 若前进时右轮 ticks 为负，再设 ENCODER_RIGHT_INVERT=1 或改 right_invert=True。
-    lines_per_rev:    int  = int(os.environ.get("ENCODER_LINES_PER_REV", "500"))
-    # 极性翻转：前进时 ticks 为负则设为 1（等效于对调 A/B 接线）
-    left_invert:      bool = os.environ.get("ENCODER_LEFT_INVERT",  "0") == "1"
-    right_invert:     bool = os.environ.get("ENCODER_RIGHT_INVERT", "0") == "1"
-    # 去抖参数（测试脚本可直接构造 EncoderConfig 覆盖，无需 .env）
-    debounce_reads:   int  = int(os.environ.get("ENCODER_DEBOUNCE_READS",    "1"))
-    debounce_delay_us: int = int(os.environ.get("ENCODER_DEBOUNCE_DELAY_US", "20"))
+    """双路编码器 GPIO 引脚配置（BCM 编号）。
+
+    所有默认值均为硬编码常量，反映当前实物接线；
+    调用方可在构造时直接传参覆盖，无需依赖环境变量。
+    """
+    # M3 左后轮：白线A → GPIO23（Pin 16），黄线B → GPIO16（Pin 36）
+    left_a:  int = 23
+    left_b:  int = 16
+    # M4 右后轮：白线A → GPIO20（Pin 38），黄线B → GPIO21（Pin 40）
+    # 原 HC-SR04 超声波占用 GPIO20/21，已禁用超声波，改接 M4 编码器
+    right_a: int = 20
+    right_b: int = 21
+    # 编码器标称线数；4 倍频后 ticks/rev = lines_per_rev × 4
+    lines_per_rev: int = 500
+    # 极性翻转：实测 M4 右后轮镜像安装，前进时 ticks 为负，需翻转
+    left_invert:  bool = False
+    right_invert: bool = True
+    # 去抖：连续读 debounce_reads 次确认电平稳定，间隔 debounce_delay_us 微秒
+    debounce_reads:    int = 1
+    debounce_delay_us: int = 20
 
     @property
     def ticks_per_rev(self) -> int:
