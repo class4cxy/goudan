@@ -38,6 +38,10 @@ const CLOSED_LOOP_DEFAULT_SPEED = Number(process.env.CLOSED_LOOP_DEFAULT_SPEED ?
 const CLOSED_LOOP_MAX_SPEED = Number(process.env.CLOSED_LOOP_MAX_SPEED ?? '35')
 /** 未提供距离时的默认点动时长（秒），避免无限持续运动 */
 const OPEN_LOOP_DEFAULT_DURATION_S = Number(process.env.OPEN_LOOP_DEFAULT_DURATION_S ?? '0.8')
+/** 闭环超时控制（秒） */
+const CLOSED_LOOP_TIMEOUT_MAX_S = Number(process.env.CLOSED_LOOP_TIMEOUT_MAX_S ?? '10')
+const CLOSED_LOOP_TIMEOUT_DISTANCE_PER_100MM_S = Number(process.env.CLOSED_LOOP_TIMEOUT_DISTANCE_PER_100MM_S ?? '0.8')
+const CLOSED_LOOP_TIMEOUT_ANGLE_PER_30DEG_S = Number(process.env.CLOSED_LOOP_TIMEOUT_ANGLE_PER_30DEG_S ?? '1.0')
 
 function clampSpeed(v: number): number {
   if (Number.isNaN(v)) return 25
@@ -92,7 +96,7 @@ async function driveClosedLoop(params: {
   angle_deg?: number
   speed: number
   timeout_s?: number
-}): Promise<{ ok: boolean; detail?: string }> {
+}): Promise<{ ok: boolean; detail?: string; raw?: Record<string, unknown> }> {
   const timeout_s = params.timeout_s ?? 30
   try {
     const res = await fetch(`${PLATFORM_URL}/motor/drive`, {
@@ -107,12 +111,28 @@ async function driveClosedLoop(params: {
       // 闭环接口是阻塞的，等待时间 = timeout_s + 5s 余量
       signal: AbortSignal.timeout((timeout_s + 5) * 1000),
     })
-    const data = await res.json() as { ok: boolean; timeout?: boolean }
-    if (data.timeout) return { ok: false, detail: '运动超时，里程计/IMU 可能未正常工作' }
-    return { ok: data.ok }
+    const data = await res.json() as { ok: boolean; timeout?: boolean; traveled_mm?: number; rotated_deg?: number }
+    if (data.timeout) {
+      const traveled = typeof data.traveled_mm === 'number' ? ` traveled=${data.traveled_mm.toFixed(1)}mm` : ''
+      const rotated = typeof data.rotated_deg === 'number' ? ` rotated=${data.rotated_deg.toFixed(1)}deg` : ''
+      return { ok: false, detail: `运动超时(timeout=true)。${traveled}${rotated}，请检查里程计/IMU。`, raw: data as Record<string, unknown> }
+    }
+    return { ok: data.ok, raw: data as Record<string, unknown> }
   } catch (err) {
     return { ok: false, detail: String(err) }
   }
+}
+
+function calcDistanceTimeoutSec(distanceMm: number): number {
+  const estimated = Math.ceil(distanceMm / 100) * CLOSED_LOOP_TIMEOUT_DISTANCE_PER_100MM_S + 4
+  const bounded = Math.max(4, Math.min(CLOSED_LOOP_TIMEOUT_MAX_S, estimated))
+  return Math.ceil(bounded)
+}
+
+function calcAngleTimeoutSec(angleDeg: number): number {
+  const estimated = Math.ceil(angleDeg / 30) * CLOSED_LOOP_TIMEOUT_ANGLE_PER_30DEG_S + 3
+  const bounded = Math.max(4, Math.min(CLOSED_LOOP_TIMEOUT_MAX_S, estimated))
+  return Math.ceil(bounded)
 }
 
 /**
@@ -193,7 +213,7 @@ export const navigateTo = tool({
           const result = await driveClosedLoop({
             angle_deg: signedAngle,
             speed: closedLoopSpeed,
-            timeout_s: Math.ceil(targetAngle / 30) + 5, // 按 30°/s 估算超时
+            timeout_s: calcAngleTimeoutSec(targetAngle),
           })
 
           if (!result.ok) {
@@ -219,7 +239,7 @@ export const navigateTo = tool({
           const result = await driveClosedLoop({
             distance_mm: signedDistance,
             speed: closedLoopSpeed,
-            timeout_s: Math.ceil(inferredDistance / 100) + 10, // 按 100mm/s 估算超时
+            timeout_s: calcDistanceTimeoutSec(inferredDistance),
           })
 
           if (!result.ok) {
