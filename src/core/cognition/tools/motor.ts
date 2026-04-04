@@ -34,10 +34,20 @@ const TURNAROUND_DESTINATIONS = new Set(['掉头', '调头'])
 const MANUAL_DEFAULT_SPEED = Number(process.env.MANUAL_DEFAULT_SPEED ?? process.env.CHASSIS_DEFAULT_SPEED ?? '55')
 /** 闭环控制默认速度（建议低于手动速度，减少打滑和距离误差） */
 const CLOSED_LOOP_DEFAULT_SPEED = Number(process.env.CLOSED_LOOP_DEFAULT_SPEED ?? '25')
+/** 闭环速度上限（防止模型给出过高速度导致打滑放大误差） */
+const CLOSED_LOOP_MAX_SPEED = Number(process.env.CLOSED_LOOP_MAX_SPEED ?? '35')
+/** 未提供距离时的默认点动时长（秒），避免无限持续运动 */
+const OPEN_LOOP_DEFAULT_DURATION_S = Number(process.env.OPEN_LOOP_DEFAULT_DURATION_S ?? '0.8')
 
 function clampSpeed(v: number): number {
   if (Number.isNaN(v)) return 25
   return Math.max(0, Math.min(100, Math.round(v)))
+}
+
+function resolveClosedLoopSpeed(raw: number): number {
+  const s = clampSpeed(raw)
+  const maxS = clampSpeed(CLOSED_LOOP_MAX_SPEED)
+  return Math.min(s, maxS)
 }
 
 function inferMotorCommand(destRaw: string): ActionMotorPayload['command'] | undefined {
@@ -154,7 +164,7 @@ export const navigateTo = tool({
       const dest = destination.trim()
       const motorCommand = inferMotorCommand(dest)
       const manualSpeed = clampSpeed(speed ?? MANUAL_DEFAULT_SPEED)
-      const closedLoopSpeed = clampSpeed(speed ?? CLOSED_LOOP_DEFAULT_SPEED)
+      const closedLoopSpeed = resolveClosedLoopSpeed(speed ?? CLOSED_LOOP_DEFAULT_SPEED)
 
       // 容错：当模型未显式填 distance_mm/angle_deg，但用户在 destination 里说了“1米/90度”时自动提取
       const inferredDistance = distance_mm ?? extractDistanceMmFromText(dest)
@@ -229,20 +239,32 @@ export const navigateTo = tool({
         }
 
         // ── 直行无距离：时间控制（持续运动）────────────────────────
+        const explicitContinuous = /(持续|一直|不停|保持|连续)/.test(dest)
+        const safeDuration = duration ?? OPEN_LOOP_DEFAULT_DURATION_S
         Spine.publish<ActionMotorPayload>({
           type: 'action.motor',
           priority: 'HIGH',
           source: 'brain',
-          payload: { command: motorCommand, speed: manualSpeed, duration },
-          summary: `电机指令：${motorCommand} 速度${manualSpeed}%${duration != null ? ` 持续${duration}s` : ''}`,
+          payload: {
+            command: motorCommand,
+            speed: manualSpeed,
+            // 未明确要求“持续运动”时，默认短时点动，避免长时间失控
+            duration: explicitContinuous ? duration : safeDuration,
+          },
+          summary:
+            `电机指令：${motorCommand} 速度${manualSpeed}%` +
+            `${explicitContinuous ? (duration != null ? ` 持续${duration}s` : ' 持续到停止') : ` 点动${safeDuration}s`}`,
         })
         return {
           success: true,
           mode: 'motor',
           command: motorCommand,
           speed: manualSpeed,
-          duration: duration ?? '持续到下一条指令',
-          message: `已执行：${destination}${duration != null ? `，持续 ${duration} 秒` : ''}`,
+          duration: explicitContinuous ? (duration ?? '持续到下一条指令') : safeDuration,
+          message:
+            explicitContinuous
+              ? `已执行：${destination}${duration != null ? `，持续 ${duration} 秒` : ''}`
+              : `未提供距离，已执行安全点动 ${safeDuration}s（如需持续请说“持续前进”）`,
         }
 
       } else {
