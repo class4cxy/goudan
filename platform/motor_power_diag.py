@@ -5,9 +5,9 @@
 
 用途：
   - 逐个电机测试正转/反转输出能力
-  - 优先使用 /power/status 电流值评估“出力是否明显偏低”
-  - 辅助读取 /motor/sensor_test 的 traveled_mm（仅后轮编码器有参考意义）
-  - 快速定位“个别电机无力/不转/方向异常”
+  - 以 /motor/sensor_test 的 traveled_mm 作为后轮可量化指标
+  - /power/status 电流仅作参考（电流大小不等于输出强弱）
+  - 快速定位“后轮左右不平衡 / 方向异常”
 
 说明：
   - 该脚本不直接占用 GPIO，只调用 platform HTTP API
@@ -166,7 +166,7 @@ def print_row(r: MotorDiagRow, ref_current: float, ref_travel: float, use_curren
     ratio_current = (r.current_delta_ma / ref_current * 100.0) if (use_current and ref_current > 1e-9) else 0.0
     ratio_travel = (r.traveled_mm / ref_travel * 100.0) if ref_travel > 1e-9 else 0.0
     if use_current:
-        flag = "⚠️电流偏低" if ref_current > 1e-9 and ratio_current < 65.0 else "OK"
+        flag = "ℹ️电流参考"
     else:
         flag = "ℹ️电流无效"
     print(
@@ -212,27 +212,27 @@ def main() -> int:
     ref_current = max((r.current_delta_ma for r in valid_current_rows), default=0.0)
     ref_travel = max((r.traveled_mm for r in ok_rows), default=0.0)
     if use_current:
-        print("\n结果（主指标=电流增量 ΔI，与最大值对比）：")
+        print("\n结果（主指标=traveled，电流仅参考）：")
     else:
-        print("\n结果（电流指标无效，回退展示 traveled 辅助指标）：")
+        print("\n结果（主指标=traveled，电流指标无效）：")
         print("提示：/power/status 更新太慢或无新样本，请提高 POWER_POLL_INTERVAL 频率后重测。")
     print("   position direction | metrics")
     for r in rows:
         print_row(r, ref_current, ref_travel, use_current)
 
-    weak = (
-        [r for r in valid_current_rows if ref_current > 1e-9 and (r.current_delta_ma / ref_current) < 0.65]
-        if use_current else []
-    )
+    # 只对后轮做“可量化无力”判断（因为当前仅后轮编码器参与里程计）
+    rear_rows = [r for r in ok_rows if r.position in ("rear_left", "rear_right")]
+    rear_ref_travel = max((r.traveled_mm for r in rear_rows), default=0.0)
+    weak = [r for r in rear_rows if rear_ref_travel > 1e-9 and (r.traveled_mm / rear_ref_travel) < 0.70]
     print("\n结论：")
     if not weak:
-        print("✅ 未发现明显无力电机（<65% 阈值）。")
+        print("✅ 后轮未发现明显无力（traveled <70% 阈值）。")
     else:
-        print("⚠️ 疑似无力电机：")
+        print("⚠️ 疑似后轮无力/方向异常：")
         for r in weak:
-            print(f"  - {r.position}/{r.direction}  ΔI={r.current_delta_ma:.0f}mA")
+            print(f"  - {r.position}/{r.direction}  traveled={r.traveled_mm:.1f}mm")
         print("建议：检查对应电机接线、驱动口、齿轮箱阻力，必要时互换驱动口复测。")
-        print("注：travel 指标仅对后轮编码器更敏感，前轮低值不一定代表无力。")
+    print("注：前轮因无编码器，无法通过 traveled 量化强弱；电流仅参考，不作为无力判据。")
     return 0
 
 
