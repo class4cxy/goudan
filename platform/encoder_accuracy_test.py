@@ -64,6 +64,13 @@ WHEEL_RADIUS_MM: float = 34.0
 # 两驱动轮（后轮）中心间距（mm）。用卡尺量后轮轮胎中心到中心的距离。
 WHEEL_BASE_MM:   float = 160.0
 
+# ── 底盘补偿参数 ──────────────────────────────────────────────────────────────
+# 左右轮速度补偿（0.5–1.5）。用于抵消电机个体差异导致的跑偏。
+# 实测第一次干净数据：L=474.9mm R=556.7mm → right_scale = 474.9/556.7 = 0.853
+# ⚠ scale 过低（如 0.71）会导致电机死区熄火，需保证 MOTOR_SPEED×scale > 死区阈值
+CHASSIS_LEFT_SCALE:  float = 1.0
+CHASSIS_RIGHT_SCALE: float = 0.85
+
 # ── 测试参数 ──────────────────────────────────────────────────────────────────
 
 # 目标行驶距离（mm）。正数=前进，负数=后退。
@@ -218,7 +225,7 @@ def main() -> int:
     # 导入放在函数内，避免模块级 env 读取干扰 EncoderConfig 默认值
     try:
         from devices.encoder import Encoder, EncoderConfig
-        from devices.chassis import Chassis, DEFAULT_CONFIG
+        from devices.chassis import Chassis, ChassisConfig, DEFAULT_CONFIG
         from odometry import Odometry, OdometryConfig
     except ImportError as e:
         print(f"❌ 导入失败：{e}")
@@ -270,8 +277,21 @@ def main() -> int:
             encoder.stop()
         return 0
 
-    chassis = Chassis(DEFAULT_CONFIG)
-    print(f"✓ 底盘    {'模拟' if chassis.is_simulation else 'GPIO 真实'}")
+    # 用顶部常量覆盖默认补偿，避免 chassis.py 默认值影响测试结果
+    chassis_cfg = ChassisConfig(
+        front_left  = DEFAULT_CONFIG.front_left,
+        front_right = DEFAULT_CONFIG.front_right,
+        rear_left   = DEFAULT_CONFIG.rear_left,
+        rear_right  = DEFAULT_CONFIG.rear_right,
+        default_speed     = DEFAULT_CONFIG.default_speed,
+        turn_style        = DEFAULT_CONFIG.turn_style,
+        left_scale        = CHASSIS_LEFT_SCALE,
+        right_scale       = CHASSIS_RIGHT_SCALE,
+        min_effective_pwm = DEFAULT_CONFIG.min_effective_pwm,
+    )
+    chassis = Chassis(chassis_cfg)
+    print(f"✓ 底盘    {'模拟' if chassis.is_simulation else 'GPIO 真实'}"
+          f"  左右补偿={CHASSIS_LEFT_SCALE:.2f}/{CHASSIS_RIGHT_SCALE:.2f}")
 
     _sep("═")
     print(f"测试参数：{TARGET_DISTANCE_MM:+.0f}mm  speed={MOTOR_SPEED}%"

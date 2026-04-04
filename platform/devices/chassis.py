@@ -63,9 +63,10 @@ class ChassisConfig:
     # 转向模式：tank=两侧反向差速（默认）；pivot=一侧制动一侧正转
     turn_style: str = "tank"
     # 直线补偿：实测右轮偏快，right_scale = L/R 使右侧 PWM 降档对齐左轮
-    # 调整依据：encoder_accuracy_test.py 实测 L=424.4mm R=593.6mm → scale=424.4/593.6=0.71
+    # 调整依据：encoder_accuracy_test.py 实测 L=474.9mm R=556.7mm → scale=474.9/556.7=0.853
+    # ⚠ 不要低于 0.80，否则低速档右电机会进入死区（30%×0.80=24%，接近失速阈值）
     left_scale:  float = 1.0
-    right_scale: float = 0.71
+    right_scale: float = 0.85
     # 低速死区补偿：speed>0 时映射到 [min_effective_pwm, 100]（0=禁用）
     min_effective_pwm: int = 0
 
