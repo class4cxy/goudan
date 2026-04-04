@@ -16,26 +16,39 @@
 
 import time
 import sys
-import os
 
-# 引脚配置（与 encoder.py 默认值一致，可通过环境变量覆盖）
-LEFT_A  = int(os.environ.get("ENCODER_LEFT_A",   "23"))
-LEFT_B  = int(os.environ.get("ENCODER_LEFT_B",   "16"))
-RIGHT_A = int(os.environ.get("ENCODER_RIGHT_A",  "14"))
-RIGHT_B = int(os.environ.get("ENCODER_RIGHT_B",  "18"))
+# ══════════════════════════════════════════════════════════════════════════════
+# 硬件配置（修改这里，不依赖 .env）
+# ══════════════════════════════════════════════════════════════════════════════
 
-PINS = {
-    "L_A": LEFT_A,
-    "L_B": LEFT_B,
-    "R_A": RIGHT_A,
-    "R_B": RIGHT_B,
-}
+# 编码器 GPIO 引脚（BCM 编号）
+# 左后轮（M3）：A→GPIO23（Pin 16），B→GPIO16（Pin 36）
+LEFT_A  = 23
+LEFT_B  = 16
+# 右后轮（M4）：A→GPIO14（Pin 8，UART TX 已释放），B→GPIO18（Pin 12）
+RIGHT_A = 14
+RIGHT_B = 18
 
-# 轮子参数
-TICKS_PER_REV = int(os.environ.get("ENCODER_LINES_PER_REV", "500")) * 4
-WHEEL_CIRC_MM = 3.14159 * float(os.environ.get("ODOM_WHEEL_RADIUS_MM", "34.0")) * 2
+# 编码器标称线数（4 倍频后 ticks/rev = LINES_PER_REV × 4）
+LINES_PER_REV = 500
 
-REPORT_INTERVAL = 1.0   # 每秒打印一次统计
+# 轮子半径（mm），用于换算 mm/s 速度显示
+WHEEL_RADIUS_MM = 34.0
+
+# 噪声判定阈值（transitions/s per pin）
+# 静止时超过此值视为噪声；正常行驶时会远超此值（属于真实信号）
+NOISE_THRESHOLD = 50
+
+# 每秒打印一次统计
+REPORT_INTERVAL = 1.0
+
+# ══════════════════════════════════════════════════════════════════════════════
+
+import math
+
+PINS = {"L_A": LEFT_A, "L_B": LEFT_B, "R_A": RIGHT_A, "R_B": RIGHT_B}
+TICKS_PER_REV = LINES_PER_REV * 4
+WHEEL_CIRC_MM = 2.0 * math.pi * WHEEL_RADIUS_MM
 
 
 def detect_chip() -> int:
@@ -52,6 +65,9 @@ def detect_chip() -> int:
     except Exception:
         pass
     return 0
+
+
+
 
 
 def run():
@@ -140,9 +156,7 @@ def run():
                 left_mm_s  = (left_ticks  / TICKS_PER_REV) * WHEEL_CIRC_MM / elapsed_interval
                 right_mm_s = (right_ticks / TICKS_PER_REV) * WHEEL_CIRC_MM / elapsed_interval
 
-                # 噪声判断
-                noise_threshold = 50  # transitions/s per pin → 低于此值才正常
-                any_noise = any(rates[n] > noise_threshold for n in PINS)
+                any_noise = any(rates[n] > NOISE_THRESHOLD for n in PINS)
                 status = "🔴 噪声严重" if any_noise else "🟢 信号正常"
 
                 print(

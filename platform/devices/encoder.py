@@ -65,11 +65,13 @@ class EncoderConfig:
     left_b:  int = int(os.environ.get("ENCODER_LEFT_B",  "16"))  # M3 左后 B → GPIO16（Pin 36，扩展板 GP16）
     right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "14"))  # M4 右后 A → GPIO14（Pin 8，UART TX，控制台已移除）
     right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "18"))  # M4 右后 B → GPIO18（Pin 12，空闲；⚠️ GPIO17=蜂鸣器禁用）
-    lines_per_rev: int = int(os.environ.get("ENCODER_LINES_PER_REV", "500"))
+    lines_per_rev:    int  = int(os.environ.get("ENCODER_LINES_PER_REV", "500"))
     # 极性翻转：前进时 ticks 为负则设为 1（等效于对调 A/B 接线）
-    # 可通过 ENCODER_LEFT_INVERT=1 / ENCODER_RIGHT_INVERT=1 启用
-    left_invert:  bool = os.environ.get("ENCODER_LEFT_INVERT",  "0") == "1"
-    right_invert: bool = os.environ.get("ENCODER_RIGHT_INVERT", "0") == "1"
+    left_invert:      bool = os.environ.get("ENCODER_LEFT_INVERT",  "0") == "1"
+    right_invert:     bool = os.environ.get("ENCODER_RIGHT_INVERT", "0") == "1"
+    # 去抖参数（测试脚本可直接构造 EncoderConfig 覆盖，无需 .env）
+    debounce_reads:   int  = int(os.environ.get("ENCODER_DEBOUNCE_READS",    "1"))
+    debounce_delay_us: int = int(os.environ.get("ENCODER_DEBOUNCE_DELAY_US", "20"))
 
     @property
     def ticks_per_rev(self) -> int:
@@ -85,11 +87,21 @@ class _WheelEncoder:
     handle 时 callback 不触发的问题（树莓派 5 实测确认）。
     """
 
-    def __init__(self, h: int, pin_a: int, pin_b: int, invert: bool = False) -> None:
+    def __init__(
+        self,
+        h: int,
+        pin_a: int,
+        pin_b: int,
+        invert: bool = False,
+        debounce_reads: int = 1,
+        debounce_delay_us: int = 20,
+    ) -> None:
         self._h       = h
         self._pin_a   = pin_a
         self._pin_b   = pin_b
-        self._invert  = invert       # True=前进时脉冲为负，自动取反修正
+        self._invert  = invert
+        self._debounce_reads   = max(1, debounce_reads)
+        self._debounce_delay_s = max(0.0, debounce_delay_us) / 1_000_000.0
         self._lock    = threading.Lock()
         self._ticks         = 0     # 消耗性计数（read_and_reset 用）
         self._total_ticks   = 0     # 非消耗性累计（get_cumulative 用，仅增不减）
@@ -115,14 +127,6 @@ class _WheelEncoder:
         )
         self._thread.start()
 
-    # 去抖动：检测到跳变后，再读 N 次确认状态稳定才计数。
-    # 通过环境变量可调：
-    #   ENCODER_DEBOUNCE_READS（默认 1）
-    #   ENCODER_DEBOUNCE_DELAY_US（默认 20μs）
-    # 注：旧配置 3x50μs（150μs）在高速时会吞掉真实脉冲，导致里程严重低估。
-    _DEBOUNCE_READS = max(1, int(os.environ.get("ENCODER_DEBOUNCE_READS", "1")))
-    _DEBOUNCE_DELAY_S = max(0.0, float(os.environ.get("ENCODER_DEBOUNCE_DELAY_US", "20"))) / 1_000_000.0
-
     # 无跳变时的空闲轮询间隔（100μs）。
     # 500rpm × 90(减速比) × 4(倍频) / 60 ≈ 3000 ticks/s → 采样需 >6000Hz → 100μs = 10000Hz，不漏脉冲。
     _IDLE_SLEEP_S = 0.0001
@@ -135,8 +139,8 @@ class _WheelEncoder:
             if curr_a != self._prev_a or curr_b != self._prev_b:
                 # 去抖：重复读取确认电平稳定，排除 PWM 噪声毛刺
                 stable = True
-                for _ in range(self._DEBOUNCE_READS):
-                    time.sleep(self._DEBOUNCE_DELAY_S)
+                for _ in range(self._debounce_reads):
+                    time.sleep(self._debounce_delay_s)
                     if (lgpio.gpio_read(self._h, self._pin_a) != curr_a or
                             lgpio.gpio_read(self._h, self._pin_b) != curr_b):
                         stable = False
@@ -223,10 +227,14 @@ class Encoder:
             self._left  = _WheelEncoder(
                 self._h, self._cfg.left_a,  self._cfg.left_b,
                 invert=self._cfg.left_invert,
+                debounce_reads=self._cfg.debounce_reads,
+                debounce_delay_us=self._cfg.debounce_delay_us,
             )
             self._right = _WheelEncoder(
                 self._h, self._cfg.right_a, self._cfg.right_b,
                 invert=self._cfg.right_invert,
+                debounce_reads=self._cfg.debounce_reads,
+                debounce_delay_us=self._cfg.debounce_delay_us,
             )
             self._left.start()
             self._right.start()
