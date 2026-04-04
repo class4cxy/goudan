@@ -21,7 +21,6 @@ Odometry — 差速轮式里程计
 """
 
 import math
-import os
 import threading
 import time
 import logging
@@ -32,10 +31,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class OdometryConfig:
-    wheel_radius_mm: float = float(os.environ.get("ODOM_WHEEL_RADIUS_MM", "34.0"))
-    wheel_base_mm:   float = float(os.environ.get("ODOM_WHEEL_BASE_MM",  "160.0"))
-    imu_weight:      float = float(os.environ.get("ODOM_IMU_WEIGHT",       "0.3"))
-    update_hz:       int   = int(os.environ.get("ODOM_UPDATE_HZ",          "50"))
+    # 轮子半径：卡尺实测直径 68mm → 半径 34mm
+    wheel_radius_mm: float = 34.0
+    # 两驱动轮（后轮）中心间距：卡尺实测后填入
+    wheel_base_mm:   float = 160.0
+    # IMU 融合权重：0.0=纯编码器，1.0=纯IMU；IMU 不可用时自动降级到纯编码器
+    imu_weight:      float = 0.3
+    # 里程计更新频率（Hz）
+    update_hz:       int   = 50
 
 
 @dataclass

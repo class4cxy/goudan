@@ -30,18 +30,31 @@ const MOTION_COMMANDS: Record<string, ActionMotorPayload['command']> = {
 // 掉头/调头 → 180°
 const TURNAROUND_DESTINATIONS = new Set(['掉头', '调头'])
 
-/** 语音/手动控制默认速度（0–100） */
-const MANUAL_DEFAULT_SPEED = Number(process.env.MANUAL_DEFAULT_SPEED ?? process.env.CHASSIS_DEFAULT_SPEED ?? '55')
-/** 闭环控制默认速度（建议低于手动速度，减少打滑和距离误差） */
-const CLOSED_LOOP_DEFAULT_SPEED = Number(process.env.CLOSED_LOOP_DEFAULT_SPEED ?? '25')
-/** 闭环速度上限（防止模型给出过高速度导致打滑放大误差） */
-const CLOSED_LOOP_MAX_SPEED = Number(process.env.CLOSED_LOOP_MAX_SPEED ?? '35')
-/** 未提供距离时的默认点动时长（秒），避免无限持续运动 */
-const OPEN_LOOP_DEFAULT_DURATION_S = Number(process.env.OPEN_LOOP_DEFAULT_DURATION_S ?? '0.8')
-/** 闭环超时控制（秒） */
-const CLOSED_LOOP_TIMEOUT_MAX_S = Number(process.env.CLOSED_LOOP_TIMEOUT_MAX_S ?? '10')
-const CLOSED_LOOP_TIMEOUT_DISTANCE_PER_100MM_S = Number(process.env.CLOSED_LOOP_TIMEOUT_DISTANCE_PER_100MM_S ?? '0.8')
-const CLOSED_LOOP_TIMEOUT_ANGLE_PER_30DEG_S = Number(process.env.CLOSED_LOOP_TIMEOUT_ANGLE_PER_30DEG_S ?? '1.0')
+// ── 运动控制常量（直接修改此处，不依赖 env）─────────────────────────────────
+
+/** 语音/手动点动默认速度（0–100） */
+const MANUAL_DEFAULT_SPEED = 55
+
+/** 闭环控制默认速度。校准条件：DEBOUNCE_US=3，该速度下编码器稳定，实测约 350mm/s */
+const CLOSED_LOOP_DEFAULT_SPEED = 40
+
+/** 闭环速度上限，与校准速度对齐；超出会导致 EMF 噪声加剧，编码器漏脉冲增多 */
+const CLOSED_LOOP_MAX_SPEED = 40
+
+/** 无距离直行时的安全点动时长（秒），避免持续运动失控 */
+const OPEN_LOOP_DEFAULT_DURATION_S = 0.8
+
+/** 闭环超时硬上限（秒）。偶发漏脉冲时机器人会跑超，此值防止卡死等待 */
+const CLOSED_LOOP_TIMEOUT_MAX_S = 90
+
+/**
+ * 每 100mm 目标距离分配的超时时长（秒）。
+ * 实测 40% 速约 350mm/s，100mm 约 0.3s，×2.5 余量 = 0.8s/100mm
+ */
+const CLOSED_LOOP_TIMEOUT_DISTANCE_PER_100MM_S = 0.8
+
+/** 每 30° 转向分配的超时时长（秒） */
+const CLOSED_LOOP_TIMEOUT_ANGLE_PER_30DEG_S = 3.0
 
 function clampSpeed(v: number): number {
   if (Number.isNaN(v)) return 25

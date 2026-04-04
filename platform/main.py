@@ -144,6 +144,7 @@ cam = Camera(CaptureConfig(
 ))
 
 # ── 编码器 + IMU + 里程计 ─────────────────────────────────────────
+# EncoderConfig / OdometryConfig 默认值已硬编码（不再读 env），修改参数请直接改对应 dataclass
 encoder  = Encoder()
 imu      = Imu()
 odometry = Odometry(encoder, imu)
