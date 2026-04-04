@@ -6,8 +6,10 @@
 流程：
 1) 输入目标距离（支持 1000 / 1000mm / 100cm / 1m，负数表示后退）
 2) 调用 /motor/drive 执行
-3) 你用尺子测“实际走了多少”，回填结果
-4) 脚本输出误差并给出 ENCODER_LINES_PER_REV 建议值
+3) 你用尺子测"实际走了多少"，回填结果
+4) 脚本根据当前运动模式给出校准建议：
+   - 时间模式（DRIVE_SPEED_MM_PER_SEC > 0）：建议新的 DRIVE_SPEED_MM_PER_SEC
+   - 编码器模式（DRIVE_SPEED_MM_PER_SEC = 0）：建议新的 ENCODER_LINES_PER_REV
 """
 
 from __future__ import annotations
@@ -55,17 +57,23 @@ def parse_distance_mm(text: str) -> float:
 def main() -> int:
     parser = argparse.ArgumentParser(description="距离单项测试入口")
     parser.add_argument("--base-url", default="http://localhost:8001")
-    parser.add_argument("--speed", type=int, default=35)
-    parser.add_argument("--timeout-s", type=float, default=25.0)
+    parser.add_argument("--speed", type=int, default=25)
+    parser.add_argument("--timeout-s", type=float, default=60.0)
     parser.add_argument(
         "--lines-per-rev",
         type=float,
         default=float(os.environ.get("ENCODER_LINES_PER_REV", "500")),
     )
+    parser.add_argument(
+        "--speed-mm-per-sec",
+        type=float,
+        default=float(os.environ.get("DRIVE_SPEED_MM_PER_SEC", "0")),
+    )
     parser.add_argument("--target-mm", type=float, default=None)
     args = parser.parse_args()
 
     speed = max(0, min(100, args.speed))
+    time_mode = args.speed_mm_per_sec > 0
 
     try:
         if args.target_mm is None:
@@ -74,20 +82,27 @@ def main() -> int:
         else:
             target_mm = float(args.target_mm)
 
-        print(f"\n执行中：target={target_mm:.1f}mm speed={speed} timeout={args.timeout_s}s")
+        if time_mode:
+            print(f"\n当前模式：时间标定（DRIVE_SPEED_MM_PER_SEC={args.speed_mm_per_sec:.1f}mm/s）")
+            estimated_s = abs(target_mm) / args.speed_mm_per_sec
+            print(f"执行中：target={target_mm:.1f}mm speed={speed} 预计时长={estimated_s:.1f}s")
+        else:
+            print(f"\n当前模式：编码器闭环（timeout={args.timeout_s}s）")
+            print(f"执行中：target={target_mm:.1f}mm speed={speed} timeout={args.timeout_s}s")
+
         res = post_json(
             f"{args.base_url}/motor/drive",
             {"distance_mm": target_mm, "speed": speed, "timeout_s": args.timeout_s},
-            timeout_s=args.timeout_s + 10,
+            timeout_s=max(args.timeout_s, abs(target_mm) / max(args.speed_mm_per_sec, 1)) + 10,
         )
         print("接口返回：", json.dumps(res, ensure_ascii=False))
         drive_timeout = bool(res.get("timeout", False))
         traveled_mm = float(res.get("traveled_mm", 0.0))
+        sensor = res.get("sensor", "")
 
         measured = input("\n请输入尺子实测距离（同样支持 mm/cm/m，保持方向符号）: ").strip()
         measured_mm = parse_distance_mm(measured)
 
-        sign = 1.0 if target_mm >= 0 else -1.0
         target_abs = abs(target_mm)
         actual_abs = abs(measured_mm)
         signed_error = measured_mm - target_mm
@@ -97,19 +112,31 @@ def main() -> int:
         print(f"目标: {target_mm:.1f} mm")
         print(f"实测: {measured_mm:.1f} mm")
         print(f"误差: {signed_error:+.1f} mm ({error_pct:+.1f}%)")
-        print(f"闭环里程读数: {traveled_mm:.1f} mm, timeout={drive_timeout}")
 
-        if drive_timeout:
-            print("⚠️ 本次为超时停车（timeout=true），不应据此校准 ENCODER_LINES_PER_REV。")
-            print("请先修复里程计读数链路，再做参数标定。")
-        elif actual_abs > 1e-6:
-            # 基于“目标距离 / 实测距离”给出编码器线数建议
-            # 走得少（actual<target）→ lines_per_rev 应增大
-            suggested = args.lines_per_rev * (target_abs / actual_abs)
-            print(f"建议 ENCODER_LINES_PER_REV: {suggested:.0f} (当前 {args.lines_per_rev:.0f})")
-            print("应用公式: 新值 = 旧值 × (目标距离 / 实测距离)")
+        if sensor == "time_calibrated":
+            # 时间模式校准
+            if actual_abs > 1e-6:
+                suggested = args.speed_mm_per_sec * (actual_abs / target_abs)
+                print(f"\n【时间模式校准】")
+                print(f"当前 DRIVE_SPEED_MM_PER_SEC: {args.speed_mm_per_sec:.1f}")
+                print(f"建议 DRIVE_SPEED_MM_PER_SEC: {suggested:.1f}")
+                print("应用公式: 新值 = 旧值 × (实测距离 / 目标距离)")
+                print(f"\n更新 .env 后重启 platform：")
+                print(f"  DRIVE_SPEED_MM_PER_SEC={suggested:.1f}")
+            else:
+                print("实测距离为 0，无法计算建议值。")
         else:
-            print("实测距离为 0，无法计算建议值。")
+            # 编码器模式校准
+            print(f"闭环里程读数: {traveled_mm:.1f} mm, timeout={drive_timeout}")
+            if drive_timeout:
+                print("⚠️ 本次为超时停车（timeout=true），编码器严重噪声，建议切换时间模式：")
+                print("  在 .env 中设置 DRIVE_SPEED_MM_PER_SEC=<实测速度> 后重启")
+            elif actual_abs > 1e-6:
+                suggested = args.lines_per_rev * (target_abs / actual_abs)
+                print(f"建议 ENCODER_LINES_PER_REV: {suggested:.0f} (当前 {args.lines_per_rev:.0f})")
+                print("应用公式: 新值 = 旧值 × (目标距离 / 实测距离)")
+            else:
+                print("实测距离为 0，无法计算建议值。")
         return 0
     except KeyboardInterrupt:
         print("\n已取消。")
@@ -123,4 +150,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

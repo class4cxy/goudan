@@ -896,13 +896,15 @@ async def motor_command(req: MotorCommandRequest):
 @app.post("/motor/drive")
 async def motor_drive(req: MotorDriveRequest):
     """
-    闭环精确运动接口。
+    运动接口，支持两种模式（通过 .env 切换）：
 
-    - distance_mm: 编码器路程闭环前进/后退（直接累计轮子走的路程，避免位置积分误差）
-    - angle_deg:   原始 IMU 陀螺仪闭环转向（直接积分 gyro_z，绕开 wheel_base 误差）
+    编码器/IMU 闭环（默认，DRIVE_SPEED_MM_PER_SEC=0 / DRIVE_TURN_DEG_PER_SEC=0）：
+    - distance_mm: 编码器路程积累，达到目标距离停止
+    - angle_deg:   IMU 陀螺仪积分，达到目标角度停止
 
-    两者互斥，同时传入时以 distance_mm 优先。
-    speed 为电机功率（0–100），timeout_s 为安全超时（传感器失效时兜底停止）。
+    时间标定控制（编码器 EMF 噪声严重时的临时方案）：
+    - DRIVE_SPEED_MM_PER_SEC > 0: duration = target_mm / speed_mm_per_sec
+    - DRIVE_TURN_DEG_PER_SEC > 0: duration = target_deg / turn_deg_per_sec
     """
     if req.distance_mm is None and req.angle_deg is None:
         raise HTTPException(status_code=400, detail="distance_mm 和 angle_deg 至少提供一个")
@@ -910,100 +912,135 @@ async def motor_drive(req: MotorDriveRequest):
     speed = max(0, min(100, req.speed))
     loop = asyncio.get_running_loop()
 
+    # 时间标定参数（0 = 保持传感器闭环）
+    _drive_speed_mm_s = float(os.environ.get("DRIVE_SPEED_MM_PER_SEC", "0"))
+    _turn_deg_s = float(os.environ.get("DRIVE_TURN_DEG_PER_SEC", "0"))
+
     try:
         if req.distance_mm is not None:
-            # ── 编码器路程闭环直行 ──────────────────────────────────────
-            # 使用 odometry._travel_mm 累计器：直接累加 |dxy_mm|，不做位置积分，
-            # 避免曲线路径导致欧式位移远小于实际路程的问题。
             target_mm = abs(req.distance_mm)
             direction = "forward" if req.distance_mm >= 0 else "backward"
 
-            odometry.get_and_reset_travel()   # 清零，开始计数
-            chassis._dispatch(direction, speed)
+            if _drive_speed_mm_s > 0:
+                # ── 时间标定控制（编码器 EMF 噪声临时方案）─────────────
+                duration_s = target_mm / _drive_speed_mm_s
+                chassis._dispatch(direction, speed)
+                await asyncio.sleep(duration_s)
+                chassis.stop()
+                logger.info(
+                    "[Drive] 直行完成（时间模式）：目标=%.0fmm 时长=%.2fs speed_calib=%.1fmm/s",
+                    req.distance_mm, duration_s, _drive_speed_mm_s,
+                )
+                return {
+                    "ok": True,
+                    "mode": "distance_time",
+                    "target_mm": req.distance_mm,
+                    "duration_s": round(duration_s, 2),
+                    "timeout": False,
+                    "sensor": "time_calibrated",
+                }
+            else:
+                # ── 编码器路程闭环直行 ──────────────────────────────────
+                odometry.get_and_reset_travel()
+                chassis._dispatch(direction, speed)
 
-            deadline = loop.time() + req.timeout_s
-            traveled = 0.0
-            while loop.time() < deadline:
-                await asyncio.sleep(0.02)
-                traveled += odometry.get_and_reset_travel()
-                if traveled >= target_mm:
-                    break
+                deadline = loop.time() + req.timeout_s
+                traveled = 0.0
+                while loop.time() < deadline:
+                    await asyncio.sleep(0.02)
+                    traveled += odometry.get_and_reset_travel()
+                    if traveled >= target_mm:
+                        break
 
-            chassis.stop()
-            timed_out = loop.time() >= deadline
-            logger.info(
-                "[Drive] 直行完成：目标=%.0fmm 实际=%.0fmm timeout=%s",
-                req.distance_mm, traveled, timed_out,
-            )
-            return {
-                "ok": True,
-                "mode": "distance",
-                "target_mm": req.distance_mm,
-                "traveled_mm": round(traveled, 1),
-                "timeout": timed_out,
-                "sensor": "encoder_odometry",
-            }
+                chassis.stop()
+                timed_out = loop.time() >= deadline
+                logger.info(
+                    "[Drive] 直行完成：目标=%.0fmm 实际=%.0fmm timeout=%s",
+                    req.distance_mm, traveled, timed_out,
+                )
+                return {
+                    "ok": True,
+                    "mode": "distance",
+                    "target_mm": req.distance_mm,
+                    "traveled_mm": round(traveled, 1),
+                    "timeout": timed_out,
+                    "sensor": "encoder_odometry",
+                }
 
         else:
-            # ── 原始 IMU 陀螺仪闭环转向 ────────────────────────────────
-            # 直接积分 imu.get_latest().gyro_z（°/s），绕开 wheel_base、
-            # 编码器分辨率、里程计融合等所有中间环节，精度仅取决于陀螺仪本身。
             target_deg = abs(req.angle_deg)
             direction = "turn_left" if req.angle_deg >= 0 else "turn_right"
 
-            # 检查 IMU 是否可用，降级回 odometry theta 方案
-            use_raw_imu = (not imu.is_simulation) and (imu.get_latest() is not None)
-
-            chassis._dispatch(direction, speed)
-            deadline = loop.time() + req.timeout_s
-            accumulated = 0.0
-
-            if use_raw_imu:
-                # 原始 IMU 积分（10ms 轮询，精度优先）
-                prev_t = loop.time()
-                while loop.time() < deadline:
-                    await asyncio.sleep(0.01)
-                    reading = imu.get_latest()
-                    if reading is None:
-                        continue
-                    now = loop.time()
-                    dt = now - prev_t
-                    prev_t = now
-                    accumulated += abs(reading.gyro_z) * dt
-                    if accumulated >= target_deg:
-                        break
+            if _turn_deg_s > 0:
+                # ── 时间标定转向（IMU 不可用时的临时方案）──────────────
+                duration_s = target_deg / _turn_deg_s
+                chassis._dispatch(direction, speed)
+                await asyncio.sleep(duration_s)
+                chassis.stop()
+                logger.info(
+                    "[Drive] 转向完成（时间模式）：目标=%.0f° 时长=%.2fs turn_calib=%.1fdeg/s",
+                    req.angle_deg, duration_s, _turn_deg_s,
+                )
+                return {
+                    "ok": True,
+                    "mode": "angle_time",
+                    "target_deg": req.angle_deg,
+                    "duration_s": round(duration_s, 2),
+                    "timeout": False,
+                    "sensor": "time_calibrated",
+                }
             else:
-                # 降级：odometry theta 增量（IMU 不可用时）
-                logger.warning("[Drive] IMU 不可用，降级为 odometry theta 闭环")
-                prev_theta = odometry.get_pose().theta_deg
-                while loop.time() < deadline:
-                    await asyncio.sleep(0.02)
-                    curr_theta = odometry.get_pose().theta_deg
-                    delta = curr_theta - prev_theta
-                    if delta > 180:
-                        delta -= 360
-                    elif delta < -180:
-                        delta += 360
-                    accumulated += abs(delta)
-                    prev_theta = curr_theta
-                    if accumulated >= target_deg:
-                        break
+                # ── 原始 IMU 陀螺仪闭环转向 ────────────────────────────
+                use_raw_imu = (not imu.is_simulation) and (imu.get_latest() is not None)
 
-            chassis.stop()
-            timed_out = loop.time() >= deadline
-            logger.info(
-                "[Drive] 转向完成：目标=%.0f° 实际=%.1f° timeout=%s sensor=%s",
-                req.angle_deg, accumulated, timed_out,
-                "raw_imu" if use_raw_imu else "odometry_theta",
-            )
-            return {
-                "ok": True,
-                "mode": "angle",
-                "target_deg": req.angle_deg,
-                "rotated_deg": round(accumulated, 1),
-                "timeout": timed_out,
-                "sensor": "raw_imu" if use_raw_imu else "odometry_theta",
-            }
+                chassis._dispatch(direction, speed)
+                deadline = loop.time() + req.timeout_s
+                accumulated = 0.0
+
+                if use_raw_imu:
+                    prev_t = loop.time()
+                    while loop.time() < deadline:
+                        await asyncio.sleep(0.01)
+                        reading = imu.get_latest()
+                        if reading is None:
+                            continue
+                        now = loop.time()
+                        dt = now - prev_t
+                        prev_t = now
+                        accumulated += abs(reading.gyro_z) * dt
+                        if accumulated >= target_deg:
+                            break
+                else:
+                    logger.warning("[Drive] IMU 不可用，降级为 odometry theta 闭环")
+                    prev_theta = odometry.get_pose().theta_deg
+                    while loop.time() < deadline:
+                        await asyncio.sleep(0.02)
+                        curr_theta = odometry.get_pose().theta_deg
+                        delta = curr_theta - prev_theta
+                        if delta > 180:
+                            delta -= 360
+                        elif delta < -180:
+                            delta += 360
+                        accumulated += abs(delta)
+                        prev_theta = curr_theta
+                        if accumulated >= target_deg:
+                            break
+
+                chassis.stop()
+                timed_out = loop.time() >= deadline
+                logger.info(
+                    "[Drive] 转向完成：目标=%.0f° 实际=%.1f° timeout=%s sensor=%s",
+                    req.angle_deg, accumulated, timed_out,
+                    "raw_imu" if use_raw_imu else "odometry_theta",
+                )
+                return {
+                    "ok": True,
+                    "mode": "angle",
+                    "target_deg": req.angle_deg,
+                    "rotated_deg": round(accumulated, 1),
+                    "timeout": timed_out,
+                    "sensor": "raw_imu" if use_raw_imu else "odometry_theta",
+                }
 
     except Exception as e:
         chassis.stop()
