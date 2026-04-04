@@ -32,6 +32,45 @@ const TURNAROUND_DESTINATIONS = new Set(['掉头', '调头'])
 
 /** 语音/手动控制默认速度（0–100） */
 const MANUAL_DEFAULT_SPEED = Number(process.env.MANUAL_DEFAULT_SPEED ?? process.env.CHASSIS_DEFAULT_SPEED ?? '55')
+/** 闭环控制默认速度（建议低于手动速度，减少打滑和距离误差） */
+const CLOSED_LOOP_DEFAULT_SPEED = Number(process.env.CLOSED_LOOP_DEFAULT_SPEED ?? '25')
+
+function clampSpeed(v: number): number {
+  if (Number.isNaN(v)) return 25
+  return Math.max(0, Math.min(100, Math.round(v)))
+}
+
+function inferMotorCommand(destRaw: string): ActionMotorPayload['command'] | undefined {
+  const dest = destRaw.trim()
+  if (MOTION_COMMANDS[dest]) return MOTION_COMMANDS[dest]
+
+  if (/停|停止|停下/.test(dest)) return 'stop'
+  if (/掉头|调头|向左转身|向左掉头/.test(dest)) return 'turn_left'
+  if (/左转|向左/.test(dest)) return 'turn_left'
+  if (/右转|向右/.test(dest)) return 'turn_right'
+  if (/后退|向后|往后|倒车/.test(dest)) return 'backward'
+  if (/前进|向前|往前|直行/.test(dest)) return 'forward'
+  return undefined
+}
+
+function extractDistanceMmFromText(text: string): number | undefined {
+  const m = text.match(/(\d+(?:\.\d+)?)\s*(毫米|mm|厘米|cm|米|m)/i)
+  if (!m) return undefined
+  const n = Number(m[1])
+  const unit = m[2].toLowerCase()
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  if (unit === '毫米' || unit === 'mm') return n
+  if (unit === '厘米' || unit === 'cm') return n * 10
+  return n * 1000
+}
+
+function extractAngleDegFromText(text: string): number | undefined {
+  const m = text.match(/(\d+(?:\.\d+)?)\s*(度|°)/i)
+  if (!m) return undefined
+  const n = Number(m[1])
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  return n
+}
 
 /**
  * 调用 Platform 闭环运动接口 /motor/drive
@@ -113,8 +152,13 @@ export const navigateTo = tool({
   execute: async ({ destination, speed, distance_mm, angle_deg, duration, reason }) => {
     try {
       const dest = destination.trim()
-      const motorCommand = MOTION_COMMANDS[dest]
-      const effectiveSpeed = speed ?? MANUAL_DEFAULT_SPEED
+      const motorCommand = inferMotorCommand(dest)
+      const manualSpeed = clampSpeed(speed ?? MANUAL_DEFAULT_SPEED)
+      const closedLoopSpeed = clampSpeed(speed ?? CLOSED_LOOP_DEFAULT_SPEED)
+
+      // 容错：当模型未显式填 distance_mm/angle_deg，但用户在 destination 里说了“1米/90度”时自动提取
+      const inferredDistance = distance_mm ?? extractDistanceMmFromText(dest)
+      const inferredAngle = angle_deg ?? extractAngleDegFromText(dest)
 
       if (motorCommand) {
         // ── 停止：直接发指令 ──────────────────────────────────────
@@ -138,7 +182,7 @@ export const navigateTo = tool({
 
           const result = await driveClosedLoop({
             angle_deg: signedAngle,
-            speed: effectiveSpeed,
+            speed: closedLoopSpeed,
             timeout_s: Math.ceil(targetAngle / 30) + 5, // 按 30°/s 估算超时
           })
 
@@ -154,18 +198,18 @@ export const navigateTo = tool({
             mode: 'closed_loop_angle',
             command: motorCommand,
             angle_deg: targetAngle,
-            speed: effectiveSpeed,
+            speed: closedLoopSpeed,
             message: `已完成${motorCommand === 'turn_left' ? '左转' : '右转'} ${targetAngle}°`,
           }
         }
 
         // ── 直行有距离：里程计闭环 ────────────────────────────────
-        if (distance_mm != null) {
-          const signedDistance = motorCommand === 'backward' ? -distance_mm : distance_mm
+        if (inferredDistance != null) {
+          const signedDistance = motorCommand === 'backward' ? -inferredDistance : inferredDistance
           const result = await driveClosedLoop({
             distance_mm: signedDistance,
-            speed: effectiveSpeed,
-            timeout_s: Math.ceil(distance_mm / 100) + 10, // 按 100mm/s 估算超时
+            speed: closedLoopSpeed,
+            timeout_s: Math.ceil(inferredDistance / 100) + 10, // 按 100mm/s 估算超时
           })
 
           if (!result.ok) {
@@ -178,9 +222,9 @@ export const navigateTo = tool({
             success: true,
             mode: 'closed_loop_distance',
             command: motorCommand,
-            distance_mm,
-            speed: effectiveSpeed,
-            message: `已完成${motorCommand === 'forward' ? '前进' : '后退'} ${distance_mm}mm`,
+            distance_mm: inferredDistance,
+            speed: closedLoopSpeed,
+            message: `已完成${motorCommand === 'forward' ? '前进' : '后退'} ${inferredDistance}mm`,
           }
         }
 
@@ -189,14 +233,14 @@ export const navigateTo = tool({
           type: 'action.motor',
           priority: 'HIGH',
           source: 'brain',
-          payload: { command: motorCommand, speed: effectiveSpeed, duration },
-          summary: `电机指令：${motorCommand} 速度${effectiveSpeed}%${duration != null ? ` 持续${duration}s` : ''}`,
+          payload: { command: motorCommand, speed: manualSpeed, duration },
+          summary: `电机指令：${motorCommand} 速度${manualSpeed}%${duration != null ? ` 持续${duration}s` : ''}`,
         })
         return {
           success: true,
           mode: 'motor',
           command: motorCommand,
-          speed: effectiveSpeed,
+          speed: manualSpeed,
           duration: duration ?? '持续到下一条指令',
           message: `已执行：${destination}${duration != null ? `，持续 ${duration} 秒` : ''}`,
         }

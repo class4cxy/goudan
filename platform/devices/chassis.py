@@ -107,6 +107,9 @@ class Chassis:
         # 默认 1.0/1.0；例如“车向右偏”可下调右侧比例（如 0.85）
         self._left_scale = self._read_scale("CHASSIS_LEFT_SCALE", 1.0)
         self._right_scale = self._read_scale("CHASSIS_RIGHT_SCALE", 1.0)
+        # 低速死区补偿：speed>0 时映射到 [min_effective_pwm, 100]
+        # 解决“低速档电机不启动/输出无力”问题。
+        self._min_effective_pwm = self._read_min_pwm("CHASSIS_MIN_EFFECTIVE_PWM", 0)
         self._motors: dict[str, Motor] = {
             "front_left": Motor("front_left", config.front_left),
             "front_right": Motor("front_right", config.front_right),
@@ -119,11 +122,12 @@ class Chassis:
         self._timed_task: asyncio.Task | None = None
 
         logger.info(
-            "底盘初始化完成（%s，转向=%s，左右补偿=%.2f/%.2f）",
+            "底盘初始化完成（%s，转向=%s，左右补偿=%.2f/%.2f，最低有效PWM=%d）",
             "模拟模式" if SIMULATION else "GPIO 真实引脚",
             self._turn_style,
             self._left_scale,
             self._right_scale,
+            self._min_effective_pwm,
         )
 
     # ── 整车运动指令 ──────────────────────────────────────────────
@@ -276,9 +280,18 @@ class Chassis:
     # ── 内部工具 ──────────────────────────────────────────────────
 
     def _resolve_speed(self, speed: int | None) -> int:
-        """将 None 替换为默认速度，并钳位到 [0, 100]。"""
-        s = speed if speed is not None else self._default_speed
-        return max(0, min(100, s))
+        """
+        将 None 替换为默认速度，并钳位到 [0, 100]。
+
+        当 CHASSIS_MIN_EFFECTIVE_PWM > 0 时，speed>0 会线性映射到
+        [min_effective_pwm, 100]，避免低速掉进电机静摩擦死区。
+        """
+        raw = speed if speed is not None else self._default_speed
+        raw = max(0, min(100, raw))
+        if raw == 0 or self._min_effective_pwm <= 0:
+            return raw
+        span = 100 - self._min_effective_pwm
+        return int(round(self._min_effective_pwm + (raw / 100.0) * span))
 
     @staticmethod
     def _read_scale(env_name: str, default: float) -> float:
@@ -288,6 +301,14 @@ class Chassis:
             v = default
         # 防止极端值导致一侧停转或反向
         return max(0.5, min(1.5, v))
+
+    @staticmethod
+    def _read_min_pwm(env_name: str, default: int) -> int:
+        try:
+            v = int(os.environ.get(env_name, str(default)))
+        except Exception:
+            v = default
+        return max(0, min(80, v))
 
     def _drive_straight(self, *, forward: bool, speed: int) -> None:
         """按左右比例补偿执行直行（前进/后退）。"""
