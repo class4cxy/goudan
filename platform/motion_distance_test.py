@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import urllib.request
 
@@ -56,7 +57,11 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://localhost:8001")
     parser.add_argument("--speed", type=int, default=35)
     parser.add_argument("--timeout-s", type=float, default=25.0)
-    parser.add_argument("--lines-per-rev", type=float, default=1666.0)
+    parser.add_argument(
+        "--lines-per-rev",
+        type=float,
+        default=float(os.environ.get("ENCODER_LINES_PER_REV", "500")),
+    )
     parser.add_argument("--target-mm", type=float, default=None)
     args = parser.parse_args()
 
