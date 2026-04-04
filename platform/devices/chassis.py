@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from dataclasses import dataclass
 
 from .gpio_adapter import GPIO, SIMULATION
@@ -60,9 +59,15 @@ class ChassisConfig:
     front_right: MotorPins
     rear_left: MotorPins
     rear_right: MotorPins
-    default_speed: int = 60  # 全局默认速度（0–100）
+    default_speed: int = 60   # 全局默认速度（0–100）
     # 转向模式：tank=两侧反向差速（默认）；pivot=一侧制动一侧正转
     turn_style: str = "tank"
+    # 直线补偿：实测右轮偏快，right_scale = L/R 使右侧 PWM 降档对齐左轮
+    # 调整依据：encoder_accuracy_test.py 实测 L=424.4mm R=593.6mm → scale=424.4/593.6=0.71
+    left_scale:  float = 1.0
+    right_scale: float = 0.71
+    # 低速死区补偿：speed>0 时映射到 [min_effective_pwm, 100]（0=禁用）
+    min_effective_pwm: int = 0
 
 
 # MAKEROBO 功能扩展板实测引脚（Phase A GPIO 探针确认，BCM 编号）
@@ -103,13 +108,11 @@ class Chassis:
             )
             _style = "tank"
         self._turn_style = _style
-        # 直线补偿：用于修正左右驱动能力不一致导致的跑偏
-        # 默认 1.0/1.0；例如“车向右偏”可下调右侧比例（如 0.85）
-        self._left_scale = self._read_scale("CHASSIS_LEFT_SCALE", 1.0)
-        self._right_scale = self._read_scale("CHASSIS_RIGHT_SCALE", 1.0)
-        # 低速死区补偿：speed>0 时映射到 [min_effective_pwm, 100]
-        # 解决“低速档电机不启动/输出无力”问题。
-        self._min_effective_pwm = self._read_min_pwm("CHASSIS_MIN_EFFECTIVE_PWM", 0)
+        # 直线补偿：实测右轮偏快，right_scale<1.0 使右侧 PWM 降档对齐左轮
+        self._left_scale  = max(0.5, min(1.5, config.left_scale))
+        self._right_scale = max(0.5, min(1.5, config.right_scale))
+        # 低速死区补偿：speed>0 时映射到 [min_effective_pwm, 100]（0=禁用）
+        self._min_effective_pwm = max(0, min(80, config.min_effective_pwm))
         self._motors: dict[str, Motor] = {
             "front_left": Motor("front_left", config.front_left),
             "front_right": Motor("front_right", config.front_right),
@@ -293,22 +296,6 @@ class Chassis:
         span = 100 - self._min_effective_pwm
         return int(round(self._min_effective_pwm + (raw / 100.0) * span))
 
-    @staticmethod
-    def _read_scale(env_name: str, default: float) -> float:
-        try:
-            v = float(os.environ.get(env_name, str(default)))
-        except Exception:
-            v = default
-        # 防止极端值导致一侧停转或反向
-        return max(0.5, min(1.5, v))
-
-    @staticmethod
-    def _read_min_pwm(env_name: str, default: int) -> int:
-        try:
-            v = int(os.environ.get(env_name, str(default)))
-        except Exception:
-            v = default
-        return max(0, min(80, v))
 
     def _drive_straight(self, *, forward: bool, speed: int) -> None:
         """按左右比例补偿执行直行（前进/后退）。"""

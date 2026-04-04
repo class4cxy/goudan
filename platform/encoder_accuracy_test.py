@@ -41,8 +41,9 @@ RIGHT_B: int = 21   # M4 黄线 B → GPIO21（Pin 40）
 # ── 编码器参数 ────────────────────────────────────────────────────────────────
 
 # 编码器标称线数。4 倍频后 ticks/rev = LINES_PER_REV × 4。
-# 出厂值 500，校准后填入实测值。
-LINES_PER_REV: int = 500
+# 实测校准：目标500mm 走了1250mm，里程计读509mm → 204 = 500×(509/1250)
+# 注：误差来源疑似 EMF 噪声漏脉冲，待 encoder_diag.py 进一步排查
+LINES_PER_REV: int = 204
 
 # 前进时某轮 ticks 为负时翻转极性（等效于对调 A/B 接线）。
 # 实测：M4 右后轮前进时 ticks 为负（右侧电机镜像安装导致相位相反），需翻转。
@@ -345,10 +346,11 @@ def main() -> int:
             print("  ❌ 误差过大，优先排查 EMF 噪声（encoder_diag.py）")
 
         if actual > 1e-3 and odom_avg > 1e-3:
-            sugg = LINES_PER_REV * (actual / odom_avg)
-            print(f"\n  校准公式: 新 LINES_PER_REV = {LINES_PER_REV} × ({actual:.1f}/{odom_avg:.1f})")
+            # 里程计低估 → 每 tick 对应距离偏小 → 需减小 ticks_per_rev → 减小 LINES_PER_REV
+            # 里程计高估 → 每 tick 对应距离偏大 → 需增大 ticks_per_rev → 增大 LINES_PER_REV
+            sugg = LINES_PER_REV * (odom_avg / actual)
+            print(f"\n  校准公式: 新 LINES_PER_REV = {LINES_PER_REV} × ({odom_avg:.1f}/{actual:.1f})")
             print(f"  建议将顶部 LINES_PER_REV 改为: {sugg:.0f}")
-            print(f"  同步更新 .env → ENCODER_LINES_PER_REV={sugg:.0f}")
 
         left_avg  = sum(abs(r["dist_left"])  for r in results) / n
         right_avg = sum(abs(r["dist_right"]) for r in results) / n
