@@ -37,7 +37,6 @@ import os
 import re
 import sys
 import time
-import threading
 from pathlib import Path
 
 # ── 把 platform/ 加入 Python 路径，使 devices.* 可导入 ───────────────────────
@@ -148,36 +147,24 @@ def run_single_trip(
 ) -> dict:
     """
     执行一次行程，返回原始测量数据。
+
+    Tick 统计使用 encoder.get_cumulative() 快照（不清零），
+    避免与里程计的 read_and_reset() 竞争同一份数据。
     """
     direction = "forward" if target_mm >= 0 else "backward"
     target_abs = abs(target_mm)
 
-    # 清空里程计
+    # 里程计清零
     odometry.get_and_reset_travel()
-    encoder.read_and_reset()
 
-    # 逐步累积 ticks（与里程计并行，独立计数）
-    tick_lock = threading.Lock()
-    acc_left  = [0]
-    acc_right = [0]
-    tick_running = [True]
-
-    def tick_accumulator():
-        while tick_running[0]:
-            dl, dr = encoder.read_and_reset()
-            with tick_lock:
-                acc_left[0]  += dl
-                acc_right[0] += dr
-            time.sleep(0.005)
-
-    tick_thread = threading.Thread(target=tick_accumulator, daemon=True)
-    tick_thread.start()
+    # 记录 cumulative ticks 起始快照（无竞争，不清零）
+    snap_left_0, snap_right_0 = encoder.get_cumulative()
 
     # 启动电机
     t_start = time.monotonic()
     chassis._dispatch(direction, speed)
 
-    # 闭环监控（20ms 轮询）
+    # 闭环监控（20ms 轮询，仅里程计消费 read_and_reset）
     traveled = 0.0
     timed_out = False
     deadline = t_start + timeout_s
@@ -193,15 +180,12 @@ def run_single_trip(
 
     elapsed = time.monotonic() - t_start
     chassis.stop()
-    time.sleep(0.15)  # 让电机完全停止
+    time.sleep(0.15)  # 等待电机完全停止
 
-    # 停止 tick 累积
-    tick_running[0] = False
-    tick_thread.join(timeout=0.5)
-
-    with tick_lock:
-        left_ticks  = acc_left[0]
-        right_ticks = acc_right[0]
+    # 取行程结束时的 cumulative 快照，差值即本次行程 ticks（无竞争）
+    snap_left_1, snap_right_1 = encoder.get_cumulative()
+    left_ticks  = snap_left_1  - snap_left_0
+    right_ticks = snap_right_1 - snap_right_0
 
     dist_left  = (left_ticks  / ticks_per_rev) * wheel_circ_mm
     dist_right = (right_ticks / ticks_per_rev) * wheel_circ_mm

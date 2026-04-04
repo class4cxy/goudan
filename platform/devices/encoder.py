@@ -66,6 +66,10 @@ class EncoderConfig:
     right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "14"))  # M4 右后 A → GPIO14（Pin 8，UART TX，控制台已移除）
     right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "18"))  # M4 右后 B → GPIO18（Pin 12，空闲；⚠️ GPIO17=蜂鸣器禁用）
     lines_per_rev: int = int(os.environ.get("ENCODER_LINES_PER_REV", "500"))
+    # 极性翻转：前进时 ticks 为负则设为 1（等效于对调 A/B 接线）
+    # 可通过 ENCODER_LEFT_INVERT=1 / ENCODER_RIGHT_INVERT=1 启用
+    left_invert:  bool = os.environ.get("ENCODER_LEFT_INVERT",  "0") == "1"
+    right_invert: bool = os.environ.get("ENCODER_RIGHT_INVERT", "0") == "1"
 
     @property
     def ticks_per_rev(self) -> int:
@@ -81,12 +85,14 @@ class _WheelEncoder:
     handle 时 callback 不触发的问题（树莓派 5 实测确认）。
     """
 
-    def __init__(self, h: int, pin_a: int, pin_b: int) -> None:
+    def __init__(self, h: int, pin_a: int, pin_b: int, invert: bool = False) -> None:
         self._h       = h
         self._pin_a   = pin_a
         self._pin_b   = pin_b
+        self._invert  = invert       # True=前进时脉冲为负，自动取反修正
         self._lock    = threading.Lock()
-        self._ticks   = 0
+        self._ticks         = 0     # 消耗性计数（read_and_reset 用）
+        self._total_ticks   = 0     # 非消耗性累计（get_cumulative 用，仅增不减）
         self._prev_a: int = 0
         self._prev_b: int = 0
         self._running = False
@@ -147,8 +153,11 @@ class _WheelEncoder:
                     (self._prev_a, self._prev_b, curr_a, curr_b), 0
                 )
                 if delta:
+                    if self._invert:
+                        delta = -delta
                     with self._lock:
-                        self._ticks += delta
+                        self._ticks       += delta
+                        self._total_ticks += delta
                 self._prev_a = curr_a
                 self._prev_b = curr_b
             else:
@@ -172,6 +181,15 @@ class _WheelEncoder:
             ticks = self._ticks
             self._ticks = 0
         return ticks
+
+    def get_cumulative(self) -> int:
+        """
+        读取自 start() 以来的总脉冲（不清零）。
+
+        用于测试/监控场景，不与 read_and_reset（里程计）竞争。
+        """
+        with self._lock:
+            return self._total_ticks
 
 
 class Encoder:
@@ -202,14 +220,20 @@ class Encoder:
         try:
             import lgpio
             self._h = lgpio.gpiochip_open(_CHIP_NUM)
-            self._left  = _WheelEncoder(self._h, self._cfg.left_a,  self._cfg.left_b)
-            self._right = _WheelEncoder(self._h, self._cfg.right_a, self._cfg.right_b)
+            self._left  = _WheelEncoder(
+                self._h, self._cfg.left_a,  self._cfg.left_b,
+                invert=self._cfg.left_invert,
+            )
+            self._right = _WheelEncoder(
+                self._h, self._cfg.right_a, self._cfg.right_b,
+                invert=self._cfg.right_invert,
+            )
             self._left.start()
             self._right.start()
             logger.info(
                 f"[Encoder] 已启动（lgpio chip={_CHIP_NUM}）| "
-                f"左轮 A/B={self._cfg.left_a}/{self._cfg.left_b} "
-                f"右轮 A/B={self._cfg.right_a}/{self._cfg.right_b} "
+                f"左轮 A/B={self._cfg.left_a}/{self._cfg.left_b} inv={self._cfg.left_invert} "
+                f"右轮 A/B={self._cfg.right_a}/{self._cfg.right_b} inv={self._cfg.right_invert} "
                 f"ticks/rev={self._cfg.ticks_per_rev}"
             )
             return True
@@ -246,6 +270,17 @@ class Encoder:
             return 0, 0
         return self._left.get_and_reset(), self._right.get_and_reset()
 
+    def get_cumulative(self) -> tuple[int, int]:
+        """
+        读取自 start() 以来左右轮的累计脉冲（不清零）。
+
+        用于测试/监控，不与里程计的 read_and_reset() 竞争。
+        模拟模式下返回 (0, 0)。
+        """
+        if self._is_simulation or self._left is None or self._right is None:
+            return 0, 0
+        return self._left.get_cumulative(), self._right.get_cumulative()
+
     # ─── 属性 ────────────────────────────────────────────────────
 
     @property
@@ -258,14 +293,21 @@ class Encoder:
 
     @property
     def status(self) -> dict:
+        left_total, right_total = self.get_cumulative()
         return {
             "is_simulation": self._is_simulation,
             "ticks_per_rev": self._cfg.ticks_per_rev,
             "gpio_chip":     _CHIP_NUM,
             "pins": {
-                "left_a":  self._cfg.left_a,
-                "left_b":  self._cfg.left_b,
-                "right_a": self._cfg.right_a,
-                "right_b": self._cfg.right_b,
+                "left_a":       self._cfg.left_a,
+                "left_b":       self._cfg.left_b,
+                "left_invert":  self._cfg.left_invert,
+                "right_a":      self._cfg.right_a,
+                "right_b":      self._cfg.right_b,
+                "right_invert": self._cfg.right_invert,
+            },
+            "cumulative_ticks": {
+                "left":  left_total,
+                "right": right_total,
             },
         }
