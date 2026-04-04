@@ -5,7 +5,8 @@
 
 用途：
   - 逐个电机测试正转/反转输出能力
-  - 使用 /motor/sensor_test 的 traveled_mm 作为统一量化指标
+  - 优先使用 /power/status 电流值评估“出力是否明显偏低”
+  - 辅助读取 /motor/sensor_test 的 traveled_mm（仅后轮编码器有参考意义）
   - 快速定位“个别电机无力/不转/方向异常”
 
 说明：
@@ -30,6 +31,8 @@ POSITIONS = ["front_left", "front_right", "rear_left", "rear_right"]
 class MotorDiagRow:
     position: str
     direction: str
+    current_ma: float
+    current_delta_ma: float
     traveled_mm: float
     gyro_peak: float
     ok: bool
@@ -68,15 +71,35 @@ def motor_stop_all(base_url: str) -> None:
         pass
 
 
+def read_current_ma(base_url: str) -> float | None:
+    """
+    从 /power/status 读取当前电流（mA）。
+    若 power 传感器不可用或无数据，返回 None。
+    """
+    try:
+        st = request_json(f"{base_url}/power/status", method="GET", timeout_s=3.0)
+        latest = st.get("latest")
+        if not latest:
+            return None
+        v = latest.get("current_ma")
+        if v is None:
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
 def run_case(base_url: str, position: str, direction: str, speed: int, duration_s: float) -> MotorDiagRow:
     try:
         # 先全停，避免上一条命令残留
         motor_stop_all(base_url)
-        time.sleep(0.15)
+        time.sleep(0.25)
+        baseline_current = read_current_ma(base_url)
 
         # 启动单电机
         motor_set(base_url, position, direction, speed)
-        time.sleep(0.05)
+        time.sleep(0.25)
+        active_current = read_current_ma(base_url)
 
         # 采样窗口：保持当前电机运行，读取 traveled_mm
         q = urllib.parse.urlencode({"duration_s": f"{duration_s:.2f}"})
@@ -87,24 +110,30 @@ def run_case(base_url: str, position: str, direction: str, speed: int, duration_
 
         traveled = float(report.get("encoder", {}).get("traveled_mm", 0.0))
         gyro_peak = float(report.get("imu", {}).get("gyro_z_peak_dps", 0.0))
-        return MotorDiagRow(position, direction, traveled, gyro_peak, True)
+        if baseline_current is not None and active_current is not None:
+            delta_ma = active_current - baseline_current
+        else:
+            delta_ma = 0.0
+        return MotorDiagRow(position, direction, active_current or 0.0, delta_ma, traveled, gyro_peak, True)
     except Exception as e:
-        return MotorDiagRow(position, direction, 0.0, 0.0, False, str(e))
+        return MotorDiagRow(position, direction, 0.0, 0.0, 0.0, 0.0, False, str(e))
     finally:
         motor_stop_all(base_url)
 
 
-def print_row(r: MotorDiagRow, ref: float) -> None:
+def print_row(r: MotorDiagRow, ref_current: float, ref_travel: float) -> None:
     if not r.ok:
         print(f"{r.position:>11} {r.direction:>8} | ❌ {r.error}")
         return
-    ratio = (r.traveled_mm / ref * 100.0) if ref > 1e-9 else 0.0
-    flag = "⚠️偏低" if ref > 1e-9 and ratio < 65.0 else "OK"
+    ratio_current = (r.current_delta_ma / ref_current * 100.0) if ref_current > 1e-9 else 0.0
+    ratio_travel = (r.traveled_mm / ref_travel * 100.0) if ref_travel > 1e-9 else 0.0
+    flag = "⚠️电流偏低" if ref_current > 1e-9 and ratio_current < 65.0 else "OK"
     print(
         f"{r.position:>11} {r.direction:>8} | "
-        f"travel={r.traveled_mm:>7.1f} mm | "
-        f"gyro_peak={r.gyro_peak:>6.1f} dps | "
-        f"{ratio:>6.1f}% {flag}"
+        f"I={r.current_ma:>6.0f}mA "
+        f"ΔI={r.current_delta_ma:>6.0f}mA ({ratio_current:>6.1f}%) | "
+        f"travel={r.traveled_mm:>6.1f}mm ({ratio_travel:>6.1f}%) | "
+        f"{flag}"
     )
 
 
@@ -137,21 +166,23 @@ def main() -> int:
         print("\n❌ 全部测试失败，先检查 platform 服务是否在运行。")
         return 1
 
-    ref = max((r.traveled_mm for r in ok_rows), default=0.0)
-    print("\n结果（按 traveled_mm 与最大值对比）：")
+    ref_current = max((r.current_delta_ma for r in ok_rows), default=0.0)
+    ref_travel = max((r.traveled_mm for r in ok_rows), default=0.0)
+    print("\n结果（主指标=电流增量 ΔI，与最大值对比）：")
     print("   position direction | metrics")
     for r in rows:
-        print_row(r, ref)
+        print_row(r, ref_current, ref_travel)
 
-    weak = [r for r in ok_rows if ref > 1e-9 and (r.traveled_mm / ref) < 0.65]
+    weak = [r for r in ok_rows if ref_current > 1e-9 and (r.current_delta_ma / ref_current) < 0.65]
     print("\n结论：")
     if not weak:
         print("✅ 未发现明显无力电机（<65% 阈值）。")
     else:
         print("⚠️ 疑似无力电机：")
         for r in weak:
-            print(f"  - {r.position}/{r.direction}  traveled_mm={r.traveled_mm:.1f}")
+            print(f"  - {r.position}/{r.direction}  ΔI={r.current_delta_ma:.0f}mA")
         print("建议：检查对应电机接线、驱动口、齿轮箱阻力，必要时互换驱动口复测。")
+        print("注：travel 指标仅对后轮编码器更敏感，前轮低值不一定代表无力。")
     return 0
 
 
