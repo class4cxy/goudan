@@ -76,6 +76,8 @@ def main() -> int:
             timeout_s=args.timeout_s + 10,
         )
         print("接口返回：", json.dumps(res, ensure_ascii=False))
+        drive_timeout = bool(res.get("timeout", False))
+        traveled_mm = float(res.get("traveled_mm", 0.0))
 
         measured = input("\n请输入尺子实测距离（同样支持 mm/cm/m，保持方向符号）: ").strip()
         measured_mm = parse_distance_mm(measured)
@@ -90,8 +92,12 @@ def main() -> int:
         print(f"目标: {target_mm:.1f} mm")
         print(f"实测: {measured_mm:.1f} mm")
         print(f"误差: {signed_error:+.1f} mm ({error_pct:+.1f}%)")
+        print(f"闭环里程读数: {traveled_mm:.1f} mm, timeout={drive_timeout}")
 
-        if actual_abs > 1e-6:
+        if drive_timeout:
+            print("⚠️ 本次为超时停车（timeout=true），不应据此校准 ENCODER_LINES_PER_REV。")
+            print("请先修复里程计读数链路，再做参数标定。")
+        elif actual_abs > 1e-6:
             # 基于“目标距离 / 实测距离”给出编码器线数建议
             # 走得少（actual<target）→ lines_per_rev 应增大
             suggested = args.lines_per_rev * (target_abs / actual_abs)

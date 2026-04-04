@@ -63,7 +63,7 @@ class EncoderConfig:
     left_b:  int = int(os.environ.get("ENCODER_LEFT_B",  "16"))  # M3 左后 B → GPIO16（Pin 36，扩展板 GP16）
     right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "14"))  # M4 右后 A → GPIO14（Pin 8，UART TX，控制台已移除）
     right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "18"))  # M4 右后 B → GPIO18（Pin 12，空闲；⚠️ GPIO17=蜂鸣器禁用）
-    lines_per_rev: int = int(os.environ.get("ENCODER_LINES_PER_REV", "1666"))
+    lines_per_rev: int = int(os.environ.get("ENCODER_LINES_PER_REV", "500"))
 
     @property
     def ticks_per_rev(self) -> int:
@@ -108,11 +108,12 @@ class _WheelEncoder:
         self._thread.start()
 
     # 去抖动：检测到跳变后，再读 N 次确认状态稳定才计数。
-    # 目的：过滤电机 PWM 耦合到编码器信号线上的电气噪声毛刺。
-    # 每次确认间隔 50μs，N=3 → 总去抖时间 150μs。
-    # 真实信号（100RPM 轮速 @ 2000tick/rev → 3333tick/s → 300μs/tick）远长于此，不影响精度。
-    _DEBOUNCE_READS   = 3
-    _DEBOUNCE_DELAY_S = 50e-6   # 50 μs
+    # 通过环境变量可调：
+    #   ENCODER_DEBOUNCE_READS（默认 1）
+    #   ENCODER_DEBOUNCE_DELAY_US（默认 20μs）
+    # 注：旧配置 3x50μs（150μs）在高速时会吞掉真实脉冲，导致里程严重低估。
+    _DEBOUNCE_READS = max(1, int(os.environ.get("ENCODER_DEBOUNCE_READS", "1")))
+    _DEBOUNCE_DELAY_S = max(0.0, float(os.environ.get("ENCODER_DEBOUNCE_DELAY_US", "20"))) / 1_000_000.0
 
     def _poll_loop(self) -> None:
         import lgpio
