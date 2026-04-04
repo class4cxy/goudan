@@ -45,9 +45,9 @@ RIGHT_B: int = 21   # M4 黄线 B → GPIO21（Pin 40）
 LINES_PER_REV: int = 500
 
 # 前进时某轮 ticks 为负时翻转极性（等效于对调 A/B 接线）。
-# M4 白接 A/黄接 B 为标准接法，先不翻转，跑一次确认方向再改。
+# 实测：M4 右后轮前进时 ticks 为负（右侧电机镜像安装导致相位相反），需翻转。
 LEFT_INVERT:  bool = False
-RIGHT_INVERT: bool = False
+RIGHT_INVERT: bool = True
 
 # 去抖参数。检测到跳变后连续读 DEBOUNCE_READS 次，确认电平稳定才计数。
 # 推荐值：1 次 × 20μs（默认，低噪声场景）
