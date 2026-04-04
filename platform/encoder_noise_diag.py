@@ -167,14 +167,14 @@ def main() -> None:
     variation = ratio_max - ratio_min   # 比值波动
 
     print("── 诊断结论 ──────────────────────────────────────────────")
+    CURRENT_LINES_PER_REV = 125  # 与 encoder.py EncoderConfig.lines_per_rev 保持一致
     if variation < 0.10:   # 10% 以内认为是纯标定误差
         avg = sum(ratios) / len(ratios)
-        new_lines = round(500 * avg)
+        new_lines = round(CURRENT_LINES_PER_REV * avg)
         print(f"✅ 比值在各速度下基本稳定（波动 {variation:.1%}）")
         print(f"   → 这是【纯标定误差】，不是 EMF 噪声")
         print(f"   → 编码器 encoder/actual ≈ {avg:.2%}，校正方式：")
-        print(f"      ENCODER_LINES_PER_REV = {new_lines}  (当前 500)")
-        print(f"      写入 .env 并重启 platform 即可")
+        print(f"      将 encoder.py EncoderConfig.lines_per_rev 从 {CURRENT_LINES_PER_REV} 改为 {new_lines}")
     elif variation < 0.25:
         print(f"⚠  比值有明显速度依赖性（波动 {variation:.1%}），轻度 EMF 噪声")
         print(f"   低速（speed≤25）基本可用，高速（speed≥35）编码器不可靠")

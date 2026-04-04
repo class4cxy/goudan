@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import urllib.request
 
@@ -62,12 +61,13 @@ def main() -> int:
     parser.add_argument(
         "--lines-per-rev",
         type=float,
-        default=float(os.environ.get("ENCODER_LINES_PER_REV", "500")),
+        # 实测校准值（DEBOUNCE_US=3，40%速）；与 encoder.py EncoderConfig.lines_per_rev 保持一致
+        default=125.0,
     )
     parser.add_argument(
         "--speed-mm-per-sec",
         type=float,
-        default=float(os.environ.get("DRIVE_SPEED_MM_PER_SEC", "0")),
+        default=0.0,  # 0 = 编码器闭环模式；>0 = 时间标定模式（mm/s）
     )
     parser.add_argument("--target-mm", type=float, default=None)
     args = parser.parse_args()
