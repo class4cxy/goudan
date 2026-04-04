@@ -73,7 +73,8 @@ class EncoderConfig:
     right_a: int = 20
     right_b: int = 21
     # 编码器标称线数；4 倍频后 ticks/rev = lines_per_rev × 4
-    lines_per_rev: int = 500
+    # 实测校准（DEBOUNCE_US=3，40%速）：3次均值 → 125（出厂标称500，实际有效捕获率约25%）
+    lines_per_rev: int = 125
     # 极性翻转：实测 M4 右后轮镜像安装，前进时 ticks 为负，需翻转
     left_invert:  bool = False
     right_invert: bool = True
