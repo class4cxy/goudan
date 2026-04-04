@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
+import signal
 import time
-import urllib.error
 import urllib.request
+import atexit
 from dataclasses import dataclass
 
 
@@ -61,6 +61,18 @@ def post_json(url: str, payload: dict, timeout_s: float = 120.0) -> dict:
         return json.loads(body)
 
 
+def force_stop(base_url: str, timeout_s: float = 2.0) -> None:
+    """
+    失效保护：无论测试状态如何，都尝试发送 stop。
+    忽略异常，避免清理流程因网络问题中断。
+    """
+    payload = {"command": "stop"}
+    try:
+        post_json(f"{base_url}/motor/command", payload, timeout_s=timeout_s)
+    except Exception:
+        pass
+
+
 def run_distance_case(base_url: str, target_mm: float, speed: int, timeout_s: float) -> CaseResult:
     t0 = time.time()
     payload = {
@@ -81,6 +93,8 @@ def run_distance_case(base_url: str, target_mm: float, speed: int, timeout_s: fl
             ok=bool(res.get("ok", False)),
         )
     except Exception as e:
+        # /motor/drive 请求异常时，强制尝试停机，防止车持续运动。
+        force_stop(base_url)
         return CaseResult(
             kind="distance",
             target=float(target_mm),
@@ -113,6 +127,8 @@ def run_angle_case(base_url: str, target_deg: float, speed: int, timeout_s: floa
             ok=bool(res.get("ok", False)),
         )
     except Exception as e:
+        # /motor/drive 请求异常时，强制尝试停机，防止车持续运动。
+        force_stop(base_url)
         return CaseResult(
             kind="angle",
             target=float(target_deg),
@@ -204,6 +220,17 @@ def main() -> int:
     print(f"angle_cases={angle_cases}")
     print("按 Ctrl+C 可随时停止。\n")
 
+    # 进程退出和 Ctrl+C 时都执行一次 stop（双保险）。
+    atexit.register(force_stop, args.base_url)
+
+    def _handle_signal(_sig, _frame):
+        print("\n捕获中断信号，发送 stop...")
+        force_stop(args.base_url)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
     loop_idx = 0
     all_distance: list[CaseResult] = []
     all_angle: list[CaseResult] = []
@@ -236,6 +263,10 @@ def main() -> int:
                 break
     except KeyboardInterrupt:
         print("\n收到 Ctrl+C，停止测试。")
+        force_stop(args.base_url)
+    finally:
+        # 正常结束也发送 stop，避免最后一条动作残留。
+        force_stop(args.base_url)
 
     print("\n===== 全部统计 =====")
     print_summary(all_distance, "距离总统计")
