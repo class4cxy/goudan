@@ -78,10 +78,10 @@ class EncoderConfig:
     left_invert:  bool = False
     right_invert: bool = True
     # 去抖：连续读 debounce_reads 次确认电平稳定，间隔 debounce_delay_us 微秒
-    # ⚠ delay 不能过大：89 RPM×500线×4倍频 → 脉冲间隔仅 5.6μs
-    #   20μs 延时会漏掉 3+ 个脉冲，导致里程随速度漂移，必须设 0
+    # 去抖延时权衡：脉冲间隔 5.6μs（89 RPM×500线×4倍频）
+    # 3μs 可过滤 EMF 毛刺同时不丢真实脉冲；0 会引入噪声，20 会漏真实脉冲
     debounce_reads:    int = 1
-    debounce_delay_us: int = 0
+    debounce_delay_us: int = 3
 
     @property
     def ticks_per_rev(self) -> int:
