@@ -27,16 +27,27 @@ from pathlib import Path
 # 测试配置（修改这里，不依赖 .env）
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── 编码器 GPIO 引脚（BCM 编号）────────────────────────────────────────────────
+#
+# M3 左后轮（实物：白线=A，黄线=B）
+LEFT_A:  int = 23   # M3 白线 A → GPIO23（Pin 16，扩展板 GP23）
+LEFT_B:  int = 16   # M3 黄线 B → GPIO16（Pin 36，扩展板 GP16）
+#
+# M4 右后轮（实物：白线=A，黄线=B）
+# ⚠️ 超声波 HC-SR04 原占用 GPIO20/21，已关闭超声波，把这两脚让给 M4 编码器。
+RIGHT_A: int = 20   # M4 白线 A → GPIO20（Pin 38）
+RIGHT_B: int = 21   # M4 黄线 B → GPIO21（Pin 40）
+
 # ── 编码器参数 ────────────────────────────────────────────────────────────────
 
 # 编码器标称线数。4 倍频后 ticks/rev = LINES_PER_REV × 4。
 # 出厂值 500，校准后填入实测值。
 LINES_PER_REV: int = 500
 
-# 前进时右轮 ticks 为负（实测现象）→ 需翻转极性，等效于对调 A/B 接线。
-# 若硬件已对调 A/B，改回 False。
+# 前进时某轮 ticks 为负时翻转极性（等效于对调 A/B 接线）。
+# M4 白接 A/黄接 B 为标准接法，先不翻转，跑一次确认方向再改。
 LEFT_INVERT:  bool = False
-RIGHT_INVERT: bool = True
+RIGHT_INVERT: bool = False
 
 # 去抖参数。检测到跳变后连续读 DEBOUNCE_READS 次，确认电平稳定才计数。
 # 推荐值：1 次 × 20μs（默认，低噪声场景）
@@ -190,7 +201,8 @@ def _run_trip(chassis, encoder, odometry,
     if timed_out:
         print("  ⚠ 超时：里程未达目标，可能 EMF 噪声严重 → 先跑 encoder_diag.py")
     if sym < 0.90:
-        weak = "左轮" if abs(dist_l) > abs(dist_r) else "右轮"
+        # 走得少的那侧是"偏弱"侧：abs 更小 = 距离更短 = 偏弱
+        weak = "右轮" if abs(dist_l) > abs(dist_r) else "左轮"
         print(f"  ⚠ 左右不对称 {sym:.2%}：{weak}偏弱，"
               "可在 .env 调 CHASSIS_LEFT/RIGHT_SCALE")
 
@@ -216,6 +228,10 @@ def main() -> int:
 
     # 用顶部常量显式构造 EncoderConfig，完全不读 env
     enc_cfg = EncoderConfig(
+        left_a            = LEFT_A,
+        left_b            = LEFT_B,
+        right_a           = RIGHT_A,
+        right_b           = RIGHT_B,
         lines_per_rev     = LINES_PER_REV,
         left_invert       = LEFT_INVERT,
         right_invert      = RIGHT_INVERT,
@@ -226,7 +242,8 @@ def main() -> int:
     if not encoder.start():
         print("⚠ 编码器模拟模式（lgpio 不可用），数据将全为 0")
     else:
-        print(f"✓ 编码器  ticks/rev={encoder.ticks_per_rev}"
+        print(f"✓ 编码器  左L=A{LEFT_A}/B{LEFT_B}  右R=A{RIGHT_A}/B{RIGHT_B}"
+              f"  ticks/rev={encoder.ticks_per_rev}"
               f"  极性=左{'翻' if LEFT_INVERT else '正'}右{'翻' if RIGHT_INVERT else '正'}"
               f"  去抖={DEBOUNCE_READS}×{DEBOUNCE_US}μs")
 
@@ -336,12 +353,14 @@ def main() -> int:
         left_avg  = sum(abs(r["dist_left"])  for r in results) / n
         right_avg = sum(abs(r["dist_right"]) for r in results) / n
         if left_avg > 1e-3 and right_avg > 1e-3:
-            ratio = right_avg / left_avg
+            ratio = right_avg / left_avg  # >1 说明右轮跑得更多（右快左慢）
             print(f"\n  左右对称: L={left_avg:.1f}mm  R={right_avg:.1f}mm  比={ratio:.3f}")
             if ratio < 0.93:
-                print(f"  右轮偏慢 → .env: CHASSIS_RIGHT_SCALE={ratio:.2f}")
+                # 右轮跑得少 → 右慢左快 → 调慢左轮
+                print(f"  右轮偏慢 → .env: CHASSIS_LEFT_SCALE={ratio:.2f}")
             elif ratio > 1.07:
-                print(f"  左轮偏慢 → .env: CHASSIS_LEFT_SCALE={1/ratio:.2f}")
+                # 右轮跑得多 → 右快左慢 → 调慢右轮
+                print(f"  左轮偏慢 → .env: CHASSIS_RIGHT_SCALE={1/ratio:.2f}")
             else:
                 print("  ✅ 对称性良好")
 

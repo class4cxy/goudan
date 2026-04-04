@@ -63,8 +63,10 @@ class EncoderConfig:
     """双路编码器 GPIO 引脚配置（BCM 编号）。"""
     left_a:  int = int(os.environ.get("ENCODER_LEFT_A",   "23"))  # M3 左后 A → GPIO23（Pin 16，扩展板 GP23）
     left_b:  int = int(os.environ.get("ENCODER_LEFT_B",  "16"))  # M3 左后 B → GPIO16（Pin 36，扩展板 GP16）
-    right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "14"))  # M4 右后 A → GPIO14（Pin 8，UART TX，控制台已移除）
-    right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "18"))  # M4 右后 B → GPIO18（Pin 12，空闲；⚠️ GPIO17=蜂鸣器禁用）
+    right_a: int = int(os.environ.get("ENCODER_RIGHT_A", "20"))  # M4 右后 白线A → GPIO20（Pin 38；原 HC-SR04 TRIG，超声波已禁用）
+    right_b: int = int(os.environ.get("ENCODER_RIGHT_B", "21"))  # M4 右后 黄线B → GPIO21（Pin 40；原 HC-SR04 ECHO，超声波已禁用）
+    # 白线→A/黄线→B 为标准接法，right_invert 默认 False；
+    # 若前进时右轮 ticks 为负，再设 ENCODER_RIGHT_INVERT=1 或改 right_invert=True。
     lines_per_rev:    int  = int(os.environ.get("ENCODER_LINES_PER_REV", "500"))
     # 极性翻转：前进时 ticks 为负则设为 1（等效于对调 A/B 接线）
     left_invert:      bool = os.environ.get("ENCODER_LEFT_INVERT",  "0") == "1"

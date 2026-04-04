@@ -368,15 +368,19 @@ async def _startup():
         logger.info("🔋 电源传感器已启动（INA219 @ 0x40）")
 
     # 启动超声波测距（GPIO 轮询线程，开发机自动模拟模式）
-    await asyncio.to_thread(ultrasonic.start)
-    if ultrasonic.is_simulation:
-        logger.warning("⚠️  超声波传感器运行在模拟模式（未检测到 RPi.GPIO）")
+    # 当 GPIO20/21 被编码器占用时，设 ULTRASONIC_ENABLED=0 跳过启动。
+    if os.environ.get("ULTRASONIC_ENABLED", "1") != "0":
+        await asyncio.to_thread(ultrasonic.start)
+        if ultrasonic.is_simulation:
+            logger.warning("⚠️  超声波传感器运行在模拟模式（未检测到 RPi.GPIO）")
+        else:
+            logger.info(
+                "📏 超声波传感器已启动（Trig=GPIO%s Echo=GPIO%s）",
+                ultrasonic.status["trig_pin"],
+                ultrasonic.status["echo_pin"],
+            )
     else:
-        logger.info(
-            "📏 超声波传感器已启动（Trig=GPIO%s Echo=GPIO%s）",
-            ultrasonic.status["trig_pin"],
-            ultrasonic.status["echo_pin"],
-        )
+        logger.info("📏 超声波传感器已禁用（ULTRASONIC_ENABLED=0）")
 
     username: str = ""
     user_data: UserData | None = None
