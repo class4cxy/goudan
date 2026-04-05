@@ -137,19 +137,22 @@ def test_raw_register():
         bus.write_byte_data(IMU_ADDR, 0x6B, 0x00)
         time.sleep(0.1)
 
-        # 读 14 字节原始数据
-        data = bus.read_i2c_block_data(IMU_ADDR, 0x3B, 14)
-
         def s16(hi, lo):
             v = (hi << 8) | lo
             return v - 65536 if v > 32767 else v
 
-        ax_raw = s16(data[0],  data[1])
-        ay_raw = s16(data[2],  data[3])
-        az_raw = s16(data[4],  data[5])
-        gx_raw = s16(data[8],  data[9])
-        gy_raw = s16(data[10], data[11])
-        gz_raw = s16(data[12], data[13])
+        # 分两次独立读取，避免 MPU6050 clock stretching 导致陀螺仪字节全读成 0xFF
+        # 第一次：加速度计 6 字节（寄存器 0x3B-0x40）
+        accel = bus.read_i2c_block_data(IMU_ADDR, 0x3B, 6)
+        ax_raw = s16(accel[0], accel[1])
+        ay_raw = s16(accel[2], accel[3])
+        az_raw = s16(accel[4], accel[5])
+
+        # 第二次：陀螺仪 6 字节（寄存器 0x43-0x48，跳过 0x41-0x42 温度）
+        gyro = bus.read_i2c_block_data(IMU_ADDR, 0x43, 6)
+        gx_raw = s16(gyro[0], gyro[1])
+        gy_raw = s16(gyro[2], gyro[3])
+        gz_raw = s16(gyro[4], gyro[5])
 
         accel_scale = 16384.0   # ±2g
         gyro_scale  = 131.0     # ±250°/s

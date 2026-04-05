@@ -156,20 +156,27 @@ class Imu:
             self._bus.write_byte_data(self._addr, _REG_ACCEL_CONFIG, 0x00)  # ±2g
 
     def _read_raw(self) -> ImuReading:
-        """读取 14 字节原始数据并转换为物理量（持有 _i2c_lock 期间调用）。"""
-        data = self._bus.read_i2c_block_data(self._addr, _REG_ACCEL_XOUT_H, 14)
+        """读取加速度计和陀螺仪原始数据并转换为物理量（持有 _i2c_lock 期间调用）。
 
+        拆分为两次独立的 6 字节读取，避免 MPU6050 在温度寄存器之后做 clock stretching
+        导致 RPi5 RP1/bit-bang 驱动读到全 0xFF 的陀螺仪数据。
+        """
         def to_int16(hi: int, lo: int) -> int:
             v = (hi << 8) | lo
             return v - 65536 if v > 32767 else v
 
-        ax = to_int16(data[0],  data[1])  / _ACCEL_SCALE
-        ay = to_int16(data[2],  data[3])  / _ACCEL_SCALE
-        az = to_int16(data[4],  data[5])  / _ACCEL_SCALE
-        # data[6:8] = Temperature（跳过）
-        gx = to_int16(data[8],  data[9])  / _GYRO_SCALE
-        gy = to_int16(data[10], data[11]) / _GYRO_SCALE
-        gz = to_int16(data[12], data[13]) / _GYRO_SCALE
+        # 第一次：加速度计 6 字节（0x3B-0x40）
+        accel = self._bus.read_i2c_block_data(self._addr, _REG_ACCEL_XOUT_H, 6)
+        ax = to_int16(accel[0], accel[1]) / _ACCEL_SCALE
+        ay = to_int16(accel[2], accel[3]) / _ACCEL_SCALE
+        az = to_int16(accel[4], accel[5]) / _ACCEL_SCALE
+
+        # 第二次：陀螺仪 6 字节（0x43-0x48，跳过 0x41-0x42 温度寄存器）
+        gyro = self._bus.read_i2c_block_data(self._addr, 0x43, 6)
+        gx = to_int16(gyro[0], gyro[1]) / _GYRO_SCALE
+        gy = to_int16(gyro[2], gyro[3]) / _GYRO_SCALE
+        gz = to_int16(gyro[4], gyro[5]) / _GYRO_SCALE
+
         return ImuReading(gx, gy, gz, ax, ay, az, time.monotonic())
 
     def _calibrate_gyro(self) -> None:
