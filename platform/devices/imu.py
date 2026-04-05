@@ -142,13 +142,14 @@ class Imu:
     # ─── 内部：设备初始化 ─────────────────────────────────────────
 
     def _init_device(self) -> None:
-        """复位并唤醒 MPU6050/MPU6500，配置量程 & 采样率。"""
+        """唤醒 MPU6050/MPU6500，配置量程 & 采样率。
+
+        跳过软复位（DEVICE_RESET 写入后芯片内部重载配置，会做极长 clock stretching，
+        触发 RPi5 RP1 硬件 I2C 的 Errno 110 超时）。直接唤醒并配置寄存器即可。
+        """
         with self._i2c_lock:
-            # 先软复位，确保从干净状态启动（防止上次异常导致内部状态混乱）
-            self._bus.write_byte_data(self._addr, _REG_PWR_MGMT_1, 0x80)  # DEVICE_RESET
-            time.sleep(0.15)
             self._bus.write_byte_data(self._addr, _REG_PWR_MGMT_1, 0x00)  # 退出睡眠
-            time.sleep(0.15)
+            time.sleep(0.05)
             # 采样率 = 陀螺仪输出频率 / (SMPLRT_DIV + 1)
             # 配置低通滤波后陀螺仪输出频率 = 1000Hz，目标 100Hz → DIV = 9
             self._bus.write_byte_data(self._addr, _REG_SMPLRT_DIV,  0x09)
