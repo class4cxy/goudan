@@ -159,8 +159,6 @@ class Imu:
             self._bus.write_byte_data(self._addr, _REG_CONFIG,       0x03)  # 低通 44Hz
             self._bus.write_byte_data(self._addr, _REG_GYRO_CONFIG,  _GYRO_FS_250_DEG)
             self._bus.write_byte_data(self._addr, _REG_ACCEL_CONFIG, 0x00)  # ±2g
-            # 使能 DATA_RDY 信号，供 _read_raw 轮询 INT_STATUS 判断 ADC 是否就绪
-            self._bus.write_byte_data(self._addr, _REG_INT_ENABLE,   0x01)
 
     # 加速度计配置 ±2g，超过此值肯定是乱码（加 50% 裕量）
     _ACCEL_MAX_G  = 3.0
@@ -183,14 +181,6 @@ class Imu:
         last_exc: Exception | None = None
         for attempt in range(self._MAX_RETRIES):
             try:
-                # 等待 ADC 数据就绪（轮询 INT_STATUS bit0=DATA_RDY_INT）
-                # 读控制寄存器（0x3A）不触发 clock stretching，安全
-                # 最多等 30ms（100Hz 采样率下最长 10ms，留 3× 裕量）
-                for _ in range(30):
-                    if self._bus.read_byte_data(self._addr, _REG_INT_STATUS) & 0x01:
-                        break
-                    time.sleep(0.001)
-
                 # 加速度计 6 字节（0x3B-0x40）
                 accel = self._bus.read_i2c_block_data(self._addr, _REG_ACCEL_XOUT_H, 6)
                 ax = to_int16(accel[0], accel[1]) / _ACCEL_SCALE
