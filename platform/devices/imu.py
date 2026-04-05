@@ -195,9 +195,26 @@ class Imu:
             logger.warning(f"[IMU] 零偏校准失败：{e}")
             self._gyro_bias_z = 0.0
 
+    def _reinit_bus(self) -> None:
+        """I2C 总线重置：关闭并重新打开 SMBus，重新初始化设备寄存器。"""
+        try:
+            if self._bus:
+                self._bus.close()
+        except Exception:
+            pass
+        try:
+            import smbus2
+            self._bus = smbus2.SMBus(self.I2C_BUS)
+            self._init_device()
+            logger.info("[IMU] I2C 总线已重置，设备重新初始化")
+        except Exception as e:
+            logger.warning(f"[IMU] I2C 重置失败：{e}")
+
     def _sample_loop(self) -> None:
         interval = 1.0 / self.SAMPLE_HZ
         consecutive_errors = 0
+        # 连续失败超过此次数时尝试重新初始化 I2C（约 0.5s）
+        _REINIT_THRESHOLD = 50
         while self._running:
             t0 = time.monotonic()
             try:
@@ -217,13 +234,15 @@ class Imu:
                 consecutive_errors = 0
             except Exception as e:
                 consecutive_errors += 1
-                # 连续失败 10 次（~0.1s）升级为 WARNING，避免静默冻结
                 if consecutive_errors == 10:
                     logger.warning(f"[IMU] 采样连续失败 {consecutive_errors} 次，数据已冻结：{e}")
-                elif consecutive_errors % 100 == 0:
-                    logger.warning(f"[IMU] 采样持续失败（{consecutive_errors} 次），最后错误：{e}")
+                elif consecutive_errors == _REINIT_THRESHOLD:
+                    logger.warning(f"[IMU] 采样持续失败 {consecutive_errors} 次，尝试重置 I2C 总线")
+                    with self._i2c_lock:
+                        self._reinit_bus()
+                    consecutive_errors = 0
                 else:
-                    logger.debug(f"[IMU] 采样异常：{e}")
+                    logger.debug(f"[IMU] 采样异常（第{consecutive_errors}次）：{e}")
             elapsed = time.monotonic() - t0
             time.sleep(max(0.0, interval - elapsed))
 
