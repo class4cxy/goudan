@@ -84,7 +84,7 @@ class Imu:
     """
 
     I2C_BUS   = 1       # RPi 默认 I2C 总线编号
-    SAMPLE_HZ = 100
+    SAMPLE_HZ = 10      # 硬件 I2C 50kHz 下降低采样率，给 MPU6500 ADC 足够间隔避免 clock stretching 超时
 
     def __init__(self, i2c_addr: int | None = None) -> None:
         addr_str = os.environ.get("IMU_I2C_ADDR", "0x68")
@@ -112,6 +112,8 @@ class Imu:
             import smbus2
             self._bus = smbus2.SMBus(self.I2C_BUS)
             self._init_device()
+            # 先校准（50 次单次读，间隔 10ms，充当 ADC 热身）再启动连续采样线程
+            self._calibrate_gyro()
             self._running = True
             self._thread  = threading.Thread(
                 target=self._sample_loop,
@@ -119,9 +121,6 @@ class Imu:
                 name="imu-sampler",
             )
             self._thread.start()
-            # 等待采样稳定后校准零偏
-            time.sleep(0.6)
-            self._calibrate_gyro()
             logger.info(
                 f"[IMU] MPU6050 已启动（0x{self._addr:02X}），"
                 f"gyro_bias_z={self._gyro_bias_z:.3f}°/s"
@@ -152,13 +151,15 @@ class Imu:
         """
         with self._i2c_lock:
             self._bus.write_byte_data(self._addr, _REG_PWR_MGMT_1, 0x00)  # 退出睡眠
-            time.sleep(0.05)
+            time.sleep(0.1)
             # 采样率 = 陀螺仪输出频率 / (SMPLRT_DIV + 1)
             # 配置低通滤波后陀螺仪输出频率 = 1000Hz，目标 100Hz → DIV = 9
             self._bus.write_byte_data(self._addr, _REG_SMPLRT_DIV,  0x09)
             self._bus.write_byte_data(self._addr, _REG_CONFIG,       0x03)  # 低通 44Hz
             self._bus.write_byte_data(self._addr, _REG_GYRO_CONFIG,  _GYRO_FS_250_DEG)
             self._bus.write_byte_data(self._addr, _REG_ACCEL_CONFIG, 0x00)  # ±2g
+            # 配置完成后等待 ADC 以新采样率完成首批转换，否则首次读取触发过长 clock stretching
+            time.sleep(0.5)
 
     # 加速度计配置 ±2g，超过此值肯定是乱码（加 50% 裕量）
     _ACCEL_MAX_G  = 3.0
