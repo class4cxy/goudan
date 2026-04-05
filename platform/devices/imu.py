@@ -29,6 +29,7 @@ IMU — MPU6050/MPU6500 陀螺仪/加速度计驱动
   accel_x/y (g)   — 加速度，可用于检测碰撞/斜坡（当前仅采集，未深度使用）
 """
 
+import math
 import os
 import threading
 import time
@@ -155,29 +156,59 @@ class Imu:
             self._bus.write_byte_data(self._addr, _REG_GYRO_CONFIG,  _GYRO_FS_250_DEG)
             self._bus.write_byte_data(self._addr, _REG_ACCEL_CONFIG, 0x00)  # ±2g
 
+    # 加速度计配置 ±2g，超过此值肯定是乱码（加 50% 裕量）
+    _ACCEL_MAX_G  = 3.0
+    # 陀螺仪配置 ±250°/s，超过此值肯定是乱码
+    _GYRO_MAX_DPS = 280.0
+    # 最大重试次数（每次 _read_raw 调用）
+    _MAX_RETRIES  = 3
+
     def _read_raw(self) -> ImuReading:
         """读取加速度计和陀螺仪原始数据并转换为物理量（持有 _i2c_lock 期间调用）。
 
         拆分为两次独立的 6 字节读取，避免 MPU6050 在温度寄存器之后做 clock stretching
         导致 RPi5 RP1/bit-bang 驱动读到全 0xFF 的陀螺仪数据。
+        每次读取最多重试 _MAX_RETRIES 次，并校验物理量范围以丢弃乱码帧。
         """
         def to_int16(hi: int, lo: int) -> int:
             v = (hi << 8) | lo
             return v - 65536 if v > 32767 else v
 
-        # 第一次：加速度计 6 字节（0x3B-0x40）
-        accel = self._bus.read_i2c_block_data(self._addr, _REG_ACCEL_XOUT_H, 6)
-        ax = to_int16(accel[0], accel[1]) / _ACCEL_SCALE
-        ay = to_int16(accel[2], accel[3]) / _ACCEL_SCALE
-        az = to_int16(accel[4], accel[5]) / _ACCEL_SCALE
+        last_exc: Exception | None = None
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                # 加速度计 6 字节（0x3B-0x40）
+                accel = self._bus.read_i2c_block_data(self._addr, _REG_ACCEL_XOUT_H, 6)
+                ax = to_int16(accel[0], accel[1]) / _ACCEL_SCALE
+                ay = to_int16(accel[2], accel[3]) / _ACCEL_SCALE
+                az = to_int16(accel[4], accel[5]) / _ACCEL_SCALE
 
-        # 第二次：陀螺仪 6 字节（0x43-0x48，跳过 0x41-0x42 温度寄存器）
-        gyro = self._bus.read_i2c_block_data(self._addr, 0x43, 6)
-        gx = to_int16(gyro[0], gyro[1]) / _GYRO_SCALE
-        gy = to_int16(gyro[2], gyro[3]) / _GYRO_SCALE
-        gz = to_int16(gyro[4], gyro[5]) / _GYRO_SCALE
+                # 陀螺仪 6 字节（0x43-0x48，跳过 0x41-0x42 温度寄存器）
+                gyro = self._bus.read_i2c_block_data(self._addr, 0x43, 6)
+                gx = to_int16(gyro[0], gyro[1]) / _GYRO_SCALE
+                gy = to_int16(gyro[2], gyro[3]) / _GYRO_SCALE
+                gz = to_int16(gyro[4], gyro[5]) / _GYRO_SCALE
 
-        return ImuReading(gx, gy, gz, ax, ay, az, time.monotonic())
+                # 范围校验：超出配置量程的值一定是乱码（I2C 位翻转/字节偏移）
+                if (abs(ax) > self._ACCEL_MAX_G or abs(ay) > self._ACCEL_MAX_G
+                        or abs(az) > self._ACCEL_MAX_G):
+                    raise ValueError(
+                        f"accel out of range: ax={ax:.3f} ay={ay:.3f} az={az:.3f}"
+                    )
+                if (abs(gx) > self._GYRO_MAX_DPS or abs(gy) > self._GYRO_MAX_DPS
+                        or abs(gz) > self._GYRO_MAX_DPS):
+                    raise ValueError(
+                        f"gyro out of range: gx={gx:.1f} gy={gy:.1f} gz={gz:.1f}"
+                    )
+
+                return ImuReading(gx, gy, gz, ax, ay, az, time.monotonic())
+
+            except Exception as e:
+                last_exc = e
+                if attempt < self._MAX_RETRIES - 1:
+                    time.sleep(0.001)   # 1ms 让总线从错误状态恢复
+
+        raise last_exc  # type: ignore[misc]
 
     def _calibrate_gyro(self) -> None:
         """静止 N 帧平均，估算并记录陀螺仪 Z 轴零偏。
