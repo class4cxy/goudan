@@ -179,20 +179,19 @@ class Imu:
             v = (hi << 8) | lo
             return v - 65536 if v > 32767 else v
 
+        def rb(reg: int) -> int:
+            return self._bus.read_byte_data(self._addr, reg)
+
         last_exc: Exception | None = None
         for attempt in range(self._MAX_RETRIES):
             try:
-                # 加速度计 6 字节（0x3B-0x40）
-                accel = self._bus.read_i2c_block_data(self._addr, _REG_ACCEL_XOUT_H, 6)
-                ax = to_int16(accel[0], accel[1]) / _ACCEL_SCALE
-                ay = to_int16(accel[2], accel[3]) / _ACCEL_SCALE
-                az = to_int16(accel[4], accel[5]) / _ACCEL_SCALE
-
-                # 陀螺仪 6 字节（0x43-0x48，跳过 0x41-0x42 温度寄存器）
-                gyro = self._bus.read_i2c_block_data(self._addr, _REG_GYRO_XOUT_H, 6)
-                gx = to_int16(gyro[0], gyro[1]) / _GYRO_SCALE
-                gy = to_int16(gyro[2], gyro[3]) / _GYRO_SCALE
-                gz = to_int16(gyro[4], gyro[5]) / _GYRO_SCALE
+                # 逐字节读取：每次事务只读 1 字节，clock stretching 更短，50kHz 下更稳定
+                ax = to_int16(rb(0x3B), rb(0x3C)) / _ACCEL_SCALE
+                ay = to_int16(rb(0x3D), rb(0x3E)) / _ACCEL_SCALE
+                az = to_int16(rb(0x3F), rb(0x40)) / _ACCEL_SCALE
+                gx = to_int16(rb(0x43), rb(0x44)) / _GYRO_SCALE
+                gy = to_int16(rb(0x45), rb(0x46)) / _GYRO_SCALE
+                gz = to_int16(rb(0x47), rb(0x48)) / _GYRO_SCALE
 
                 # 范围校验：超出配置量程的值一定是乱码（I2C 位翻转/字节偏移）
                 if (abs(ax) > self._ACCEL_MAX_G or abs(ay) > self._ACCEL_MAX_G
@@ -226,10 +225,19 @@ class Imu:
         for _ in range(_CALIBRATION_FRAMES):
             try:
                 with self._i2c_lock:
-                    samples.append(self._read_raw().gyro_z)
+                    # 校准期间只读一次，失败直接跳过，不做重试（避免反复砸总线）
+                    def to_int16(hi: int, lo: int) -> int:
+                        v = (hi << 8) | lo
+                        return v - 65536 if v > 32767 else v
+                    gyro = self._bus.read_i2c_block_data(self._addr, _REG_GYRO_XOUT_H, 6)
+                    gz_raw = to_int16(gyro[4], gyro[5]) / _GYRO_SCALE
+                    if abs(gz_raw) < self._GYRO_MAX_DPS:
+                        samples.append(gz_raw)
+                    else:
+                        errors += 1
             except Exception:
                 errors += 1
-            time.sleep(0.01)
+            time.sleep(0.02)   # 20ms 间隔，比 100Hz 采样更慢，减少 clock stretching 压力
 
         min_samples = _CALIBRATION_FRAMES // 2
         if len(samples) >= min_samples:
