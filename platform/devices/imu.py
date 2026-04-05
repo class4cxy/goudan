@@ -182,17 +182,34 @@ class Imu:
     def _calibrate_gyro(self) -> None:
         """静止 N 帧平均，估算并记录陀螺仪 Z 轴零偏。
 
+        跳过单帧 I2C 错误，只要成功帧 >= _CALIBRATION_FRAMES // 2 就计算均值。
         采样间隔 10ms（与 _sample_loop 错开），避免与采样线程竞争 _i2c_lock。
         """
-        try:
-            samples: list[float] = []
-            for _ in range(_CALIBRATION_FRAMES):
+        samples: list[float] = []
+        errors = 0
+        for _ in range(_CALIBRATION_FRAMES):
+            try:
                 with self._i2c_lock:
                     samples.append(self._read_raw().gyro_z)
-                time.sleep(0.01)   # 10ms 间隔，让采样线程有机会获锁
-            self._gyro_bias_z = sum(samples) / len(samples)
-        except Exception as e:
-            logger.warning(f"[IMU] 零偏校准失败：{e}")
+            except Exception:
+                errors += 1
+            time.sleep(0.01)
+
+        min_samples = _CALIBRATION_FRAMES // 2
+        if len(samples) >= min_samples:
+            # 用中位数剔除偶发乱码帧（如 164°/s 的尖峰）后取均值
+            samples.sort()
+            trimmed = samples[len(samples) // 4 : len(samples) * 3 // 4]
+            self._gyro_bias_z = sum(trimmed) / len(trimmed)
+            logger.info(
+                f"[IMU] 零偏校准完成：bias_z={self._gyro_bias_z:.3f}°/s"
+                f"（成功 {len(samples)} 帧，跳过 {errors} 帧）"
+            )
+        else:
+            logger.warning(
+                f"[IMU] 零偏校准失败：仅获得 {len(samples)}/{_CALIBRATION_FRAMES} 帧"
+                f"（需 >= {min_samples}），bias_z 保持 0"
+            )
             self._gyro_bias_z = 0.0
 
     def _reinit_bus(self) -> None:
