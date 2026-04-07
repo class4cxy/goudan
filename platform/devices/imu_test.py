@@ -1,28 +1,33 @@
 """
-MPU6050 IMU 真机测试脚本
-=========================
-在树莓派上运行（MPU6050 通过 I2C 接线完成后）。
+BNO055 IMU 真机测试脚本
+========================
+在树莓派上运行（BNO055 通过 CP2102 USB-UART 适配器接入后）。
 
 接线（见 docs/HARDWARE.md §7）：
-  MPU6050 VCC → 树莓派 3.3V（Pin 1 或 Pin 17）
-  MPU6050 GND → GND
-  MPU6050 SDA → GPIO 2（I2C1 SDA，物理引脚 3）
-  MPU6050 SCL → GPIO 3（I2C1 SCL，物理引脚 5）
-  MPU6050 AD0 → GND（I2C 地址 0x68）
+  BNO055 VCC  → CP2102 3.3V（或树莓派 3.3V Pin 1）
+  BNO055 GND  → GND
+  BNO055 ATX  → CP2102 RXD
+  BNO055 LRX  → CP2102 TXD
+  CP2102 USB  → 树莓派 USB → /dev/ttyUSB1（LD06 雷达占 /dev/ttyUSB0）
+
+UART 模式切换（必须）：
+  模块背面 S0 焊盘短接（PS0=HIGH）→ 切换为 UART 模式
+  出厂默认 I2C，不短接 S0 则 BNO055 不响应 UART
 
 前提：
-  1. sudo raspi-config → Interface Options → I2C → Enable
-  2. pip install smbus2
-  3. i2cdetect -y 1  （应看到 0x68）
+  1. pip install pyserial（激光雷达已安装，通常已满足）
+  2. 短接 BNO055 模块背面 S0 焊盘
+  3. 插入 CP2102，确认 /dev/ttyUSB1 出现
 
 用法：
   python3 imu_test.py              # 交互式菜单
   python3 imu_test.py --test 1    # 直接运行指定测试（1-6）
   python3 imu_test.py --stream    # 直接进入实时数据流（等同于 --test 3）
+  python3 imu_test.py --port /dev/ttyUSB2  # 指定串口
 
 测试项：
-  1. I2C 总线扫描（确认 MPU6050 存在）
-  2. 单次原始寄存器读取（直接操作寄存器，不走 Imu 类）
+  1. 串口设备检测（列出 /dev/ttyUSB*，确认设备节点）
+  2. BNO055 CHIP_ID 验证（原始 UART，不走 Imu 类）
   3. 实时数据流（连续滚动，Ctrl+C 停止）
   4. 静止零偏校准分析（采集 200 帧，输出均值/标准差）
   5. 振动响应测试（检测摇晃时加速度计是否变化）
@@ -30,6 +35,7 @@ MPU6050 IMU 真机测试脚本
 """
 
 import argparse
+import glob
 import math
 import os
 import sys
@@ -40,180 +46,185 @@ sys.path.insert(0, str(Path(__file__).parent))         # platform/devices/
 sys.path.insert(0, str(Path(__file__).parent.parent))  # platform/
 from imu import Imu, ImuReading
 
-DIVIDER = "─" * 60
-IMU_ADDR = 0x68   # AD0→GND 时的默认地址
+DIVIDER  = "─" * 60
+DEF_PORT = os.environ.get("IMU_SERIAL_PORT", "/dev/ttyUSB1")
+BAUD     = 115200
+
+# BNO055 UART 协议常量（测试 2 直接使用原始串口）
+_START, _READ, _WRITE = 0xAA, 0x01, 0x00
+_RESP_READ, _RESP_WRITE = 0xBB, 0xEE
+_MODE_CONFIG, _MODE_IMU = 0x00, 0x08
+_REG_CHIP_ID, _REG_OPR_MODE, _REG_UNIT_SEL = 0x00, 0x3D, 0x3B
+_REG_ACC_DATA, _REG_GYR_DATA = 0x08, 0x14
 
 
-# ── 测试 1：I2C 总线扫描 ──────────────────────────────────────────
+# ── 工具函数 ──────────────────────────────────────────────────────
 
-def test_i2c_scan():
-    """
-    使用系统 i2cdetect 命令扫描总线。
+def _s16(lo: int, hi: int) -> int:
+    v = (hi << 8) | lo
+    return v - 65536 if v > 32767 else v
 
-    不使用 smbus2 逐地址 read_byte() 扫描，原因：若 I2C 总线已锁死
-    （设备异常中断时 SDA 未释放），smbus2 read_byte 会永久阻塞；
-    而 i2cdetect 通过内核 ioctl 实现，带超时保护，不会挂死进程。
-    """
+
+def _uart_read(ser, reg: int, length: int) -> bytes:
+    ser.reset_input_buffer()
+    ser.write(bytes([_START, _READ, reg, length]))
+    header = ser.read(2)
+    if len(header) < 2 or header[0] != _RESP_READ:
+        raise RuntimeError(f"响应头异常：{header.hex() if header else '空'}")
+    data = ser.read(length)
+    if len(data) < length:
+        raise TimeoutError(f"数据不足（期望 {length}，实际 {len(data)}）")
+    return data
+
+
+def _uart_write(ser, reg: int, value: int) -> None:
+    ser.reset_input_buffer()
+    ser.write(bytes([_START, _WRITE, reg, 0x01, value]))
+    resp = ser.read(2)
+    if len(resp) < 2 or resp[0] != _RESP_WRITE or resp[1] != 0x01:
+        raise RuntimeError(f"写失败：resp={resp.hex() if resp else '空'}")
+
+
+# ── 测试 1：串口设备检测 ──────────────────────────────────────────
+
+def test_port_detect():
     print(f"\n{DIVIDER}")
-    print("  测试 1 — I2C 总线扫描")
+    print("  测试 1 — 串口设备检测")
     print(DIVIDER)
 
-    import shutil
-    import subprocess
+    usb_ports = sorted(glob.glob("/dev/ttyUSB*"))
+    acm_ports = sorted(glob.glob("/dev/ttyACM*"))
+    all_ports  = usb_ports + acm_ports
 
-    if not shutil.which("i2cdetect"):
-        print("  ❌ 未找到 i2cdetect，请安装：sudo apt install i2c-tools")
+    if not all_ports:
+        print("  ❌ 未发现任何 /dev/ttyUSB* 或 /dev/ttyACM* 设备")
+        print("  排查：CP2102 是否插入 USB？驱动已加载？（lsmod | grep cp210x）")
         return
 
-    print("  扫描 I2C1 总线（调用 i2cdetect -y 1）...")
-    try:
-        result = subprocess.run(
-            ["i2cdetect", "-y", "1"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        print("  ❌ i2cdetect 超时（10s）—— I2C 总线可能已锁死")
-        print("  处理：断电重连 MPU6050 模块，或 sudo reboot")
-        return
-    except Exception as e:
-        print(f"  ❌ 运行 i2cdetect 失败：{e}")
-        return
+    print(f"  发现 {len(all_ports)} 个串口设备：")
+    for p in all_ports:
+        hint = ""
+        if "USB0" in p:
+            hint = "← 通常为 LD06 激光雷达"
+        elif "USB1" in p:
+            hint = "← 通常为 BNO055 IMU（本脚本目标）"
+        print(f"    {p}  {hint}")
 
     print()
-    print(result.stdout)
-
-    # 解析 i2cdetect 输出中的地址（格式：两位十六进制，非 -- 或 UU）
-    found: list[int] = []
-    for line in result.stdout.splitlines():
-        parts = line.split(":")
-        if len(parts) < 2:
-            continue
-        for token in parts[1].split():
-            if token not in ("--", "UU") and len(token) == 2:
-                try:
-                    found.append(int(token, 16))
-                except ValueError:
-                    pass
-
-    labels = {0x40: "INA219 电源传感器", 0x68: "MPU6050 IMU", 0x69: "MPU（AD0=HIGH）"}
-    if found:
-        print(f"  发现 {len(found)} 个设备：")
-        for addr in sorted(found):
-            label = labels.get(addr, "未知设备")
-            print(f"    0x{addr:02X}  ← {label}")
-        if IMU_ADDR in found or 0x69 in found:
-            print(f"\n  ✅ MPU 已识别，地址 0x{IMU_ADDR:02X}")
-        else:
-            print(f"\n  ❌ MPU（0x{IMU_ADDR:02X}）未找到")
-            print("  排查：VCC→3.3V，SDA→Pin3，SCL→Pin5，AD0→GND，检查虚焊")
+    if DEF_PORT in all_ports:
+        print(f"  ✅ 目标端口 {DEF_PORT} 已就绪")
     else:
-        print("  ❌ 总线上未发现任何设备")
-        print("  排查：1) I2C 已启用？  2) SDA/SCL 接线正确？  3) VCC 已供电？")
-        print("  若 I2C 总线锁死：断电重连模块，或 sudo reboot")
+        print(f"  ⚠  目标端口 {DEF_PORT} 不存在")
+        print(f"  提示：若设备节点不同，用 --port /dev/ttyUSBx 指定，")
+        print(f"       或设置环境变量 IMU_SERIAL_PORT=/dev/ttyUSBx")
 
 
-# ── 测试 2：单次原始寄存器读取 ───────────────────────────────────
+# ── 测试 2：BNO055 CHIP_ID 验证 ──────────────────────────────────
 
-def test_raw_register():
+def test_chip_id(port: str):
     print(f"\n{DIVIDER}")
-    print("  测试 2 — 原始寄存器读取（不走 Imu 类）")
+    print("  测试 2 — BNO055 CHIP_ID 验证（原始 UART，不走 Imu 类）")
     print(DIVIDER)
+
     try:
-        import smbus2
-        bus = smbus2.SMBus(1)
+        import serial
+    except ImportError:
+        print("  ❌ pyserial 未安装：pip install pyserial")
+        return
+
+    print(f"  打开 {port} @ {BAUD}bps...")
+    try:
+        ser = serial.Serial(port, baudrate=BAUD, timeout=0.5)
     except Exception as e:
-        print(f"  ❌ I2C 初始化失败：{e}")
+        print(f"  ❌ 串口打开失败：{e}")
+        print("  排查：设备节点存在？CP2102 已插入？有读写权限（sudo usermod -aG dialout $USER）？")
         return
 
     try:
-        # 读 WHO_AM_I 寄存器（0x75）
-        # MPU6050 → 0x68；MPU6500（GY-521 常见替代芯片）→ 0x70；两者寄存器兼容
-        who = bus.read_byte_data(IMU_ADDR, 0x75)
-        _KNOWN = {0x68: "MPU6050 ✅", 0x70: "MPU6500 ✅（与 MPU6050 寄存器兼容）"}
-        who_label = _KNOWN.get(who, f"❌ 未知芯片（0x{who:02X}），请核查型号")
-        print(f"  WHO_AM_I  = 0x{who:02X}  ← {who_label}")
+        print("  等待 BNO055 上电就绪（700ms）...")
+        time.sleep(0.70)
+        ser.reset_input_buffer()
 
-        # 唤醒设备（清除睡眠位）
-        bus.write_byte_data(IMU_ADDR, 0x6B, 0x00)
-        time.sleep(0.1)
+        # 切到 CONFIG 模式
+        _uart_write(ser, _REG_OPR_MODE, _MODE_CONFIG)
+        time.sleep(0.02)
 
-        def s16(hi, lo):
-            v = (hi << 8) | lo
-            return v - 65536 if v > 32767 else v
+        # 读 CHIP_ID
+        chip_id = _uart_read(ser, _REG_CHIP_ID, 1)[0]
+        print(f"\n  CHIP_ID = 0x{chip_id:02X}", end="  ")
+        if chip_id == 0xA0:
+            print("← BNO055 ✅")
+        else:
+            print(f"← ❌ 非预期值（期望 0xA0）")
+            print("  排查：S0 焊盘已短接？ATX/LRX 接线是否交叉（BNO055 ATX→CP2102 RXD）？")
+            return
 
-        def rb(reg):
-            return bus.read_byte_data(IMU_ADDR, reg)
+        # 读加速度计原始值（默认模式下即可读取）
+        print()
+        print("  切换至 IMU 融合模式...")
+        _uart_write(ser, _REG_UNIT_SEL, 0x00)
+        _uart_write(ser, _REG_OPR_MODE, _MODE_IMU)
+        time.sleep(0.02)
 
-        # 逐字节读取：每次事务只读 1 字节，避免 block read 的 clock stretching 叠加超时
-        ax_raw = s16(rb(0x3B), rb(0x3C))
-        ay_raw = s16(rb(0x3D), rb(0x3E))
-        az_raw = s16(rb(0x3F), rb(0x40))
-        gx_raw = s16(rb(0x43), rb(0x44))
-        gy_raw = s16(rb(0x45), rb(0x46))
-        gz_raw = s16(rb(0x47), rb(0x48))
+        accel = _uart_read(ser, _REG_ACC_DATA, 6)
+        gyro  = _uart_read(ser, _REG_GYR_DATA, 6)
 
-        accel_scale = 16384.0   # ±2g
-        gyro_scale  = 131.0     # ±250°/s
+        ACCEL_SCALE = 100.0 * 9.80665
+        GYRO_SCALE  = 16.0
+
+        ax = _s16(accel[0], accel[1]) / ACCEL_SCALE
+        ay = _s16(accel[2], accel[3]) / ACCEL_SCALE
+        az = _s16(accel[4], accel[5]) / ACCEL_SCALE
+        gx = _s16(gyro[0],  gyro[1])  / GYRO_SCALE
+        gy = _s16(gyro[2],  gyro[3])  / GYRO_SCALE
+        gz = _s16(gyro[4],  gyro[5])  / GYRO_SCALE
 
         print()
-        print(f"  ── 加速度计（±2g，16384 LSB/g）")
-        print(f"    accel_x = {ax_raw:7d} LSB  →  {ax_raw/accel_scale:+7.4f} g")
-        print(f"    accel_y = {ay_raw:7d} LSB  →  {ay_raw/accel_scale:+7.4f} g")
-        print(f"    accel_z = {az_raw:7d} LSB  →  {az_raw/accel_scale:+7.4f} g")
-        az_g = az_raw / accel_scale
-        # 静止平放时 az 应约为 ±1g（重力方向），accel_x/y 约为 0
-        if abs(abs(az_g) - 1.0) < 0.2:
-            print(f"    → 芯片平放，Z 轴感受到重力（{az_g:+.3f}g ≈ ±1g）✅")
-        else:
-            magnitude = math.sqrt(
-                (ax_raw/accel_scale)**2 +
-                (ay_raw/accel_scale)**2 +
-                (az_raw/accel_scale)**2
-            )
-            print(f"    → 合加速度 = {magnitude:.3f}g（静止时应约 1.0g）")
+        print(f"  ── 加速度计（m/s² 转 g，平放时 az ≈ ±1g）")
+        print(f"    accel_x = {ax:+8.4f} g")
+        print(f"    accel_y = {ay:+8.4f} g")
+        print(f"    accel_z = {az:+8.4f} g")
+        mag = math.sqrt(ax**2 + ay**2 + az**2)
+        print(f"    合加速度 = {mag:.4f}g  {'✅（≈1g，静止）' if abs(mag - 1.0) < 0.2 else '⚠ 偏离1g，检查安装方向'}")
 
         print()
-        print(f"  ── 陀螺仪（±250°/s，131 LSB/(°/s)）")
-        print(f"    gyro_x  = {gx_raw:7d} LSB  →  {gx_raw/gyro_scale:+7.3f} °/s")
-        print(f"    gyro_y  = {gy_raw:7d} LSB  →  {gy_raw/gyro_scale:+7.3f} °/s")
-        print(f"    gyro_z  = {gz_raw:7d} LSB  →  {gz_raw/gyro_scale:+7.3f} °/s")
-        max_gyro = max(abs(gx_raw), abs(gy_raw), abs(gz_raw)) / gyro_scale
-        if max_gyro < 5.0:
-            print(f"    → 芯片静止，各轴角速度 < 5°/s ✅")
-        else:
-            print(f"    → 最大角速度 {max_gyro:.1f}°/s（静止时应 < 5°/s，请保持静止重试）")
+        print(f"  ── 陀螺仪（°/s，静止时应接近 0）")
+        print(f"    gyro_x = {gx:+8.3f} °/s")
+        print(f"    gyro_y = {gy:+8.3f} °/s")
+        print(f"    gyro_z = {gz:+8.3f} °/s")
 
-        bus.close()
-        print(f"\n  ✅ 寄存器读取正常")
+        print(f"\n  ✅ BNO055 通信正常，数据读取成功")
+
     except Exception as e:
-        print(f"  ❌ 读取失败：{e}")
-        print("  排查：I2C 地址是否正确？接线是否牢固？")
-        bus.close()
+        print(f"  ❌ 通信失败：{e}")
+        print("  排查：S0 焊盘已短接（UART 模式）？接线 ATX→RXD / LRX→TXD 是否交叉？")
+    finally:
+        ser.close()
 
 
 # ── 测试 3：实时数据流 ────────────────────────────────────────────
 
-def test_stream(duration_s: int = 0):
+def test_stream(port: str, duration_s: int = 0):
     """连续打印 IMU 数据，duration_s=0 表示持续到 Ctrl+C。"""
     print(f"\n{DIVIDER}")
     label = f"实时数据流（{'Ctrl+C 停止' if duration_s == 0 else f'{duration_s}s'}）"
     print(f"  测试 3 — {label}")
     print(DIVIDER)
 
-    imu = Imu()
-    ok = imu.start()
+    imu = Imu(port)
+    ok  = imu.start()
     if not ok:
         print("  ❌ IMU 启动失败（模拟模式）")
-        print("  排查：smbus2 已安装？I2C 已启用？接线正确？")
+        print("  排查：串口存在？BNO055 上电？S0 已短接？")
         return
 
     print("  采样中... Ctrl+C 停止")
     print()
     print(f"  {'时间(s)':>8}  {'gyro_x':>8}  {'gyro_y':>8}  {'gyro_z':>8}  "
-          f"{'accel_x':>8}  {'accel_y':>8}  {'accel_z':>8}   合加速度")
+          f"{'accel_x':>8}  {'accel_y':>8}  {'accel_z':>8}  合加速度")
     print(f"  {'':>8}  {'(°/s)':>8}  {'(°/s)':>8}  {'(°/s)':>8}  "
           f"{'(g)':>8}  {'(g)':>8}  {'(g)':>8}")
-    print("  " + "─" * 80)
+    print("  " + "─" * 84)
 
     start = time.monotonic()
     try:
@@ -221,12 +232,12 @@ def test_stream(duration_s: int = 0):
             r = imu.get_latest()
             if r:
                 elapsed = time.monotonic() - start
-                magnitude = math.sqrt(r.accel_x**2 + r.accel_y**2 + r.accel_z**2)
+                mag = math.sqrt(r.accel_x**2 + r.accel_y**2 + r.accel_z**2)
                 print(
                     f"  {elapsed:>8.2f}  "
                     f"{r.gyro_x:>+8.2f}  {r.gyro_y:>+8.2f}  {r.gyro_z:>+8.2f}  "
                     f"{r.accel_x:>+8.4f}  {r.accel_y:>+8.4f}  {r.accel_z:>+8.4f}  "
-                    f"  {magnitude:.4f}g"
+                    f"  {mag:.4f}g"
                 )
             if duration_s and time.monotonic() - start >= duration_s:
                 break
@@ -235,26 +246,24 @@ def test_stream(duration_s: int = 0):
         print()
     finally:
         imu.stop()
-        print(f"\n  已停止。")
+        print("  已停止。")
 
 
 # ── 测试 4：静止零偏校准分析 ──────────────────────────────────────
 
-def test_calibration():
+def test_calibration(port: str):
     print(f"\n{DIVIDER}")
     print("  测试 4 — 静止零偏校准分析")
     print(DIVIDER)
     print("  ⚠  请将传感器放平静止，不要触碰，采集 200 帧约需 3 秒...")
 
-    imu = Imu()
-    ok = imu.start()
+    imu = Imu(port)
+    ok  = imu.start()
     if not ok:
-        print("  ❌ IMU 启动失败（模拟模式），请检查接线和 I2C 配置")
+        print("  ❌ IMU 启动失败（模拟模式），请检查接线和串口配置")
         return
 
-    # 等待启动稳定（imu.start 内部已 sleep 0.6s）
     time.sleep(0.5)
-
     samples: list[ImuReading] = []
     print("  采集中", end="", flush=True)
     deadline = time.monotonic() + 4.0
@@ -275,8 +284,8 @@ def test_calibration():
 
     def stats(vals):
         mean = sum(vals) / len(vals)
-        var  = sum((v - mean) ** 2 for v in vals) / len(vals)
-        return mean, math.sqrt(var)
+        std  = math.sqrt(sum((v - mean) ** 2 for v in vals) / len(vals))
+        return mean, std
 
     gx_m, gx_s = stats([s.gyro_x  for s in samples])
     gy_m, gy_s = stats([s.gyro_y  for s in samples])
@@ -285,15 +294,14 @@ def test_calibration():
     ay_m, ay_s = stats([s.accel_y for s in samples])
     az_m, az_s = stats([s.accel_z for s in samples])
 
-    # 时间戳差分估算实际采样率
-    dts = [samples[i+1].timestamp - samples[i].timestamp for i in range(len(samples)-1)]
-    avg_dt = sum(dts) / len(dts)
+    dts      = [samples[i+1].timestamp - samples[i].timestamp for i in range(len(samples)-1)]
+    avg_dt   = sum(dts) / len(dts) if dts else 1
     actual_hz = 1.0 / avg_dt if avg_dt > 0 else 0
 
     print(f"  ── 陀螺仪零偏（静止应接近 0°/s）")
     print(f"    gyro_x  均值={gx_m:+8.3f}°/s   标准差={gx_s:.4f}°/s")
     print(f"    gyro_y  均值={gy_m:+8.3f}°/s   标准差={gy_s:.4f}°/s")
-    print(f"    gyro_z  均值={gz_m:+8.3f}°/s   标准差={gz_s:.4f}°/s  ← 偏航轴（imu.py 已校准）")
+    print(f"    gyro_z  均值={gz_m:+8.3f}°/s   标准差={gz_s:.4f}°/s  ← 偏航轴（已去偏）")
     print()
     print(f"  ── 加速度计（平放时：ax≈0，ay≈0，az≈±1g）")
     print(f"    accel_x 均值={ax_m:+8.4f}g   标准差={ax_s:.5f}g")
@@ -301,27 +309,20 @@ def test_calibration():
     print(f"    accel_z 均值={az_m:+8.4f}g   标准差={az_s:.5f}g")
     print()
     print(f"  ── 采样率")
-    print(f"    实测 {actual_hz:.1f} Hz（目标 100 Hz，允许误差 ±10 Hz）")
+    print(f"    实测 {actual_hz:.1f} Hz（目标 100 Hz，允许误差 ±15 Hz）")
 
-    # gyro_z 是偏航轴，是里程计融合的关键轴，单独判断
-    # gyro_x/y 仅辅助采集（碰撞/斜坡），MPU6500 X/Y 轴硬件零偏可达 ±10°/s 属正常
-    ok_gyro_z = abs(gz_m) < 5.0
-    ok_accel  = abs(abs(az_m) - 1.0) < 0.15 and abs(ax_m) < 0.1 and abs(ay_m) < 0.1
-    ok_hz     = 85 <= actual_hz <= 115
+    ok_gz  = abs(gz_m) < 2.0
+    ok_acc = abs(abs(az_m) - 1.0) < 0.15 and abs(ax_m) < 0.1 and abs(ay_m) < 0.1
+    ok_hz  = 85 <= actual_hz <= 115
 
     print()
     print("  ── 综合判断")
-    print(f"    gyro_z 零偏  {'✅ 正常（< 5°/s）' if ok_gyro_z else '⚠  偏大，可能未静止或需重新上电校准'}"
+    print(f"    gyro_z 零偏  {'✅ 正常（< 2°/s）'   if ok_gz  else '⚠  偏大，请保持静止后重测'}"
           f"  ← 偏航轴（关键）")
-    gxy_note = "（MPU6500 X/Y 轴硬件零偏偏大属正常，不影响偏航融合）"
-    if abs(gx_m) > 5.0 or abs(gy_m) > 5.0:
-        print(f"    gyro_x/y     ℹ  x={gx_m:+.2f}°/s y={gy_m:+.2f}°/s {gxy_note}")
-    else:
-        print(f"    gyro_x/y     ✅ 正常")
-    print(f"    加速度计静止 {'✅ 正常（平放）'   if ok_accel else '⚠  az 偏离 1g，检查安装方向或接线'}")
-    print(f"    采样率       {'✅ 正常'           if ok_hz    else f'⚠  {actual_hz:.1f}Hz 偏离目标，检查 I2C 时钟'}")
+    print(f"    加速度计静止 {'✅ 正常（平放）'      if ok_acc else '⚠  az 偏离 1g，检查安装方向'}")
+    print(f"    采样率       {'✅ 正常'              if ok_hz  else f'⚠  {actual_hz:.1f}Hz 偏离目标'}")
 
-    if ok_gyro_z and ok_accel and ok_hz:
+    if ok_gz and ok_acc and ok_hz:
         print(f"\n  ✅ 校准分析通过，传感器工作正常，可集成到里程计")
     else:
         print(f"\n  ⚠  存在异常项，请对照提示排查后重新测试")
@@ -329,33 +330,29 @@ def test_calibration():
 
 # ── 测试 5：振动响应测试 ──────────────────────────────────────────
 
-def test_vibration():
+def test_vibration(port: str):
     print(f"\n{DIVIDER}")
     print("  测试 5 — 振动响应测试")
     print(DIVIDER)
     print("  将在 10 秒内持续监测合加速度，")
     print("  请在提示后用力摇晃传感器，观察数值是否响应。")
-    print()
 
-    imu = Imu()
-    ok = imu.start()
+    imu = Imu(port)
+    ok  = imu.start()
     if not ok:
         print("  ❌ IMU 启动失败（模拟模式）")
         return
 
     time.sleep(0.5)
-
-    SHAKE_THRESHOLD = 1.5  # g，超过此值判定为摇晃
+    SHAKE_THRESHOLD = 1.5
     baseline_samples: list[float] = []
 
-    # 采集 1.5s 静止基线
-    print("  [阶段 1/2] 静止基线采集（1.5s）...")
+    print("\n  [阶段 1/2] 静止基线采集（1.5s）...")
     deadline = time.monotonic() + 1.5
     while time.monotonic() < deadline:
         r = imu.get_latest()
         if r:
-            m = math.sqrt(r.accel_x**2 + r.accel_y**2 + r.accel_z**2)
-            baseline_samples.append(m)
+            baseline_samples.append(math.sqrt(r.accel_x**2 + r.accel_y**2 + r.accel_z**2))
         time.sleep(0.02)
 
     baseline = sum(baseline_samples) / len(baseline_samples) if baseline_samples else 1.0
@@ -374,8 +371,7 @@ def test_vibration():
             r = imu.get_latest()
             if r:
                 m = math.sqrt(r.accel_x**2 + r.accel_y**2 + r.accel_z**2)
-                if m > peak:
-                    peak = m
+                peak = max(peak, m)
                 shaking = m > SHAKE_THRESHOLD
                 if shaking:
                     shake_count += 1
@@ -401,12 +397,12 @@ def test_vibration():
         print(f"\n  ✅ 加速度计响应正常（峰值 {peak:.3f}g > 阈值 {SHAKE_THRESHOLD}g）")
     else:
         print(f"\n  ⚠  未检测到摇晃（峰值 {peak:.3f}g ≤ 阈值 {SHAKE_THRESHOLD}g）")
-        print("  请确认摇晃幅度足够大，或检查 accel_z 基线是否正常（应约 1g）")
+        print("  请确认摇晃幅度足够大，或检查接线")
 
 
 # ── 测试 6：偏航角积分演示 ────────────────────────────────────────
 
-def test_yaw_integration():
+def test_yaw_integration(port: str):
     print(f"\n{DIVIDER}")
     print("  测试 6 — 偏航角积分演示（gyro_z 积分）")
     print(DIVIDER)
@@ -414,20 +410,20 @@ def test_yaw_integration():
     print("  ● 顺时针旋转传感器 → 角度增大")
     print("  ● 逆时针旋转       → 角度减小")
     print("  ● 按 Ctrl+C 停止并显示累计角度")
-    print()
 
-    imu = Imu()
-    ok = imu.start()
+    imu = Imu(port)
+    ok  = imu.start()
     if not ok:
         print("  ❌ IMU 启动失败（模拟模式）")
         return
 
     time.sleep(0.5)
-    yaw_deg = 0.0
+    yaw_deg  = 0.0
     prev_ts: float | None = None
     frame_count = 0
+    BAR_WIDTH   = 40
 
-    BAR_WIDTH = 40
+    print()
     print(f"  {'角速度(°/s)':>12}  {'累计角度(°)':>13}  方向示意")
     print("  " + "─" * 60)
 
@@ -442,9 +438,8 @@ def test_yaw_integration():
                 prev_ts = r.timestamp
                 frame_count += 1
 
-                # 角度进度条：以 ±180° 为满量程
                 clamped = max(-180.0, min(180.0, yaw_deg))
-                filled = int(abs(clamped) / 180.0 * (BAR_WIDTH // 2))
+                filled  = int(abs(clamped) / 180.0 * (BAR_WIDTH // 2))
                 if clamped >= 0:
                     bar = " " * (BAR_WIDTH // 2) + "│" + "█" * filled + " " * (BAR_WIDTH // 2 - filled)
                 else:
@@ -474,10 +469,10 @@ def test_yaw_integration():
 
 MENU = """
 ╔══════════════════════════════════════════════════════╗
-║         MPU6050 IMU 测试工具                         ║
+║         BNO055 IMU 测试工具（UART via CP2102）       ║
 ╠══════════════════════════════════════════════════════╣
-║  1. I2C 总线扫描（确认设备地址）                     ║
-║  2. 原始寄存器读取（单次，不走 Imu 类）               ║
+║  1. 串口设备检测（列出 /dev/ttyUSB*）                ║
+║  2. CHIP_ID 验证（原始 UART，不走 Imu 类）           ║
 ║  3. 实时数据流（连续滚动，Ctrl+C 停止）               ║
 ║  4. 静止零偏校准分析（采 200 帧，输出均值/标准差）    ║
 ║  5. 振动响应测试（摇晃传感器验证加速度计）            ║
@@ -487,30 +482,34 @@ MENU = """
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MPU6050 IMU 测试工具")
-    parser.add_argument("--test", type=int, default=0, metavar="N",
+    parser = argparse.ArgumentParser(description="BNO055 IMU 测试工具（UART via CP2102）")
+    parser.add_argument("--test",   type=int, default=0, metavar="N",
                         help="直接运行指定测试（1-6）")
     parser.add_argument("--stream", action="store_true",
                         help="直接进入实时数据流（等同于 --test 3）")
+    parser.add_argument("--port",   type=str, default=DEF_PORT,
+                        help=f"串口设备节点（默认 {DEF_PORT}）")
     args = parser.parse_args()
 
+    port = args.port
+
     print("\n╔══════════════════════════════════════════════════════╗")
-    print("║         MPU6050 IMU 真机测试工具                     ║")
-    print("║  接线：VCC→3.3V，GND→GND，SDA→Pin3，SCL→Pin5       ║")
-    print("║  I2C 地址：0x68（AD0→GND）                          ║")
+    print("║         BNO055 IMU 真机测试工具                      ║")
+    print("║  接线：ATX→CP2102 RXD，LRX→CP2102 TXD，VCC→3.3V    ║")
+    print(f"║  串口：{port:<44} ║")
     print("╚══════════════════════════════════════════════════════╝")
 
     tests = {
-        1: test_i2c_scan,
-        2: test_raw_register,
-        3: test_stream,
-        4: test_calibration,
-        5: test_vibration,
-        6: test_yaw_integration,
+        1: lambda: test_port_detect(),
+        2: lambda: test_chip_id(port),
+        3: lambda: test_stream(port),
+        4: lambda: test_calibration(port),
+        5: lambda: test_vibration(port),
+        6: lambda: test_yaw_integration(port),
     }
 
     if args.stream:
-        test_stream()
+        test_stream(port)
         return
 
     if args.test:

@@ -7,8 +7,8 @@ platform/devices — 机器车硬件抽象层
     Encoder            — 双路编码器控制器（左轮 + 右轮）
     EncoderConfig      — 编码器 GPIO 引脚配置数据类
 
-  IMU（MPU6050 陀螺仪/加速度计）
-    Imu                — MPU6050 驱动，100Hz 后台采样
+  IMU（BNO055，UART via CP2102 USB-UART 适配器）
+    Imu                — BNO055 UART 驱动，100Hz 后台采样，IMU 融合模式
     ImuReading         — 单次采样数据（gyro_x/y/z, accel_x/y/z）
 
 

@@ -343,12 +343,12 @@ async def _startup():
                     encoder.status["pins"]["left_a"],  encoder.status["pins"]["left_b"],
                     encoder.status["pins"]["right_a"], encoder.status["pins"]["right_b"])
 
-    # 启动 IMU（MPU6050 I2C，非树莓派降级模拟）
+    # 启动 IMU（BNO055 UART via CP2102，串口不可用时降级模拟）
     await asyncio.to_thread(imu.start)
     if imu.is_simulation:
-        logger.warning("⚠️  IMU 运行在模拟模式（smbus2 未安装或 MPU6050 未接线）")
+        logger.warning("⚠️  IMU 运行在模拟模式（pyserial 未安装或 BNO055 未接线）")
     else:
-        logger.info("📐 IMU 已启动（MPU6050 @ %s）", imu.status["i2c_addr"])
+        logger.info("📐 IMU 已启动（BNO055 @ %s）", imu.status["serial_port"])
 
     # 启动里程计（后台 50Hz 更新线程）
     odometry.start()
@@ -1050,7 +1050,7 @@ async def motor_sensor_test(duration_s: float = 3.0):
     duration_s 秒后返回 IMU 和编码器的原始采样报告。
 
     重点诊断项：
-      - imu_simulation: true 说明 IMU 未接入或 smbus2 未安装
+      - imu_simulation: true 说明 IMU 未接入或 pyserial 未安装
       - encoder_simulation: true 说明编码器未接入或 lgpio 未安装
       - imu_gyro_z_peak: 手动旋转时应有明显数值（>10 °/s）
       - imu_integrated_deg: 旋转 90° 时应接近 90
@@ -1110,9 +1110,9 @@ async def motor_sensor_test(duration_s: float = 3.0):
             "latest":            imu.status.get("latest"),
             "diagnosis": (
                 "✅ IMU 正常（有角速度读数）" if gyro_z_peak > 1.0
-                else "⚠️ IMU 读数接近零，请检查：① MPU6050 接线 ② smbus2 安装 ③ I2C 是否启用"
+                else "⚠️ IMU 读数接近零，请检查：① BNO055 接线 ② S0 焊盘已短接 ③ /dev/ttyUSB1 存在"
                 if not imu.is_simulation
-                else "❌ IMU 运行在模拟模式（smbus2 未安装或 I2C 硬件不可用）"
+                else "❌ IMU 运行在模拟模式（pyserial 未安装或 BNO055 串口不可用）"
             ),
         },
         "encoder": {
