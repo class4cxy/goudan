@@ -288,7 +288,9 @@ def main():
         print("   确认以 root 或 gpio 组身份运行（sudo python3 ...）")
         sys.exit(1)
 
-    # ── 设置编码器输入引脚 + 回调 ────────────────────────────────────
+    # ── 设置编码器边沿监听 + 回调 ────────────────────────────────────
+    # 关键：必须用 gpio_claim_alert（启用边沿事件）而非 gpio_claim_input（仅配置为输入）
+    # gpio_claim_input 不会触发 lgpio callback；gpio_claim_alert 才会
     captures: dict[str, PulseCapture] = {}
     cb_handles = []
 
@@ -298,10 +300,15 @@ def main():
         return _cb
 
     for name, pin in _ENC_PINS.items():
-        ret = lgpio.gpio_claim_input(chip, pin, lgpio.SET_PULL_UP)
+        ret = lgpio.gpio_claim_alert(chip, pin, lgpio.BOTH_EDGES, lgpio.SET_PULL_UP)
         if ret < 0:
-            print(f"\n❌ GPIO{pin}（{name}）被占用（错误码 {ret}）。")
-            print("   请先停止 Platform 服务（Ctrl+C 或 systemctl stop goudan）")
+            if use_api:
+                print(f"\n❌ GPIO{pin}（{name}）被占用（错误码 {ret}）。")
+                print("   --use-api 模式下 Platform 已持有编码器引脚，无法旁路监听。")
+                print("   请改用 standalone 模式：先停止 Platform 服务，再运行本脚本（去掉 --use-api）")
+            else:
+                print(f"\n❌ GPIO{pin}（{name}）被占用（错误码 {ret}）。")
+                print("   请先停止 Platform 服务（Ctrl+C 或 systemctl stop goudan）")
             lgpio.gpiochip_close(chip)
             sys.exit(1)
         cap = PulseCapture()
