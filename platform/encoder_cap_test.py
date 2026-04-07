@@ -249,6 +249,11 @@ def main():
                         help="Phase 1 电机运行时长（秒，默认 10）")
     parser.add_argument("--static-only", action="store_true",
                         help="仅做静止本底测试，不运行电机")
+    parser.add_argument("--use-api",     action="store_true",
+                        help="通过 Platform HTTP API 控制电机（Platform 服务需已启动，"
+                             "编码器引脚由本脚本用 lgpio 直接监测）")
+    parser.add_argument("--base-url",    default="http://localhost:8001",
+                        help="Platform 服务地址（--use-api 时有效，默认 http://localhost:8001）")
     parser.add_argument("--chip",        type=int, default=0,
                         help="lgpio chip 编号（RPi5 默认 0）")
     args = parser.parse_args()
@@ -259,10 +264,13 @@ def main():
     print(f"\n{DIVIDER}")
     print("  编码器电容效果验证")
     print(DIVIDER)
+    use_api = args.use_api
+
     if args.static_only:
         print(f"  模式     : 仅静止本底（不运行电机）")
     else:
-        print(f"  电机速度 : {speed}%  |  运行时长 : {duration:.0f}s")
+        mode_str = f"API ({args.base_url})" if use_api else "直接 GPIO (lgpio tx_pwm)"
+        print(f"  电机速度 : {speed}%  |  运行时长 : {duration:.0f}s  |  电机控制 : {mode_str}")
     print(f"  编码器引脚 : {_ENC_PINS}")
     print(f"  burst 阈值 : < {_BURST_THRESH_US/1000:.0f}ms 内 ≥{_BURST_MIN_SEQS} 个连续脉冲")
     print(DIVIDER)
@@ -301,35 +309,65 @@ def main():
         handle = lgpio.callback(chip, pin, lgpio.BOTH_EDGES, _make_cb(cap))
         cb_handles.append(handle)
 
-    # ── 设置电机输出引脚 ──────────────────────────────────────────────
+    # ── 电机控制函数（直接 GPIO 或 Platform API 二选一）────────────────
     motor_pins = [_M3_IN1, _M3_IN2, _M4_IN1, _M4_IN2]
 
-    if not args.static_only:
-        for pin in motor_pins:
-            ret = lgpio.gpio_claim_output(chip, pin, 0)
+    if use_api:
+        # API 模式：Platform 服务负责电机，本脚本只做编码器监测
+        import urllib.request, json as _json
+
+        def _api_post(path: str, payload: dict) -> dict:
+            url  = args.base_url.rstrip("/") + path
+            data = _json.dumps(payload).encode()
+            req  = urllib.request.Request(url, data=data, method="POST",
+                                          headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return _json.loads(r.read())
+
+        def motors_forward(pct: int) -> None:
+            _api_post("/motor/command", {"command": "forward", "speed": pct})
+
+        def motors_stop() -> None:
+            try:
+                _api_post("/motor/command", {"command": "stop"}, )
+            except Exception:
+                pass
+
+        def _check(ret: int, op: str) -> None:
+            pass   # API 模式下无 lgpio 返回值需要检查
+
+        print("  ℹ️  API 模式：编码器回调由本脚本独立监测（需 Platform 服务正在运行）")
+
+    else:
+        # 直接 GPIO 模式：独占电机引脚
+        if not args.static_only:
+            for pin in motor_pins:
+                ret = lgpio.gpio_claim_output(chip, pin, 0)
+                if ret < 0:
+                    print(f"\n❌ 电机引脚 GPIO{pin} 被占用（错误码 {ret}）。")
+                    print("   请先停止 Platform 服务，或改用 --use-api 模式。")
+                    for h in cb_handles:
+                        h.cancel()
+                    lgpio.gpiochip_close(chip)
+                    sys.exit(1)
+
+        def _check(ret: int, op: str) -> None:
             if ret < 0:
-                print(f"\n❌ 电机引脚 GPIO{pin} 被占用（错误码 {ret}）。")
-                print("   请先停止 Platform 服务。")
-                for h in cb_handles:
-                    h.cancel()
-                lgpio.gpiochip_close(chip)
-                sys.exit(1)
+                raise RuntimeError(f"{op} 失败（lgpio 错误码 {ret}：{lgpio.error_text(ret)}）")
 
-    def motors_forward(pct: int) -> None:
-        """两后轮同速正转（直接 IN-PWM）。"""
-        dc = max(0, min(100, pct))
-        lgpio.tx_pwm(chip, _M3_IN1, _PWM_FREQ_HZ, dc)
-        lgpio.gpio_write(chip, _M3_IN2, 0)
-        lgpio.tx_pwm(chip, _M4_IN1, _PWM_FREQ_HZ, dc)
-        lgpio.gpio_write(chip, _M4_IN2, 0)
+        def motors_forward(pct: int) -> None:
+            """两后轮同速正转（直接 IN-PWM）。"""
+            dc = max(0, min(100, pct))
+            _check(lgpio.gpio_write(chip, _M3_IN2, 0), "M3_IN2 LOW")
+            _check(lgpio.gpio_write(chip, _M4_IN2, 0), "M4_IN2 LOW")
+            _check(lgpio.tx_pwm(chip, _M3_IN1, _PWM_FREQ_HZ, dc), f"M3 tx_pwm {dc}%")
+            _check(lgpio.tx_pwm(chip, _M4_IN1, _PWM_FREQ_HZ, dc), f"M4 tx_pwm {dc}%")
 
-    def motors_stop() -> None:
-        # 先把 PWM 占空比置 0（频率必须保持非 0，否则 lgpio 报 bad PWM micros）
-        for pin in [_M3_IN1, _M4_IN1]:
-            lgpio.tx_pwm(chip, pin, _PWM_FREQ_HZ, 0)
-        # 再把所有方向引脚拉低
-        for pin in motor_pins:
-            lgpio.gpio_write(chip, pin, 0)
+        def motors_stop() -> None:
+            for pin in [_M3_IN1, _M4_IN1]:
+                lgpio.tx_pwm(chip, pin, _PWM_FREQ_HZ, 0)
+            for pin in motor_pins:
+                lgpio.gpio_write(chip, pin, 0)
 
     # ── Phase 0：静止本底（3s） ───────────────────────────────────────
     STATIC_DUR = 3.0
@@ -372,8 +410,43 @@ def main():
     for cap in captures.values():
         cap.clear()
 
-    motors_forward(speed)
-    t_start = time.monotonic()
+    try:
+        motors_forward(speed)
+    except RuntimeError as e:
+        print(f"\n  ❌ 电机启动失败：{e}")
+        print("  排查：电机引脚是否被其他进程占用？Platform 服务是否已停止？")
+        for h in cb_handles:
+            h.cancel()
+        lgpio.gpiochip_close(chip)
+        sys.exit(1)
+
+    # ── 早期脉冲验证（前 2s 检查编码器是否有任何响应）─────────────
+    print("  验证编码器响应（2s）...", end="", flush=True)
+    time.sleep(2.0)
+    early_total = sum(len(cap.snapshot()) for cap in captures.values())
+    if early_total == 0:
+        motors_stop()
+        print("\n\n  ❌ 电机运行 2s 后编码器仍为 0 脉冲，终止测试。")
+        print()
+        print("  可能原因及排查：")
+        print("  A) 电机未转动：")
+        print("     - 用手轻推车轮，若阻力正常说明 PWM 未到电机驱动板")
+        print("     - 改用 Platform API 驱动：--use-api 模式（见下方）")
+        print()
+        print("  B) 编码器回调未触发：")
+        print("     - 用 Platform 服务跑一次 /motor/drive，确认编码器线路正常")
+        print("     - 尝试手动转动车轮，看 Phase 0 是否能采到脉冲")
+        print()
+        print("  建议：先跑 --use-api 模式绕过直接 GPIO 控制：")
+        print(f"    确保 Platform 服务已启动，然后：")
+        print(f"    python3 platform/encoder_cap_test.py --use-api --speed {speed}")
+        for h in cb_handles:
+            h.cancel()
+        lgpio.gpiochip_close(chip)
+        sys.exit(1)
+    print(f" 已捕获 {early_total} 个脉冲 ✅")
+
+    t_start = time.monotonic() - 2.0   # 把早期 2s 也计入总时长
 
     while time.monotonic() - t_start < duration:
         remaining = duration - (time.monotonic() - t_start)
