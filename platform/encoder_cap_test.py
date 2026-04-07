@@ -324,8 +324,11 @@ def main():
         lgpio.gpio_write(chip, _M4_IN2, 0)
 
     def motors_stop() -> None:
+        # 先把 PWM 占空比置 0（频率必须保持非 0，否则 lgpio 报 bad PWM micros）
+        for pin in [_M3_IN1, _M4_IN1]:
+            lgpio.tx_pwm(chip, pin, _PWM_FREQ_HZ, 0)
+        # 再把所有方向引脚拉低
         for pin in motor_pins:
-            lgpio.tx_pwm(chip, pin, 0, 0)
             lgpio.gpio_write(chip, pin, 0)
 
     # ── Phase 0：静止本底（3s） ───────────────────────────────────────
