@@ -85,6 +85,37 @@ def _uart_write(ser, reg: int, value: int) -> None:
         raise RuntimeError(f"写失败：resp={resp.hex() if resp else '空'}")
 
 
+def _install_read_retry_for_test(imu: Imu, retries: int = 2, base_delay_s: float = 0.002) -> None:
+    """
+    仅在测试脚本中启用的临时补丁：
+    给 Imu._read_reg 增加可恢复错误自动重试，避免 test 6 被偶发 UART 错误刷屏。
+    """
+    original_read = imu._read_reg
+
+    def patched_read(reg: int, length: int) -> bytes:
+        last_err: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                return original_read(reg, length)
+            except (TimeoutError, RuntimeError) as e:
+                msg = str(e)
+                retriable = (
+                    isinstance(e, TimeoutError)
+                    or "0x07" in msg                  # BUS_OVER_RUN / 帧中断
+                    or "数据不足" in msg
+                    or "响应头异常" in msg
+                )
+                last_err = e
+                if retriable and attempt < retries:
+                    # 轻微递增退避，尽快恢复会话
+                    time.sleep(base_delay_s * (attempt + 1))
+                    continue
+                raise
+        raise last_err if last_err else RuntimeError("未知读取错误")
+
+    imu._read_reg = patched_read
+
+
 # ── 测试 1：串口设备检测 ──────────────────────────────────────────
 
 def test_port_detect():
@@ -412,6 +443,7 @@ def test_yaw_integration(port: str):
     print("  ● 按 Ctrl+C 停止并显示累计角度")
 
     imu = Imu(port)
+    _install_read_retry_for_test(imu, retries=2, base_delay_s=0.002)
     ok  = imu.start()
     if not ok:
         print("  ❌ IMU 启动失败（模拟模式）")
