@@ -75,6 +75,8 @@ _CALIBRATION_FRAMES = 100     # 零偏校准采样帧数
 _ACCEL_MAX_G        = 20.0    # 超限则丢弃（BNO055 默认 ±4g，给 20g 裕量应对冲击）
 _GYRO_MAX_DPS       = 2000.0  # 超限则丢弃
 _REINIT_THRESHOLD   = 50      # 连续失败超过此次数时重置串口
+_READ_RETRIES       = 2       # 读寄存器可恢复错误重试次数（总尝试=1+重试）
+_RETRY_BASE_DELAY_S = 0.002   # 读重试退避基线
 
 # ── 默认串口 ────────────────────────────────────────────────────────
 # LD06 激光雷达先插占 ttyUSB0，BNO055 后插为 ttyUSB1。
@@ -197,8 +199,38 @@ class Imu:
 
     # ─── 内部：UART 协议（调用前须持 _serial_lock 或处于单线程初始化阶段）
 
-    def _read_reg(self, reg: int, length: int) -> bytes:
-        """发送读请求，返回 length 字节数据。"""
+    @staticmethod
+    def _uart_error_name(code: int) -> str:
+        """BNO055 UART 错误码可读化（仅列出常见项）。"""
+        mapping = {
+            0x01: "WRITE_FAIL",
+            0x02: "READ_FAIL",
+            0x03: "REGMAP_INVALID_ADDRESS",
+            0x04: "REGMAP_WRITE_DISABLED",
+            0x05: "WRONG_START_BYTE",
+            0x06: "BUS_READ_OVER_RUN_ERROR",
+            0x07: "BUS_OVER_RUN_ERROR",
+            0x08: "MAX_LENGTH_ERROR",
+            0x09: "MIN_LENGTH_ERROR",
+            0x0A: "RECEIVE_CHARACTER_TIMEOUT",
+        }
+        return mapping.get(code, "UNKNOWN")
+
+    @staticmethod
+    def _is_retriable_read_error(err: Exception) -> bool:
+        """
+        判定是否属于可恢复读错误。
+        0x07（BUS_OVER_RUN_ERROR）和超时/短包/头异常可通过短暂退避后重试恢复。
+        """
+        if isinstance(err, TimeoutError):
+            return True
+        msg = str(err)
+        if "数据不足" in msg or "响应头异常" in msg:
+            return True
+        return "BNO055 返回设备错误：0x07" in msg
+
+    def _read_reg_once(self, reg: int, length: int) -> bytes:
+        """发送一次读请求，返回 length 字节数据。"""
         cmd = bytes([_START, _READ, reg, length])
         self._ser.reset_input_buffer()
         self._ser.write(cmd)
@@ -207,7 +239,11 @@ class Imu:
         if len(header) < 2:
             raise TimeoutError(f"寄存器 0x{reg:02X} 读响应头超时")
         if header[0] == _RESP_WRITE:
-            raise RuntimeError(f"BNO055 返回写错误：0x{header[1]:02X}（寄存器 0x{reg:02X}）")
+            code = header[1]
+            name = self._uart_error_name(code)
+            raise RuntimeError(
+                f"BNO055 返回设备错误：0x{code:02X}（{name}，寄存器 0x{reg:02X}）"
+            )
         if header[0] != _RESP_READ:
             raise RuntimeError(
                 f"响应头异常：0x{header[0]:02X} 0x{header[1]:02X}（期望 0x{_RESP_READ:02X}）"
@@ -219,6 +255,24 @@ class Imu:
                 f"寄存器 0x{reg:02X} 数据不足（期望 {length} 字节，实际 {len(data)}）"
             )
         return data
+
+    def _read_reg(self, reg: int, length: int) -> bytes:
+        """发送读请求（含可恢复错误自动重试）。"""
+        last_err: Exception | None = None
+        for attempt in range(_READ_RETRIES + 1):
+            try:
+                return self._read_reg_once(reg, length)
+            except Exception as e:
+                last_err = e
+                if self._is_retriable_read_error(e) and attempt < _READ_RETRIES:
+                    try:
+                        self._ser.reset_input_buffer()
+                    except Exception:
+                        pass
+                    time.sleep(_RETRY_BASE_DELAY_S * (attempt + 1))
+                    continue
+                raise
+        raise last_err if last_err else RuntimeError("读取寄存器失败")
 
     def _write_reg(self, reg: int, value: int) -> None:
         """写单字节寄存器。"""

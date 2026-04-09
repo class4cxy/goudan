@@ -219,7 +219,7 @@ export const navigateTo = tool({
         // ── 转向：IMU 闭环 ────────────────────────────────────────
         if (motorCommand === 'turn_left' || motorCommand === 'turn_right') {
           const defaultAngle = TURNAROUND_DESTINATIONS.has(dest) ? 180 : 90
-          const targetAngle = angle_deg ?? defaultAngle
+          const targetAngle = inferredAngle ?? defaultAngle
           // 左转为正角度，右转为负角度
           const signedAngle = motorCommand === 'turn_left' ? targetAngle : -targetAngle
 

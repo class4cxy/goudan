@@ -990,18 +990,35 @@ async def motor_drive(req: MotorDriveRequest):
                 chassis._dispatch(direction, speed)
                 deadline = loop.time() + req.timeout_s
                 accumulated = 0.0
+                opposite_deg = 0.0
 
                 if use_raw_imu:
-                    prev_t = loop.time()
+                    # imu.py 约定：gyro_z > 0 表示顺时针（CW）
+                    # command 约定：turn_left=逆时针（CCW），turn_right=顺时针（CW）
+                    expected_sign = -1.0 if direction == "turn_left" else 1.0
+                    prev_sample_ts: float | None = None
                     while loop.time() < deadline:
                         await asyncio.sleep(0.01)
                         reading = imu.get_latest()
                         if reading is None:
                             continue
-                        now = loop.time()
-                        dt = now - prev_t
-                        prev_t = now
-                        accumulated += abs(reading.gyro_z) * dt
+
+                        # 使用传感器时间戳积分，避免读取同一帧被重复积分
+                        if prev_sample_ts is None:
+                            prev_sample_ts = reading.timestamp
+                            continue
+                        dt = reading.timestamp - prev_sample_ts
+                        prev_sample_ts = reading.timestamp
+
+                        # 过滤异常 dt（串口重连/时钟跳变）
+                        if dt <= 0 or dt > 0.2:
+                            continue
+
+                        signed_rate = reading.gyro_z * expected_sign
+                        if signed_rate > 0:
+                            accumulated += signed_rate * dt
+                        else:
+                            opposite_deg += abs(signed_rate) * dt
                         if accumulated >= target_deg:
                             break
                 else:
@@ -1023,8 +1040,8 @@ async def motor_drive(req: MotorDriveRequest):
                 chassis.stop()
                 timed_out = loop.time() >= deadline
                 logger.info(
-                    "[Drive] 转向完成：目标=%.0f° 实际=%.1f° timeout=%s sensor=%s",
-                    req.angle_deg, accumulated, timed_out,
+                    "[Drive] 转向完成：目标=%.0f° 实际=%.1f° 反向=%.1f° timeout=%s sensor=%s",
+                    req.angle_deg, accumulated, opposite_deg, timed_out,
                     "raw_imu" if use_raw_imu else "odometry_theta",
                 )
                 return {
@@ -1032,6 +1049,7 @@ async def motor_drive(req: MotorDriveRequest):
                     "mode": "angle",
                     "target_deg": req.angle_deg,
                     "rotated_deg": round(accumulated, 1),
+                    "opposite_deg": round(opposite_deg, 1),
                     "timeout": timed_out,
                     "sensor": "raw_imu" if use_raw_imu else "odometry_theta",
                 }
@@ -1082,7 +1100,7 @@ async def motor_sensor_test(duration_s: float = 3.0):
                 "accel_x": round(r.accel_x, 3),
                 "accel_y": round(r.accel_y, 3),
             })
-            imu_integrated += r.gyro_z * dt   # 有符号积分（正=CCW）
+            imu_integrated += r.gyro_z * dt   # 有符号积分（正=顺时针，见 imu.py 约定）
 
         # 编码器（直接读，不清零 odometry 主循环的计数）
         # 注意：read_and_reset 会清零，与 odometry 线程竞争，
@@ -1110,7 +1128,7 @@ async def motor_sensor_test(duration_s: float = 3.0):
             "latest":            imu.status.get("latest"),
             "diagnosis": (
                 "✅ IMU 正常（有角速度读数）" if gyro_z_peak > 1.0
-                else "⚠️ IMU 读数接近零，请检查：① BNO055 接线 ② S0 焊盘已短接 ③ /dev/ttyUSB1 存在"
+                else f"⚠️ IMU 读数接近零，请检查：① BNO055 接线 ② S0/S1 模式 ③ 串口 {imu.status.get('serial_port')} 存在且稳定"
                 if not imu.is_simulation
                 else "❌ IMU 运行在模拟模式（pyserial 未安装或 BNO055 串口不可用）"
             ),
