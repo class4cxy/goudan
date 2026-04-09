@@ -23,7 +23,15 @@ import { startIdleInitiator, resetIdleTimer } from './active/idle-initiator'
 import { startEnvResponder } from './active/env-responder'
 import { startAmbientAnalyzer } from './ambient/analyzer'
 
+declare global {
+  // eslint-disable-next-line no-var
+  var __conversationModuleStarted: boolean | undefined
+}
+
 export function startConversationModule(): void {
+  if (globalThis.__conversationModuleStarted) return
+  globalThis.__conversationModuleStarted = true
+
   PlatformConnector.start()
   startAudioThalamus()
   startAudioEffector()

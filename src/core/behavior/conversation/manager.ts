@@ -71,6 +71,7 @@ const REQUIRE_WAKE_WORD = (process.env.VOICE_REQUIRE_WAKE_WORD ?? 'true').toLowe
 // ─── ConversationManager ─────────────────────────────────────────────────────
 
 class ConversationManagerClass {
+  private started = false
   private state: ConvState = 'IDLE'
   private queue: ConvRequest[] = []
   private context = new ConversationContext()
@@ -94,6 +95,9 @@ class ConversationManagerClass {
   // ─── 启动（由 conversation/index.ts 调用） ───────────────────────────────
 
   start(): void {
+    if (this.started) return
+    this.started = true
+
     // 订阅唤醒词事件（来自 thalamus）
     Spine.subscribe<AudioKeywordPayload>(['sense.audio.keyword'], (e) => {
       this._onWake(e.payload.transcript)
@@ -368,7 +372,15 @@ class ConversationManagerClass {
       this.isStreaming = false
       if (fullText) this.context.addAssistant(fullText)
       if (this.state === 'SPEAKING') {
-        this._startResponseWait()
+        if (this.pendingSpeakEnd) {
+          // 与被动对话路径保持一致：若流式期间已收到 speak_end，流结束后立即进入倾听
+          console.log('[ConvManager] 主动 LLM 流结束，补处理暂存的 speak_end → LISTENING')
+          this.pendingSpeakEnd = false
+          this._clearResponseTimer()
+          this._startListeningAfterSpeak()
+        } else {
+          this._startResponseWait()
+        }
       }
     }).catch((err) => {
       this.isStreaming = false

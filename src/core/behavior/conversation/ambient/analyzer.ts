@@ -34,8 +34,12 @@ interface AmbientEntry {
 
 let ambientBuffer: AmbientEntry[] = []
 let lastInterestMs = 0
+let started = false
 
 export function startAmbientAnalyzer(): void {
+  if (started) return
+  started = true
+
   Spine.subscribe<AudioTranscriptPayload>(
     ['sense.audio.transcript'],
     async (event: SpineEvent<AudioTranscriptPayload>) => {

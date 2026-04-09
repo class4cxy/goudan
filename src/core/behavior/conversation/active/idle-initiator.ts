@@ -61,6 +61,8 @@ export function resetIdleTimer(): void {
 }
 
 export function startIdleInitiator(): void {
+  if (checkTimer) return
+
   checkTimer = setInterval(() => {
     const now = Date.now()
     const date = new Date()

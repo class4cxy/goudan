@@ -20,6 +20,7 @@ const CONFIDENCE_THRESHOLD = 0.7   // 低于此置信度不响应
 const COOLDOWN_MS = 3 * 60_000     // 同类声音 3 分钟内只响应一次
 
 const lastTriggered = new Map<string, number>()  // label → timestamp
+let started = false
 
 // 响应规则表
 const ENV_RULES: Array<{
@@ -61,6 +62,9 @@ const ENV_RULES: Array<{
 ]
 
 export function startEnvResponder(): void {
+  if (started) return
+  started = true
+
   Spine.subscribe<AudioEnvironmentPayload>(
     ['sense.audio.environment'],
     (event: SpineEvent<AudioEnvironmentPayload>) => {

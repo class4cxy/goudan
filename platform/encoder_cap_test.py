@@ -63,9 +63,9 @@ _M3_IN1, _M3_IN2 = 5,  6    # M3 左后
 _M4_IN1, _M4_IN2 = 22, 9    # M4 右后
 
 # ── 噪声判断阈值 ──────────────────────────────────────────────────────
-_PWM_FREQ_HZ     = 1000     # 与 Motor.PWM_FREQ 一致
-_BURST_THRESH_US = 2000     # 两相邻脉冲间隔 < 2ms → 噪声嫌疑
-_BURST_MIN_SEQS  = 3        # 连续 ≥3 个"短间隔"才算一次 burst 事件
+_PWM_FREQ_HZ     = 1000        # 与 Motor.PWM_FREQ 一致
+_BURST_THRESH_NS = 2_000_000   # 两相邻脉冲间隔 < 2ms（= 2_000_000 ns）→ 噪声嫌疑
+_BURST_MIN_SEQS  = 3           # 连续 ≥3 个"短间隔"才算一次 burst 事件
 
 # 理论最小合法脉冲间隔（speed=80% 时，1:90 减速比，500线，4倍频）
 # 实测电机约 800RPM_no_load → 80% ≈ 640RPM → 640/90≈7.1RPM_wheel ≈ 0.12rev/s
@@ -84,7 +84,7 @@ class PulseCapture:
     """用 lgpio callback 采集编码器脉冲时间戳（单引脚）。"""
 
     def __init__(self):
-        self.timestamps: list[int] = []   # µs，lgpio tick
+        self.timestamps: list[int] = []   # ns，lgpio tick（RPi5 lgpio 使用纳秒）
         self._lock = threading.Lock()
 
     def callback(self, chip, gpio, level, tick):
@@ -122,7 +122,8 @@ def analyze(timestamps: list[int], label: str, duration_s: float,
     min_iv = min(intervals)
 
     # 检测 burst：连续 short_interval_count >= _BURST_MIN_SEQS
-    is_short = [iv < _BURST_THRESH_US for iv in intervals]
+    # tick 单位为纳秒，_BURST_THRESH_NS = 2_000_000 ns = 2ms
+    is_short = [iv < _BURST_THRESH_NS for iv in intervals]
     burst_events = 0
     burst_pulse_flags = [False] * n   # 标记哪些脉冲属于 burst
 
@@ -146,8 +147,9 @@ def analyze(timestamps: list[int], label: str, duration_s: float,
 
     burst_pulses = sum(burst_pulse_flags)
     noise_frac   = burst_pulses / n if n > 0 else 0.0
-    mean_iv_ms   = (sum(intervals) / len(intervals)) / 1000.0
-    min_iv_ms    = min_iv / 1000.0
+    # tick 单位为纳秒：除以 1_000_000 转换为毫秒
+    mean_iv_ms   = (sum(intervals) / len(intervals)) / 1_000_000.0
+    min_iv_ms    = min_iv / 1_000_000.0
 
     # 有效脉冲率（扣除 burst 脉冲后的净率）
     clean_pulses = n - burst_pulses
@@ -272,7 +274,7 @@ def main():
         mode_str = f"API ({args.base_url})" if use_api else "直接 GPIO (lgpio tx_pwm)"
         print(f"  电机速度 : {speed}%  |  运行时长 : {duration:.0f}s  |  电机控制 : {mode_str}")
     print(f"  编码器引脚 : {_ENC_PINS}")
-    print(f"  burst 阈值 : < {_BURST_THRESH_US/1000:.0f}ms 内 ≥{_BURST_MIN_SEQS} 个连续脉冲")
+    print(f"  burst 阈值 : < {_BURST_THRESH_NS/1_000_000:.0f}ms 内 ≥{_BURST_MIN_SEQS} 个连续脉冲")
     print(DIVIDER)
 
     # ── 载入 lgpio ────────────────────────────────────────────────────
