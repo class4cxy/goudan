@@ -33,7 +33,6 @@ UART 模式切换（模块背面焊盘）：
   accel_x/y (g)   — 加速度（含重力），可用于检测碰撞/斜坡
 """
 
-import os
 import threading
 import time
 import logging
@@ -79,8 +78,7 @@ _READ_RETRIES       = 2       # 读寄存器可恢复错误重试次数（总尝
 _RETRY_BASE_DELAY_S = 0.002   # 读重试退避基线
 
 # ── 默认串口 ────────────────────────────────────────────────────────
-# LD06 激光雷达先插占 ttyUSB0，BNO055 后插为 ttyUSB1。
-# 可通过环境变量 IMU_SERIAL_PORT 覆盖。
+# 串口固定：LD06 激光雷达使用 /dev/ttyUSB0，BNO055 使用 /dev/ttyUSB1。
 _DEFAULT_PORT = "/dev/ttyUSB1"
 
 
@@ -111,7 +109,7 @@ class Imu:
     STALE_THRESHOLD_S = 1.0
 
     def __init__(self, port: str | None = None) -> None:
-        self._port          = port or os.environ.get("IMU_SERIAL_PORT", _DEFAULT_PORT)
+        self._port          = port or _DEFAULT_PORT
         self._ser           = None
         self._is_simulation = False
         self._serial_lock   = threading.Lock()

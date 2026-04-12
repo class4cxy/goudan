@@ -28,6 +28,8 @@ from slam import SlamEngine
 
 logger = logging.getLogger(__name__)
 
+LIDAR_FIXED_PORT = "/dev/ttyUSB0"
+
 
 class LidarSensor:
     """Lidar + SlamEngine → WebSocket 的桥接层（应用层）。"""
@@ -38,10 +40,10 @@ class LidarSensor:
         self._odometry = odometry   # Odometry 实例（可选），有则传里程计给 SLAM
         self._loop: asyncio.AbstractEventLoop | None = None
 
-        # LiDAR 硬件实例（配置来自环境变量）
+        # LiDAR 硬件实例（串口固定为 /dev/ttyUSB0）
         self._device = Lidar(
             config=LidarConfig(
-                port=os.environ.get("LIDAR_PORT", "/dev/ttyUSB0"),
+                port=LIDAR_FIXED_PORT,
                 broadcast_every_n_scans=1,   # 每圈都触发回调（由应用层自己控制广播频率）
                 # LIDAR_MOUNT_ANGLE：雷达安装偏移角（度）
                 #   0   = 线缆接口朝前（默认）
