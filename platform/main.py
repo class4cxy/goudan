@@ -946,6 +946,23 @@ async def motor_drive(req: MotorDriveRequest):
     # 时间标定参数（0 = 保持传感器闭环）
     _drive_speed_mm_s = float(os.environ.get("DRIVE_SPEED_MM_PER_SEC", "0"))
     _turn_deg_s = float(os.environ.get("DRIVE_TURN_DEG_PER_SEC", "0"))
+    logger.info(
+        "[Drive] 请求: distance_mm=%s angle_deg=%s req_speed=%s clamped_speed=%s timeout=%.1fs "
+        "time_mode(distance=%.1fmm/s angle=%.1fdeg/s) calib(lines_per_rev=%d wheel_radius=%.1f "
+        "wheel_base=%.1f scales=%.2f/%.2f)",
+        req.distance_mm,
+        req.angle_deg,
+        req.speed,
+        speed,
+        req.timeout_s,
+        _drive_speed_mm_s,
+        _turn_deg_s,
+        _calib_lines_per_rev,
+        _calib_wheel_radius_mm,
+        _calib_wheel_base_mm,
+        _calib_left_scale,
+        _calib_right_scale,
+    )
 
     try:
         if req.distance_mm is not None:
@@ -959,8 +976,8 @@ async def motor_drive(req: MotorDriveRequest):
                 await asyncio.sleep(duration_s)
                 chassis.stop()
                 logger.info(
-                    "[Drive] 直行完成（时间模式）：目标=%.0fmm 时长=%.2fs speed_calib=%.1fmm/s",
-                    req.distance_mm, duration_s, _drive_speed_mm_s,
+                    "[Drive] 直行完成（时间模式）：目标=%.0fmm speed=%d 时长=%.2fs speed_calib=%.1fmm/s",
+                    req.distance_mm, speed, duration_s, _drive_speed_mm_s,
                 )
                 return {
                     "ok": True,
@@ -1014,9 +1031,9 @@ async def motor_drive(req: MotorDriveRequest):
                 symmetry = (min(dist_l, dist_r) / max_abs) if max_abs > 1e-6 else 1.0
                 timed_out = loop.time() >= deadline
                 logger.info(
-                    "[Drive] 直行完成：目标=%.0fmm travel=%.0fmm tick_avg=%.0fmm "
+                    "[Drive] 直行完成：目标=%.0fmm speed=%d travel=%.0fmm tick_avg=%.0fmm "
                     "L=%d/%.0fmm R=%d/%.0fmm sym=%.3f timeout=%s slowed=%s approach_speed=%s",
-                    req.distance_mm, traveled, odom_dist,
+                    req.distance_mm, speed, traveled, odom_dist,
                     left_ticks, dist_l, right_ticks, dist_r, symmetry,
                     timed_out, slowed, approach_speed if slowed else None,
                 )
@@ -1048,8 +1065,8 @@ async def motor_drive(req: MotorDriveRequest):
                 await asyncio.sleep(duration_s)
                 chassis.stop()
                 logger.info(
-                    "[Drive] 转向完成（时间模式）：目标=%.0f° 时长=%.2fs turn_calib=%.1fdeg/s",
-                    req.angle_deg, duration_s, _turn_deg_s,
+                    "[Drive] 转向完成（时间模式）：目标=%.0f° speed=%d 时长=%.2fs turn_calib=%.1fdeg/s",
+                    req.angle_deg, speed, duration_s, _turn_deg_s,
                 )
                 return {
                     "ok": True,
@@ -1129,8 +1146,8 @@ async def motor_drive(req: MotorDriveRequest):
                 chassis.stop()
                 timed_out = loop.time() >= deadline
                 logger.info(
-                    "[Drive] 转向完成：目标=%.0f° 实际=%.1f° 反向=%.1f° timeout=%s sensor=%s",
-                    req.angle_deg, accumulated, opposite_deg, timed_out,
+                    "[Drive] 转向完成：目标=%.0f° speed=%d 实际=%.1f° 反向=%.1f° timeout=%s sensor=%s",
+                    req.angle_deg, speed, accumulated, opposite_deg, timed_out,
                     "raw_imu" if use_raw_imu else "odometry_theta",
                 )
                 return {
