@@ -64,13 +64,6 @@ logger = logging.getLogger(__name__)
 # 建图调试：EXPLORER_DEBUG_LOG=1 时，记录 lidar/slam/ultrasonic 请求的响应摘要
 EXPLORER_DEBUG_LOG = os.environ.get("EXPLORER_DEBUG_LOG") == "1"
 
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
-
 TOKEN_FILE = Path(__file__).parent / ".roborock_token.json"
 
 REGION_URLS = {
@@ -135,8 +128,26 @@ _chassis_speed = int(os.environ.get("CHASSIS_DEFAULT_SPEED", "35"))
 _chassis_turn = os.environ.get("CHASSIS_TURN_STYLE", "tank").strip().lower()
 if _chassis_turn not in ("tank", "pivot"):
     _chassis_turn = "tank"
+
+# 运动标定参数（按实测写死，不走 .env）：
+# - 轮径：70mm → 半径 35mm
+# - 距离校准：目标 1500mm 实测 1775mm（约 +18.3%），下调 lines_per_rev 以提高每 tick 距离换算
+# - 轻微向右偏：下调左轮比例，降低左侧输出
+_calib_left_scale = 0.97
+_calib_right_scale = 0.96
+_calib_lines_per_rev = 145
+_calib_wheel_radius_mm = 35.0
+_calib_wheel_base_mm = 160.0
+_calib_imu_weight = 0.3
+
 chassis = Chassis(
-    replace(DEFAULT_CONFIG, default_speed=_chassis_speed, turn_style=_chassis_turn)
+    replace(
+        DEFAULT_CONFIG,
+        default_speed=_chassis_speed,
+        turn_style=_chassis_turn,
+        left_scale=_calib_left_scale,
+        right_scale=_calib_right_scale,
+    )
 )
 camera  = CameraMount(DEFAULT_CAMERA_CONFIG)
 
@@ -152,22 +163,22 @@ cam = Camera(CaptureConfig(
 
 # ── 编码器 + IMU + 里程计 ─────────────────────────────────────────
 encoder_cfg = EncoderConfig(
-    left_a=int(os.environ.get("ENCODER_LEFT_A", "23")),
-    left_b=int(os.environ.get("ENCODER_LEFT_B", "16")),
-    right_a=int(os.environ.get("ENCODER_RIGHT_A", "20")),
-    right_b=int(os.environ.get("ENCODER_RIGHT_B", "21")),
-    lines_per_rev=int(os.environ.get("ENCODER_LINES_PER_REV", "500")),
-    left_invert=_env_bool("ENCODER_LEFT_INVERT", False),
-    right_invert=_env_bool("ENCODER_RIGHT_INVERT", True),
-    debounce_reads=int(os.environ.get("ENCODER_DEBOUNCE_READS", "1")),
-    debounce_delay_us=int(os.environ.get("ENCODER_DEBOUNCE_DELAY_US", "3")),
+    left_a=23,
+    left_b=16,
+    right_a=20,
+    right_b=21,
+    lines_per_rev=_calib_lines_per_rev,
+    left_invert=False,
+    right_invert=True,
+    debounce_reads=1,
+    debounce_delay_us=3,
 )
 encoder = Encoder(config=encoder_cfg)
 imu      = Imu()
 odometry_cfg = OdometryConfig(
-    wheel_radius_mm=float(os.environ.get("ODOM_WHEEL_RADIUS_MM", "34.0")),
-    wheel_base_mm=float(os.environ.get("ODOM_WHEEL_BASE_MM", "160.0")),
-    imu_weight=float(os.environ.get("ODOM_IMU_WEIGHT", "0.3")),
+    wheel_radius_mm=_calib_wheel_radius_mm,
+    wheel_base_mm=_calib_wheel_base_mm,
+    imu_weight=_calib_imu_weight,
 )
 odometry = Odometry(encoder, imu, odometry_cfg)
 
