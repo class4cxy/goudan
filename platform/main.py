@@ -972,8 +972,9 @@ async def motor_drive(req: MotorDriveRequest):
                 }
             else:
                 # ── 编码器路程闭环直行 ──────────────────────────────────
-                # 与 encoder_accuracy_test.py 保持一致：停车判据使用左右轮平均距离。
-                # 左右轮累计距离仅用于日志与对称性诊断，不再使用“慢轮距离”保守停靠。
+                # 与 encoder_accuracy_test.py 保持一致：停车判据只使用
+                # odometry.get_and_reset_travel() 的累计路程。
+                # 左右轮累计距离仅用于结束后的日志与对称性诊断。
                 odometry.get_and_reset_travel()
                 snap_l0, snap_r0 = encoder.get_cumulative()
                 ticks_per_rev = encoder.ticks_per_rev
@@ -982,7 +983,6 @@ async def motor_drive(req: MotorDriveRequest):
 
                 deadline = loop.time() + req.timeout_s
                 traveled = 0.0
-                odom_traveled = 0.0
                 dist_l = 0.0
                 dist_r = 0.0
                 slowdown_mm = min(_drive_approach_slowdown_mm, target_mm * 0.5)
@@ -990,13 +990,7 @@ async def motor_drive(req: MotorDriveRequest):
                 slowed = False
                 while loop.time() < deadline:
                     await asyncio.sleep(0.02)
-                    odom_traveled += odometry.get_and_reset_travel()
-                    snap_l1, snap_r1 = encoder.get_cumulative()
-                    left_ticks = snap_l1 - snap_l0
-                    right_ticks = snap_r1 - snap_r0
-                    dist_l = abs((left_ticks / ticks_per_rev) * wheel_circ_mm)
-                    dist_r = abs((right_ticks / ticks_per_rev) * wheel_circ_mm)
-                    traveled = (dist_l + dist_r) * 0.5
+                    traveled += odometry.get_and_reset_travel()
                     if (
                         not slowed and target_mm > slowdown_mm and
                         traveled >= target_mm - slowdown_mm and
@@ -1014,13 +1008,12 @@ async def motor_drive(req: MotorDriveRequest):
                 right_ticks = snap_r1 - snap_r0
                 dist_l = abs((left_ticks / ticks_per_rev) * wheel_circ_mm)
                 dist_r = abs((right_ticks / ticks_per_rev) * wheel_circ_mm)
-                traveled = (dist_l + dist_r) * 0.5
-                odom_dist = traveled
+                odom_dist = (dist_l + dist_r) * 0.5
                 max_abs = max(dist_l, dist_r)
                 symmetry = (min(dist_l, dist_r) / max_abs) if max_abs > 1e-6 else 1.0
                 timed_out = loop.time() >= deadline
                 logger.info(
-                    "[Drive] 直行完成：目标=%.0fmm avg=%.0fmm odom=%.0fmm "
+                    "[Drive] 直行完成：目标=%.0fmm travel=%.0fmm tick_avg=%.0fmm "
                     "L=%d/%.0fmm R=%d/%.0fmm sym=%.3f timeout=%s slowed=%s approach_speed=%s",
                     req.distance_mm, traveled, odom_dist,
                     left_ticks, dist_l, right_ticks, dist_r, symmetry,
@@ -1031,8 +1024,7 @@ async def motor_drive(req: MotorDriveRequest):
                     "mode": "distance",
                     "target_mm": req.distance_mm,
                     "traveled_mm": round(traveled, 1),
-                    "odom_dist_mm": round(odom_dist, 1),
-                    "odometry_travel_mm": round(odom_traveled, 1),
+                    "tick_avg_mm": round(odom_dist, 1),
                     "left_ticks": left_ticks,
                     "right_ticks": right_ticks,
                     "dist_left_mm": round(dist_l, 1),
