@@ -129,13 +129,13 @@ _chassis_turn = os.environ.get("CHASSIS_TURN_STYLE", "tank").strip().lower()
 if _chassis_turn not in ("tank", "pivot"):
     _chassis_turn = "tank"
 
-# 运动标定参数（按当前实测写死，不走 .env）：
-# - 编码器距离标定：LINES_PER_REV = 116
+# 运动标定参数（按当前 encoder_accuracy_test.py 实测写死，不走 .env）：
+# - 编码器距离标定：LINES_PER_REV = 140
 # - 麦克姆轮直径：68mm → 半径 34mm
-# - 当前实车方向已基本不偏，沿用测试脚本中的左右补偿
-_calib_left_scale = 0.96
-_calib_right_scale = 1.00
-_calib_lines_per_rev = 116
+# - 当前直行补偿：left/right = 1.00 / 0.99
+_calib_left_scale = 1.00
+_calib_right_scale = 0.99
+_calib_lines_per_rev = 140
 _calib_wheel_radius_mm = 34.0
 _calib_wheel_base_mm = 160.0
 _calib_imu_weight = 0.3
@@ -972,17 +972,31 @@ async def motor_drive(req: MotorDriveRequest):
                 }
             else:
                 # ── 编码器路程闭环直行 ──────────────────────────────────
+                # 运行态比测试脚本更保守：停止判据使用“左右轮累计距离的较小值”。
+                # 这样即使某一侧编码器在平台服务中被噪声放大，也不会过早误判已到达目标。
                 odometry.get_and_reset_travel()
+                snap_l0, snap_r0 = encoder.get_cumulative()
+                ticks_per_rev = encoder.ticks_per_rev
+                wheel_circ_mm = 2.0 * 3.141592653589793 * _calib_wheel_radius_mm
                 chassis._dispatch(direction, speed)
 
                 deadline = loop.time() + req.timeout_s
                 traveled = 0.0
+                odom_traveled = 0.0
+                dist_l = 0.0
+                dist_r = 0.0
                 slowdown_mm = min(_drive_approach_slowdown_mm, target_mm * 0.5)
                 approach_speed = max(20, min(speed, int(round(speed * _drive_approach_speed_scale))))
                 slowed = False
                 while loop.time() < deadline:
                     await asyncio.sleep(0.02)
-                    traveled += odometry.get_and_reset_travel()
+                    odom_traveled += odometry.get_and_reset_travel()
+                    snap_l1, snap_r1 = encoder.get_cumulative()
+                    left_ticks = snap_l1 - snap_l0
+                    right_ticks = snap_r1 - snap_r0
+                    dist_l = abs((left_ticks / ticks_per_rev) * wheel_circ_mm)
+                    dist_r = abs((right_ticks / ticks_per_rev) * wheel_circ_mm)
+                    traveled = min(dist_l, dist_r)
                     if (
                         not slowed and target_mm > slowdown_mm and
                         traveled >= target_mm - slowdown_mm and
@@ -994,16 +1008,36 @@ async def motor_drive(req: MotorDriveRequest):
                         break
 
                 chassis.stop()
+                await asyncio.sleep(0.15)
+                snap_l1, snap_r1 = encoder.get_cumulative()
+                left_ticks = snap_l1 - snap_l0
+                right_ticks = snap_r1 - snap_r0
+                dist_l = abs((left_ticks / ticks_per_rev) * wheel_circ_mm)
+                dist_r = abs((right_ticks / ticks_per_rev) * wheel_circ_mm)
+                traveled = min(dist_l, dist_r)
+                odom_dist = (dist_l + dist_r) * 0.5
+                max_abs = max(dist_l, dist_r)
+                symmetry = (min(dist_l, dist_r) / max_abs) if max_abs > 1e-6 else 1.0
                 timed_out = loop.time() >= deadline
                 logger.info(
-                    "[Drive] 直行完成：目标=%.0fmm 实际=%.0fmm timeout=%s slowed=%s approach_speed=%s",
-                    req.distance_mm, traveled, timed_out, slowed, approach_speed if slowed else None,
+                    "[Drive] 直行完成：目标=%.0fmm conservative=%.0fmm odom=%.0fmm "
+                    "L=%d/%.0fmm R=%d/%.0fmm sym=%.3f timeout=%s slowed=%s approach_speed=%s",
+                    req.distance_mm, traveled, odom_dist,
+                    left_ticks, dist_l, right_ticks, dist_r, symmetry,
+                    timed_out, slowed, approach_speed if slowed else None,
                 )
                 return {
                     "ok": True,
                     "mode": "distance",
                     "target_mm": req.distance_mm,
                     "traveled_mm": round(traveled, 1),
+                    "odom_dist_mm": round(odom_dist, 1),
+                    "odometry_travel_mm": round(odom_traveled, 1),
+                    "left_ticks": left_ticks,
+                    "right_ticks": right_ticks,
+                    "dist_left_mm": round(dist_l, 1),
+                    "dist_right_mm": round(dist_r, 1),
+                    "symmetry": round(symmetry, 3),
                     "slowed": slowed,
                     "approach_speed": approach_speed if slowed else None,
                     "timeout": timed_out,
