@@ -972,8 +972,8 @@ async def motor_drive(req: MotorDriveRequest):
                 }
             else:
                 # ── 编码器路程闭环直行 ──────────────────────────────────
-                # 运行态比测试脚本更保守：停止判据使用“左右轮累计距离的较小值”。
-                # 这样即使某一侧编码器在平台服务中被噪声放大，也不会过早误判已到达目标。
+                # 与 encoder_accuracy_test.py 保持一致：停车判据使用左右轮平均距离。
+                # 左右轮累计距离仅用于日志与对称性诊断，不再使用“慢轮距离”保守停靠。
                 odometry.get_and_reset_travel()
                 snap_l0, snap_r0 = encoder.get_cumulative()
                 ticks_per_rev = encoder.ticks_per_rev
@@ -996,7 +996,7 @@ async def motor_drive(req: MotorDriveRequest):
                     right_ticks = snap_r1 - snap_r0
                     dist_l = abs((left_ticks / ticks_per_rev) * wheel_circ_mm)
                     dist_r = abs((right_ticks / ticks_per_rev) * wheel_circ_mm)
-                    traveled = min(dist_l, dist_r)
+                    traveled = (dist_l + dist_r) * 0.5
                     if (
                         not slowed and target_mm > slowdown_mm and
                         traveled >= target_mm - slowdown_mm and
@@ -1014,13 +1014,13 @@ async def motor_drive(req: MotorDriveRequest):
                 right_ticks = snap_r1 - snap_r0
                 dist_l = abs((left_ticks / ticks_per_rev) * wheel_circ_mm)
                 dist_r = abs((right_ticks / ticks_per_rev) * wheel_circ_mm)
-                traveled = min(dist_l, dist_r)
-                odom_dist = (dist_l + dist_r) * 0.5
+                traveled = (dist_l + dist_r) * 0.5
+                odom_dist = traveled
                 max_abs = max(dist_l, dist_r)
                 symmetry = (min(dist_l, dist_r) / max_abs) if max_abs > 1e-6 else 1.0
                 timed_out = loop.time() >= deadline
                 logger.info(
-                    "[Drive] 直行完成：目标=%.0fmm conservative=%.0fmm odom=%.0fmm "
+                    "[Drive] 直行完成：目标=%.0fmm avg=%.0fmm odom=%.0fmm "
                     "L=%d/%.0fmm R=%d/%.0fmm sym=%.3f timeout=%s slowed=%s approach_speed=%s",
                     req.distance_mm, traveled, odom_dist,
                     left_ticks, dist_l, right_ticks, dist_r, symmetry,
