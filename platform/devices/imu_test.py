@@ -37,18 +37,18 @@ UART 模式切换（必须）：
 import argparse
 import glob
 import math
-import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))         # platform/devices/
 sys.path.insert(0, str(Path(__file__).parent.parent))  # platform/
 from imu import Imu, ImuReading
 
 DIVIDER  = "─" * 60
-DEF_PORT = os.environ.get("IMU_SERIAL_PORT", "/dev/ttyUSB1")
 BAUD     = 115200
+PORT_PRIORITY = "/dev/ttyUSB0"
 
 # BNO055 UART 协议常量（测试 2 直接使用原始串口）
 _START, _READ, _WRITE = 0xAA, 0x01, 0x00
@@ -83,6 +83,42 @@ def _uart_write(ser, reg: int, value: int) -> None:
     resp = ser.read(2)
     if len(resp) < 2 or resp[0] != _RESP_WRITE or resp[1] != 0x01:
         raise RuntimeError(f"写失败：resp={resp.hex() if resp else '空'}")
+
+
+def _candidate_ports() -> list[str]:
+    ports = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
+    out: list[str] = []
+    for p in [PORT_PRIORITY, *ports]:
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def _detect_bno_port() -> Optional[str]:
+    """探测可通过 BNO055 CHIP_ID 握手的串口。"""
+    try:
+        import serial
+    except ImportError:
+        return None
+
+    for port in _candidate_ports():
+        try:
+            ser = serial.Serial(port, baudrate=BAUD, timeout=0.35)
+        except Exception:
+            continue
+        try:
+            time.sleep(0.70)
+            ser.reset_input_buffer()
+            _uart_write(ser, _REG_OPR_MODE, _MODE_CONFIG)
+            time.sleep(0.02)
+            chip_id = _uart_read(ser, _REG_CHIP_ID, 1)[0]
+            if chip_id == 0xA0:
+                return port
+        except Exception:
+            pass
+        finally:
+            ser.close()
+    return None
 
 
 def _install_read_retry_for_test(imu: Imu, retries: int = 2, base_delay_s: float = 0.002) -> None:
@@ -142,12 +178,11 @@ def test_port_detect():
         print(f"    {p}  {hint}")
 
     print()
-    if DEF_PORT in all_ports:
-        print(f"  ✅ 目标端口 {DEF_PORT} 已就绪")
+    if PORT_PRIORITY in all_ports:
+        print(f"  ✅ 优先端口 {PORT_PRIORITY} 已就绪")
     else:
-        print(f"  ⚠  目标端口 {DEF_PORT} 不存在")
-        print(f"  提示：若设备节点不同，用 --port /dev/ttyUSBx 指定，")
-        print(f"       或设置环境变量 IMU_SERIAL_PORT=/dev/ttyUSBx")
+        print(f"  ⚠  优先端口 {PORT_PRIORITY} 不存在")
+        print("  提示：可使用 --port /dev/ttyUSBx 指定，或直接让脚本自动探测 BNO055 端口")
 
 
 # ── 测试 2：BNO055 CHIP_ID 验证 ──────────────────────────────────
@@ -519,16 +554,17 @@ def main():
                         help="直接运行指定测试（1-6）")
     parser.add_argument("--stream", action="store_true",
                         help="直接进入实时数据流（等同于 --test 3）")
-    parser.add_argument("--port",   type=str, default=DEF_PORT,
-                        help=f"串口设备节点（默认 {DEF_PORT}）")
+    parser.add_argument("--port",   type=str, default="",
+                        help="串口设备节点（不填则自动探测 BNO055 端口）")
     args = parser.parse_args()
 
-    port = args.port
+    port = args.port.strip() or _detect_bno_port() or PORT_PRIORITY
+    auto_note = "（自动探测）" if not args.port.strip() else "（手动指定）"
 
     print("\n╔══════════════════════════════════════════════════════╗")
     print("║         BNO055 IMU 真机测试工具                      ║")
     print("║  接线：ATX→CP2102 RXD，LRX→CP2102 TXD，VCC→3.3V    ║")
-    print(f"║  串口：{port:<44} ║")
+    print(f"║  串口：{(port + auto_note):<44} ║")
     print("╚══════════════════════════════════════════════════════╝")
 
     tests = {

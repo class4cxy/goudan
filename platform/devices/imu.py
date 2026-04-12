@@ -33,6 +33,7 @@ UART 模式切换（模块背面焊盘）：
   accel_x/y (g)   — 加速度（含重力），可用于检测碰撞/斜坡
 """
 
+import glob
 import threading
 import time
 import logging
@@ -110,6 +111,7 @@ class Imu:
 
     def __init__(self, port: str | None = None) -> None:
         self._port          = port or _DEFAULT_PORT
+        self._port_locked   = port is not None
         self._ser           = None
         self._is_simulation = False
         self._serial_lock   = threading.Lock()
@@ -131,35 +133,38 @@ class Imu:
         """
         try:
             import serial as _serial
-            self._ser = _serial.Serial(
-                self._port,
-                baudrate=_BAUD,
-                bytesize=_serial.EIGHTBITS,
-                parity=_serial.PARITY_NONE,
-                stopbits=_serial.STOPBITS_ONE,
-                timeout=_READ_TIMEOUT_S,
-            )
-            time.sleep(_BOOT_WAIT_S)
-            self._ser.reset_input_buffer()
-            self._init_device()
-            self._calibrate_gyro()
-            self._running = True
-            self._thread  = threading.Thread(
-                target=self._sample_loop,
-                daemon=True,
-                name="imu-sampler",
-            )
-            self._thread.start()
-            logger.info(
-                "[IMU] BNO055 已启动（%s），gyro_bias_z=%.3f°/s",
-                self._port, self._gyro_bias_z,
-            )
-            return True
         except Exception as e:
-            logger.warning("[IMU] 初始化失败，降级为模拟模式：%s", e)
+            logger.warning("[IMU] pyserial 不可用，降级为模拟模式：%s", e)
             self._is_simulation = True
             self._close_serial()
             return False
+
+        last_error: Exception | None = None
+        for port in self._candidate_ports():
+            try:
+                self._open_and_init(_serial, port)
+                self._calibrate_gyro()
+                self._running = True
+                self._thread = threading.Thread(
+                    target=self._sample_loop,
+                    daemon=True,
+                    name="imu-sampler",
+                )
+                self._thread.start()
+                logger.info(
+                    "[IMU] BNO055 已启动（%s），gyro_bias_z=%.3f°/s",
+                    self._port, self._gyro_bias_z,
+                )
+                return True
+            except Exception as e:
+                last_error = e
+                logger.warning("[IMU] 端口 %s 初始化失败：%s", port, e)
+                self._close_serial()
+
+        logger.warning("[IMU] 初始化失败，降级为模拟模式：%s", last_error)
+        self._is_simulation = True
+        self._close_serial()
+        return False
 
     def stop(self) -> None:
         self._running = False
@@ -176,6 +181,37 @@ class Imu:
             self._ser = None
 
     # ─── 内部：设备初始化（调用时无并发或调用方已持 _serial_lock）───
+
+    def _candidate_ports(self) -> list[str]:
+        """
+        生成候选串口列表。
+        - 显式指定 port 时：只尝试该端口
+        - 默认模式：优先 /dev/ttyUSB0，再尝试其他 ttyUSB/ttyACM（去重）
+        """
+        if self._port_locked:
+            return [self._port]
+
+        discovered = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
+        out: list[str] = []
+        for p in [self._port, *discovered]:
+            if p and p not in out:
+                out.append(p)
+        return out
+
+    def _open_and_init(self, serial_mod, port: str) -> None:
+        """打开指定串口并完成 BNO055 初始化握手。"""
+        self._port = port
+        self._ser = serial_mod.Serial(
+            self._port,
+            baudrate=_BAUD,
+            bytesize=serial_mod.EIGHTBITS,
+            parity=serial_mod.PARITY_NONE,
+            stopbits=serial_mod.STOPBITS_ONE,
+            timeout=_READ_TIMEOUT_S,
+        )
+        time.sleep(_BOOT_WAIT_S)
+        self._ser.reset_input_buffer()
+        self._init_device()
 
     def _init_device(self) -> None:
         """验证 CHIP_ID，设置单位，切换至 IMU 融合模式。"""
