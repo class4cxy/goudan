@@ -40,11 +40,11 @@ RIGHT_B: int = 21   # M4 黄线 B → GPIO21（Pin 40）
 
 # ── 编码器参数 ────────────────────────────────────────────────────────────────
 
-# 编码器标称线数。4 倍频后 ticks/rev = LINES_PER_REV × 4。
-# 实测校准（DEBOUNCE_US=3，40%速，1500mm，3次重复）：
-#   次1：里程计1570.5mm 实测1390mm → 125；次3：里程计1574.5mm 实测1400mm → 125
-#   次2卷尺1480mm 偏离其余两次80mm（疑似起止点误差），取次1/3均值 → 125
-LINES_PER_REV: int = 125
+# 编码器线数校准值。4 倍频后 ticks/rev = LINES_PER_REV × 4。
+# 这里使用“本测试脚本自己的闭环校准值”，不是编码器出厂标称值。
+# 最近实测：目标 1500mm、实际约 1775mm，说明 125 仍会让里程计低估距离；
+# 按脚本公式回推：125 × (1500 / 1775) ≈ 106，因此先下调到 106。
+LINES_PER_REV: int = 106
 
 # 前进时某轮 ticks 为负时翻转极性（等效于对调 A/B 接线）。
 # 实测：M4 右后轮前进时 ticks 为负（右侧电机镜像安装导致相位相反），需翻转。
@@ -69,12 +69,10 @@ WHEEL_BASE_MM:   float = 160.0
 
 # ── 底盘补偿参数 ──────────────────────────────────────────────────────────────
 # 左右轮速度补偿（0.5–1.5）。用于抵消电机个体差异导致的跑偏。
-# 左右轮速度补偿。
-# 物理观测：robot 往右偏（左轮物理偏快）；但 DEBOUNCE_US=0 时右编码器虚增 ticks，
-# 数据显示右快——数据与现实矛盾，说明右编码器有噪声干扰，数据不可信。
-# 先清零，待 DEBOUNCE_US=3 重测后，按新数据（应与物理观测一致）填入。
-CHASSIS_LEFT_SCALE:  float = 1.0
-CHASSIS_RIGHT_SCALE: float = 0.96
+# 物理观测：机器人轻微向右偏，说明左轮略快，因此应优先“降左轮”，而不是降右轮。
+# 这里先做小步修正；若实车仍偏右，再继续小步下调 LEFT_SCALE（如 0.94）。
+CHASSIS_LEFT_SCALE:  float = 0.96
+CHASSIS_RIGHT_SCALE: float = 1.0
 
 # ── 测试参数 ──────────────────────────────────────────────────────────────────
 
@@ -85,6 +83,13 @@ TARGET_DISTANCE_MM: float = 1500.0
 # 电机速度（0-100%）。
 # 30% 时部分电机接近死区，结果抖动大；40% 可让两侧电机稳定出力
 MOTOR_SPEED: int = 40
+
+# 接近目标时的收尾减速区间（mm）。
+# 先高速接近，再低速收尾，可显著减小“达到阈值才急停”带来的惯性超调。
+APPROACH_SLOWDOWN_MM: float = 180.0
+
+# 收尾阶段速度系数。40% × 0.5 → 20%，刚好接近当前电机的稳定下限。
+APPROACH_SPEED_SCALE: float = 0.5
 
 # 单次超时（秒）。编码器闭环未达目标时的强制停车时限。
 TIMEOUT_S: float = 30.0
@@ -173,6 +178,8 @@ def _run_trip(chassis, encoder, odometry,
               run_idx: int) -> dict:
     direction  = "forward" if target_mm >= 0 else "backward"
     target_abs = abs(target_mm)
+    slowdown_mm = min(APPROACH_SLOWDOWN_MM, target_abs * 0.5)
+    approach_speed = max(20, min(speed, int(round(speed * APPROACH_SPEED_SCALE))))
 
     odometry.get_and_reset_travel()
     snap_l0, snap_r0 = encoder.get_cumulative()
@@ -182,10 +189,15 @@ def _run_trip(chassis, encoder, odometry,
 
     traveled   = 0.0
     timed_out  = False
+    slowed     = False
     deadline   = t0 + timeout_s
     while True:
         time.sleep(0.02)
         traveled += odometry.get_and_reset_travel()
+        if (not slowed and target_abs > slowdown_mm and
+                traveled >= target_abs - slowdown_mm and approach_speed < speed):
+            chassis._dispatch(direction, approach_speed)
+            slowed = True
         if traveled >= target_abs:
             break
         if time.monotonic() >= deadline:
@@ -208,6 +220,8 @@ def _run_trip(chassis, encoder, odometry,
 
     print(f"\n  ── 第 {run_idx} 次 {'─' * 40}")
     print(f"  目标: {target_abs:.1f} mm  方向: {direction}  speed: {speed}%")
+    if slowed:
+        print(f"  收尾: 距终点约 {slowdown_mm:.0f}mm 时降速到 {approach_speed}%")
     print(f"  耗时: {elapsed:.2f} s  {'⚠ 超时停车' if timed_out else '✓ 正常停车'}")
     print(f"  左轮: {left_ticks:+6d} ticks ≈ {dist_l:+7.1f} mm")
     print(f"  右轮: {right_ticks:+6d} ticks ≈ {dist_r:+7.1f} mm")
