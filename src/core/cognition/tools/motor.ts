@@ -36,10 +36,10 @@ const TURNAROUND_DESTINATIONS = new Set(['掉头', '调头'])
 const MANUAL_DEFAULT_SPEED = 55
 
 /** 闭环控制默认速度。校准条件：DEBOUNCE_US=3，该速度下编码器稳定，实测约 350mm/s */
-const CLOSED_LOOP_DEFAULT_SPEED = 35
+const CLOSED_LOOP_DEFAULT_SPEED = 5
 
 /** 闭环速度上限，与校准速度对齐；超出会导致 EMF 噪声加剧，编码器漏脉冲增多 */
-const CLOSED_LOOP_MAX_SPEED = 35
+const CLOSED_LOOP_MAX_SPEED = 5
 
 /** 无距离直行时的安全点动时长（秒），避免持续运动失控 */
 const OPEN_LOOP_DEFAULT_DURATION_S = 0.8
