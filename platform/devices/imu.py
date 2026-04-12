@@ -78,8 +78,8 @@ _READ_RETRIES       = 2       # 读寄存器可恢复错误重试次数（总尝
 _RETRY_BASE_DELAY_S = 0.002   # 读重试退避基线
 
 # ── 默认串口 ────────────────────────────────────────────────────────
-# 串口固定：LD06 激光雷达使用 /dev/ttyUSB0，BNO055 使用 /dev/ttyUSB1。
-_DEFAULT_PORT = "/dev/ttyUSB1"
+# 串口固定：BNO055 使用 /dev/ttyUSB0（当前实测映射）。
+_DEFAULT_PORT = "/dev/ttyUSB0"
 
 
 @dataclass

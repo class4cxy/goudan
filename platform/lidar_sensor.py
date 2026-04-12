@@ -28,7 +28,7 @@ from slam import SlamEngine
 
 logger = logging.getLogger(__name__)
 
-LIDAR_FIXED_PORT = "/dev/ttyUSB0"
+LIDAR_FIXED_PORT = "/dev/ttyUSB1"
 
 
 class LidarSensor:
