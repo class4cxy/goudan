@@ -1018,6 +1018,7 @@ async def motor_drive(req: MotorDriveRequest):
                     # imu.py 约定：gyro_z > 0 表示顺时针（CW）
                     # command 约定：turn_left=逆时针（CCW），turn_right=顺时针（CW）
                     expected_sign = -1.0 if direction == "turn_left" else 1.0
+                    sign_locked = False
                     prev_sample_ts: float | None = None
                     while loop.time() < deadline:
                         await asyncio.sleep(0.01)
@@ -1035,6 +1036,18 @@ async def motor_drive(req: MotorDriveRequest):
                         # 过滤异常 dt（串口重连/时钟跳变）
                         if dt <= 0 or dt > 0.2:
                             continue
+
+                        # 新 IMU 或安装方向变化时，gyro_z 正负定义可能与默认假设相反。
+                        # 进入转向后的首个有效角速度样本用于自动校正 expected_sign，避免整段被判为反向。
+                        if not sign_locked and abs(reading.gyro_z) >= 3.0:
+                            observed_sign = 1.0 if reading.gyro_z > 0 else -1.0
+                            if observed_sign * expected_sign < 0:
+                                expected_sign = -expected_sign
+                                logger.warning(
+                                    "[Drive] IMU gyro_z 符号与默认假设相反，已自动翻转（dir=%s）",
+                                    direction,
+                                )
+                            sign_locked = True
 
                         signed_rate = reading.gyro_z * expected_sign
                         if signed_rate > 0:

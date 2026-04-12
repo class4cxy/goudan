@@ -77,6 +77,7 @@ _GYRO_MAX_DPS       = 2000.0  # 超限则丢弃
 _REINIT_THRESHOLD   = 50      # 连续失败超过此次数时重置串口
 _READ_RETRIES       = 2       # 读寄存器可恢复错误重试次数（总尝试=1+重试）
 _RETRY_BASE_DELAY_S = 0.002   # 读重试退避基线
+_WRITE_RETRIES      = 2       # 写寄存器在 BUS_OVER_RUN(0x07) 时的重试次数
 
 # ── 默认串口 ────────────────────────────────────────────────────────
 # 串口固定：BNO055 使用 /dev/ttyUSB0（当前实测映射）。
@@ -309,16 +310,34 @@ class Imu:
         raise last_err if last_err else RuntimeError("读取寄存器失败")
 
     def _write_reg(self, reg: int, value: int) -> None:
-        """写单字节寄存器。"""
+        """写单字节寄存器（仅对 0x07 过载错误做有限重试）。"""
         cmd = bytes([_START, _WRITE, reg, 0x01, value])
-        self._ser.reset_input_buffer()
-        self._ser.write(cmd)
+        last_detail = "空"
+        for attempt in range(_WRITE_RETRIES + 1):
+            self._ser.reset_input_buffer()
+            self._ser.write(cmd)
 
-        resp = self._ser.read(2)
-        if len(resp) < 2 or resp[0] != _RESP_WRITE or resp[1] != 0x01:
-            detail = resp.hex() if resp else "空"
+            resp = self._ser.read(2)
+            if len(resp) >= 2 and resp[0] == _RESP_WRITE and resp[1] == 0x01:
+                return
+
+            last_detail = resp.hex() if resp else "空"
+            # 0xEE 0x07 = BUS_OVER_RUN_ERROR，BNO055 短暂忙时常见，可恢复
+            if (
+                len(resp) >= 2
+                and resp[0] == _RESP_WRITE
+                and resp[1] == 0x07
+                and attempt < _WRITE_RETRIES
+            ):
+                try:
+                    self._ser.reset_input_buffer()
+                except Exception:
+                    pass
+                time.sleep(0.01 * (attempt + 1))
+                continue
+
             raise RuntimeError(
-                f"写寄存器 0x{reg:02X}=0x{value:02X} 失败：resp={detail}"
+                f"写寄存器 0x{reg:02X}=0x{value:02X} 失败：resp={last_detail}"
             )
 
     # ─── 内部：采样 ───────────────────────────────────────────────
