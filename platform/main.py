@@ -140,6 +140,10 @@ _calib_wheel_radius_mm = 34.0
 _calib_wheel_base_mm = 160.0
 _calib_imu_weight = 0.3
 
+# /motor/drive 与 encoder_accuracy_test.py 保持一致的接近终点减速参数
+_drive_approach_slowdown_mm = 180.0
+_drive_approach_speed_scale = 0.5
+
 chassis = Chassis(
     replace(
         DEFAULT_CONFIG,
@@ -565,7 +569,7 @@ class MotorDriveRequest(BaseModel):
     """闭环精确运动请求（distance_mm 和 angle_deg 二选一）。"""
     distance_mm: float | None = None  # 正=前进，负=后退（里程计闭环）
     angle_deg: float | None = None    # 正=左转，负=右转（IMU 闭环）
-    speed: int = 50                   # 0–100
+    speed: int = 40                   # 0–100；与 encoder_accuracy_test 校准速度保持一致
     timeout_s: float = 30.0          # 安全超时（防止里程计失效时卡死）
 
 class CameraLookAtRequest(BaseModel):
@@ -973,23 +977,35 @@ async def motor_drive(req: MotorDriveRequest):
 
                 deadline = loop.time() + req.timeout_s
                 traveled = 0.0
+                slowdown_mm = min(_drive_approach_slowdown_mm, target_mm * 0.5)
+                approach_speed = max(20, min(speed, int(round(speed * _drive_approach_speed_scale))))
+                slowed = False
                 while loop.time() < deadline:
                     await asyncio.sleep(0.02)
                     traveled += odometry.get_and_reset_travel()
+                    if (
+                        not slowed and target_mm > slowdown_mm and
+                        traveled >= target_mm - slowdown_mm and
+                        approach_speed < speed
+                    ):
+                        chassis._dispatch(direction, approach_speed)
+                        slowed = True
                     if traveled >= target_mm:
                         break
 
                 chassis.stop()
                 timed_out = loop.time() >= deadline
                 logger.info(
-                    "[Drive] 直行完成：目标=%.0fmm 实际=%.0fmm timeout=%s",
-                    req.distance_mm, traveled, timed_out,
+                    "[Drive] 直行完成：目标=%.0fmm 实际=%.0fmm timeout=%s slowed=%s approach_speed=%s",
+                    req.distance_mm, traveled, timed_out, slowed, approach_speed if slowed else None,
                 )
                 return {
                     "ok": True,
                     "mode": "distance",
                     "target_mm": req.distance_mm,
                     "traveled_mm": round(traveled, 1),
+                    "slowed": slowed,
+                    "approach_speed": approach_speed if slowed else None,
                     "timeout": timed_out,
                     "sensor": "encoder_odometry",
                 }
