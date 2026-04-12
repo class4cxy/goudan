@@ -19,6 +19,7 @@ import { Spine } from '../spine'
 import type { SpineEventType, EventPriority } from '../spine'
 
 const PLATFORM_WS_URL = process.env.PLATFORM_WS_URL ?? 'ws://localhost:8001/ws'
+const PLATFORM_URL = process.env.PLATFORM_URL ?? 'http://localhost:8001'
 const RECONNECT_DELAY_MS = 3000
 const MAX_PENDING_MESSAGES = 50
 
@@ -81,11 +82,25 @@ class PlatformConnectorClass {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message))
     } else {
-      // 断线时先缓存 action 消息，重连后补发，避免 speak 丢包导致状态机卡在 SPEAKING。
-      this.pendingMessages.push(message)
-      if (this.pendingMessages.length > MAX_PENDING_MESSAGES) {
-        this.pendingMessages.shift()
+      // 安全关键：电机 stop 在断线时不能只依赖重连补发，必须立即走 HTTP 兜底。
+      if (this._isMotorStop(message)) {
+        void this._sendMotorStopFallback(message.payload)
       }
+
+      // 断线时先缓存 action 消息，重连后补发，避免 speak 丢包导致状态机卡在 SPEAKING。
+      if (this._isMotorStop(message)) {
+        // stop 放队头，确保重连后第一时间重放（HTTP 兜底失败时仍有二次保险）。
+        this.pendingMessages.unshift(message)
+        if (this.pendingMessages.length > MAX_PENDING_MESSAGES) {
+          this.pendingMessages.pop()
+        }
+      } else {
+        this.pendingMessages.push(message)
+        if (this.pendingMessages.length > MAX_PENDING_MESSAGES) {
+          this.pendingMessages.shift()
+        }
+      }
+
       console.warn(
         `[PlatformConnector] WebSocket 未连接，消息入队：${message.type}（pending=${this.pendingMessages.length}）`
       )
@@ -156,6 +171,38 @@ class PlatformConnectorClass {
       this.ws.send(JSON.stringify(message))
     }
     console.log(`[PlatformConnector] 已补发 ${toSend.length} 条待发送消息`)
+  }
+
+  private _isMotorStop(message: { type: string; payload: unknown }): boolean {
+    if (message.type !== 'action.motor') return false
+    if (!message.payload || typeof message.payload !== 'object') return false
+    const cmd = (message.payload as { command?: unknown }).command
+    return cmd === 'stop'
+  }
+
+  private async _sendMotorStopFallback(payload: unknown): Promise<void> {
+    try {
+      const body =
+        payload && typeof payload === 'object'
+          ? payload
+          : { command: 'stop' }
+
+      const res = await fetch(`${PLATFORM_URL}/motor/command`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(1500),
+      })
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        console.error(`[PlatformConnector] 断线急停 HTTP 失败：${res.status} ${text}`)
+        return
+      }
+      console.warn('[PlatformConnector] WebSocket 断线，已通过 HTTP 执行紧急 stop')
+    } catch (err) {
+      console.error('[PlatformConnector] 断线急停 HTTP 异常：', err)
+    }
   }
 }
 

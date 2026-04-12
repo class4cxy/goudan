@@ -61,8 +61,8 @@ def main() -> int:
     parser.add_argument(
         "--lines-per-rev",
         type=float,
-        # 实测校准值（DEBOUNCE_US=3，40%速）；与 encoder.py EncoderConfig.lines_per_rev 保持一致
-        default=125.0,
+        # GMR 编码电机当前默认标称值；若已完成本车标定可通过参数覆盖
+        default=500.0,
     )
     parser.add_argument(
         "--speed-mm-per-sec",

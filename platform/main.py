@@ -64,6 +64,13 @@ logger = logging.getLogger(__name__)
 # 建图调试：EXPLORER_DEBUG_LOG=1 时，记录 lidar/slam/ultrasonic 请求的响应摘要
 EXPLORER_DEBUG_LOG = os.environ.get("EXPLORER_DEBUG_LOG") == "1"
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
 TOKEN_FILE = Path(__file__).parent / ".roborock_token.json"
 
 REGION_URLS = {
@@ -144,10 +151,25 @@ cam = Camera(CaptureConfig(
 ))
 
 # ── 编码器 + IMU + 里程计 ─────────────────────────────────────────
-# EncoderConfig / OdometryConfig 默认值已硬编码（不再读 env），修改参数请直接改对应 dataclass
-encoder  = Encoder()
+encoder_cfg = EncoderConfig(
+    left_a=int(os.environ.get("ENCODER_LEFT_A", "23")),
+    left_b=int(os.environ.get("ENCODER_LEFT_B", "16")),
+    right_a=int(os.environ.get("ENCODER_RIGHT_A", "20")),
+    right_b=int(os.environ.get("ENCODER_RIGHT_B", "21")),
+    lines_per_rev=int(os.environ.get("ENCODER_LINES_PER_REV", "500")),
+    left_invert=_env_bool("ENCODER_LEFT_INVERT", False),
+    right_invert=_env_bool("ENCODER_RIGHT_INVERT", True),
+    debounce_reads=int(os.environ.get("ENCODER_DEBOUNCE_READS", "1")),
+    debounce_delay_us=int(os.environ.get("ENCODER_DEBOUNCE_DELAY_US", "3")),
+)
+encoder = Encoder(config=encoder_cfg)
 imu      = Imu()
-odometry = Odometry(encoder, imu)
+odometry_cfg = OdometryConfig(
+    wheel_radius_mm=float(os.environ.get("ODOM_WHEEL_RADIUS_MM", "34.0")),
+    wheel_base_mm=float(os.environ.get("ODOM_WHEEL_BASE_MM", "160.0")),
+    imu_weight=float(os.environ.get("ODOM_IMU_WEIGHT", "0.3")),
+)
+odometry = Odometry(encoder, imu, odometry_cfg)
 
 # ── SLAM 引擎 + 激光雷达（建图层）────────────────────────────────
 slam_engine  = SlamEngine(config_from_env())
