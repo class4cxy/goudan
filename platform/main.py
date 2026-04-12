@@ -131,11 +131,11 @@ if _chassis_turn not in ("tank", "pivot"):
 
 # 运动标定参数（按实测写死，不走 .env）：
 # - 轮径：70mm → 半径 35mm
-# - 距离校准：目标 1500mm 实测 1775mm（约 +18.3%），下调 lines_per_rev 以提高每 tick 距离换算
-# - 轻微向右偏：下调左轮比例，降低左侧输出
-_calib_left_scale = 0.97
+# - 距离二次校准：目标 1500mm 实测 1820mm（约 +21.3%），继续下调 lines_per_rev 提高每 tick 距离换算
+# - 轻微向右偏：继续小步下调左轮比例，降低左侧输出
+_calib_left_scale = 0.96
 _calib_right_scale = 0.96
-_calib_lines_per_rev = 145
+_calib_lines_per_rev = 120
 _calib_wheel_radius_mm = 35.0
 _calib_wheel_base_mm = 160.0
 _calib_imu_weight = 0.3
