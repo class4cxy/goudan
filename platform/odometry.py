@@ -155,9 +155,10 @@ class Odometry:
             self._pose.theta_deg  = (theta_new + 180.0) % 360.0 - 180.0
 
             # 累积 SLAM/AMCL 用的增量
-            # breezyslam velocities 期望位移幅度（非有符号增量），两者均取绝对值
+            # 线位移保留幅度；角度必须保留符号，否则左/右转会被折叠成同方向，
+            # 扫描匹配的初始猜测会失真，地图容易出现重影和放射状毛刺。
             self._slam_dxy_mm     += abs(dxy_mm)
-            self._slam_dtheta_deg += abs(dtheta_deg)
+            self._slam_dtheta_deg += dtheta_deg
             self._slam_dt_s       += dt
 
             # 累积行驶路程（闭环运动控制专用，不受 SLAM 消费影响）

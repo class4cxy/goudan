@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAPS_DIR = Path(__file__).parent.parent / "maps"
 
 
+def _normalize_theta_deg(theta: float) -> float:
+    """将角度归一化到 [0, 360)。"""
+    return theta % 360.0
+
+
 # ── 传感器规格（breezyslam Laser 子类）────────────────────────────
 
 def _make_ld06_laser():
@@ -248,7 +253,8 @@ class SlamEngine:
             else:
                 self._slam.update(distances)
             x, y, theta = self._slam.getpos()
-            self._pose = (x, y, theta)
+            # breezyslam 的 theta 会持续累积；这里统一归一化，避免上层看到 815° 这类值。
+            self._pose = (x, y, _normalize_theta_deg(theta))
             self._slam.getmap(self._map_bytes)
             self._scan_count += 1
             count = self._scan_count
@@ -262,7 +268,7 @@ class SlamEngine:
     # ─── 数据读取（线程安全）─────────────────────────────────────
 
     def get_pose(self) -> tuple[float, float, float]:
-        """返回当前机器人位姿 (x_mm, y_mm, theta_degrees)。"""
+        """返回当前机器人位姿 (x_mm, y_mm, theta_degrees in [0, 360))."""
         with self._lock:
             return self._pose
 

@@ -1562,7 +1562,7 @@ async def slam_pose():
     返回 SLAM 估算的机器人当前位姿。
 
     - x_mm, y_mm: 相对建图起点的坐标（毫米）
-    - theta_deg: 朝向角度（度，逆时针为正）
+    - theta_deg: 朝向角度（度，已归一化到 [0,360)；与地图箭头保持同一约定）
     """
     if not slam_engine.is_mapping and slam_engine.scan_count == 0:
         if EXPLORER_DEBUG_LOG:
