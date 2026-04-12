@@ -83,13 +83,10 @@ TARGET_DISTANCE_MM: float = 1500.0
 # 30% 时部分电机接近死区，结果抖动大；40% 可让两侧电机稳定出力
 MOTOR_SPEED: int = 40
 
-# 接近目标时的收尾减速区间（mm）。
-# 先高速接近，再低速收尾，可显著减小“达到阈值才急停”带来的惯性超调。
-APPROACH_SLOWDOWN_MM: float = 180.0
-
-# 收尾阶段速度系数。收尾可适度降速，但不能掉进低速死区。
-# 40% × 0.5 = 20% 已验证过低，会导致实车缩水明显；这里保留系数但配合 35% 下限。
-APPROACH_SPEED_SCALE: float = 0.5
+# 距离标定必须与真实运行条件一致。当前按固定 40% 速度做标定，
+# 不再在接近目标时二次降速，否则会引入新的速度相关误差。
+APPROACH_SLOWDOWN_MM: float = 0.0
+APPROACH_SPEED_SCALE: float = 1.0
 
 # 单次超时（秒）。编码器闭环未达目标时的强制停车时限。
 TIMEOUT_S: float = 30.0
@@ -179,8 +176,7 @@ def _run_trip(chassis, encoder, odometry,
     direction  = "forward" if target_mm >= 0 else "backward"
     target_abs = abs(target_mm)
     slowdown_mm = min(APPROACH_SLOWDOWN_MM, target_abs * 0.5)
-    # 30% 已接近死区，收尾速度至少保持在 35%，避免低速抖动/失速/误计数。
-    approach_speed = max(35, min(speed, int(round(speed * APPROACH_SPEED_SCALE))))
+    approach_speed = speed
 
     odometry.get_and_reset_travel()
     snap_l0, snap_r0 = encoder.get_cumulative()
@@ -195,7 +191,7 @@ def _run_trip(chassis, encoder, odometry,
     while True:
         time.sleep(0.02)
         traveled += odometry.get_and_reset_travel()
-        if (not slowed and target_abs > slowdown_mm and
+        if (not slowed and slowdown_mm > 0 and target_abs > slowdown_mm and
                 traveled >= target_abs - slowdown_mm and approach_speed < speed):
             chassis._dispatch(direction, approach_speed)
             slowed = True

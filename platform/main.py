@@ -140,9 +140,10 @@ _calib_wheel_radius_mm = 34.0
 _calib_wheel_base_mm = 160.0
 _calib_imu_weight = 0.3
 
-# /motor/drive 与 encoder_accuracy_test.py 保持一致的接近终点减速参数
-_drive_approach_slowdown_mm = 180.0
-_drive_approach_speed_scale = 0.5
+# /motor/drive 与 encoder_accuracy_test.py 保持一致：当前按固定速度闭环，
+# 不在接近终点时二次降速，避免引入速度相关的额外距离误差。
+_drive_approach_slowdown_mm = 0.0
+_drive_approach_speed_scale = 1.0
 
 chassis = Chassis(
     replace(
@@ -1003,14 +1004,13 @@ async def motor_drive(req: MotorDriveRequest):
                 dist_l = 0.0
                 dist_r = 0.0
                 slowdown_mm = min(_drive_approach_slowdown_mm, target_mm * 0.5)
-                # 30% 已接近死区；收尾保持至少 35%，避免低速抖动/失速/误计数。
-                approach_speed = max(35, min(speed, int(round(speed * _drive_approach_speed_scale))))
+                approach_speed = speed
                 slowed = False
                 while loop.time() < deadline:
                     await asyncio.sleep(0.02)
                     traveled += odometry.get_and_reset_travel()
                     if (
-                        not slowed and target_mm > slowdown_mm and
+                        not slowed and slowdown_mm > 0 and target_mm > slowdown_mm and
                         traveled >= target_mm - slowdown_mm and
                         approach_speed < speed
                     ):
