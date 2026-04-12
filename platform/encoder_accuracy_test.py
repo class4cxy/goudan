@@ -72,7 +72,7 @@ WHEEL_BASE_MM:   float = 160.0
 # 最新实测补充：车辆方向已基本不偏，因此当前左右补偿先保持不动。
 # 若后续实车又出现明显右偏，再继续小步下调 LEFT_SCALE（如 0.95 / 0.94）。
 CHASSIS_LEFT_SCALE:  float = 1.0
-CHASSIS_RIGHT_SCALE: float = 1.0
+CHASSIS_RIGHT_SCALE: float = 0.98
 
 # ── 测试参数 ──────────────────────────────────────────────────────────────────
 
