@@ -68,14 +68,16 @@ const BURST_DURATION_HIGH_LIDAR = 0.22
 const FORWARD_SPEED_HIGH_LIDAR = 22
 
 // ── 运动参数 ─────────────────────────────────────────────────────
-const FORWARD_SPEED      = Number(process.env.EXPLORER_FORWARD_SPEED ?? '28')
-/** 1:90 减速 + 高摩擦时 Pivot 单侧推易停转；与文档「最低有效 ~50」对齐，默认略高于 50 */
-const TURN_SPEED         = Number(process.env.EXPLORER_TURN_SPEED ?? '52')
+// 用户要求：室内建图核心运动参数不再从 .env 读取，改为代码常量固定。
+// 当前取值目标：前进不再过慢、转向不再过快，保持建图脱困能力的同时更平衡。
+const FORWARD_SPEED      = 38
+/** tank 转向两侧同时出力，40 已足够灵活，避免 52 带来的“原地转得过猛”。 */
+const TURN_SPEED         = 40
 /**
  * 正常脉冲前进时长（秒）。
  * 脱困后使用更长的 ESCAPE_BURST_DURATION，把机器人真正带离障碍区域。
  */
-const BURST_DURATION     = Number(process.env.EXPLORER_BURST_DURATION ?? '0.5')
+const BURST_DURATION     = 0.65
 /** 脱困后的前进时长（秒）：比普通脉冲长，确保离开障碍区 */
 const ESCAPE_BURST_DURATION = 0.8
 /** 普通后退时长（秒） */
@@ -83,7 +85,7 @@ const REVERSE_DURATION   = 0.6
 /** 卡死时大后退时长（秒）：连续卡死后彻底换区域 */
 const BIG_REVERSE_DURATION = 1.5
 /** 单次转向时长（秒）：建图避障需足够转角，与语音左转/右转独立 */
-const TURN_STEP_DURATION = Number(process.env.EXPLORER_TURN_STEP_DURATION ?? '0.55')
+const TURN_STEP_DURATION = 0.42
 /** 单次转向最大步数（超过后换方向+后退） */
 const MAX_TURN_STEPS     = Number(process.env.EXPLORER_MAX_TURN_STEPS ?? '6')
 
