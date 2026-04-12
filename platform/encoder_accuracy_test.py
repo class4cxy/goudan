@@ -44,7 +44,7 @@ RIGHT_B: int = 21   # M4 黄线 B → GPIO21（Pin 40）
 # 这里使用“本测试脚本自己的闭环校准值”，不是编码器出厂标称值。
 # 最新实测：将 LINES_PER_REV 调到 116 后，1500mm 目标已接近卷尺结果，
 # 当前以 116 作为新的距离标定值。
-LINES_PER_REV: int = 130
+LINES_PER_REV: int = 140
 
 # 前进时某轮 ticks 为负时翻转极性（等效于对调 A/B 接线）。
 # 实测：M4 右后轮前进时 ticks 为负（右侧电机镜像安装导致相位相反），需翻转。
@@ -72,7 +72,7 @@ WHEEL_BASE_MM:   float = 160.0
 # 最新实测补充：车辆方向已基本不偏，因此当前左右补偿先保持不动。
 # 若后续实车又出现明显右偏，再继续小步下调 LEFT_SCALE（如 0.95 / 0.94）。
 CHASSIS_LEFT_SCALE:  float = 1.0
-CHASSIS_RIGHT_SCALE: float = 0.98
+CHASSIS_RIGHT_SCALE: float = 0.99
 
 # ── 测试参数 ──────────────────────────────────────────────────────────────────
 
