@@ -87,7 +87,8 @@ MOTOR_SPEED: int = 40
 # 先高速接近，再低速收尾，可显著减小“达到阈值才急停”带来的惯性超调。
 APPROACH_SLOWDOWN_MM: float = 180.0
 
-# 收尾阶段速度系数。40% × 0.5 → 20%，刚好接近当前电机的稳定下限。
+# 收尾阶段速度系数。收尾可适度降速，但不能掉进低速死区。
+# 40% × 0.5 = 20% 已验证过低，会导致实车缩水明显；这里保留系数但配合 35% 下限。
 APPROACH_SPEED_SCALE: float = 0.5
 
 # 单次超时（秒）。编码器闭环未达目标时的强制停车时限。
@@ -178,7 +179,8 @@ def _run_trip(chassis, encoder, odometry,
     direction  = "forward" if target_mm >= 0 else "backward"
     target_abs = abs(target_mm)
     slowdown_mm = min(APPROACH_SLOWDOWN_MM, target_abs * 0.5)
-    approach_speed = max(20, min(speed, int(round(speed * APPROACH_SPEED_SCALE))))
+    # 30% 已接近死区，收尾速度至少保持在 35%，避免低速抖动/失速/误计数。
+    approach_speed = max(35, min(speed, int(round(speed * APPROACH_SPEED_SCALE))))
 
     odometry.get_and_reset_travel()
     snap_l0, snap_r0 = encoder.get_cumulative()

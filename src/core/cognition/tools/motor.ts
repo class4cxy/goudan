@@ -56,6 +56,12 @@ const CLOSED_LOOP_TIMEOUT_DISTANCE_PER_100MM_S = 0.8
 /** 每 30° 转向分配的超时时长（秒） */
 const CLOSED_LOOP_TIMEOUT_ANGLE_PER_30DEG_S = 3.0
 
+/** 运动前等待平台音频空闲的最长时长（ms）。避免 TTS 播放与电机运动并发。 */
+const PRE_MOTION_AUDIO_IDLE_TIMEOUT_MS = 8_000
+
+/** 轮询音频 busy 的间隔（ms）。 */
+const PRE_MOTION_AUDIO_IDLE_POLL_MS = 120
+
 function clampSpeed(v: number): number {
   if (Number.isNaN(v)) return 25
   return Math.max(0, Math.min(100, Math.round(v)))
@@ -148,6 +154,25 @@ function calcAngleTimeoutSec(angleDeg: number): number {
   return Math.ceil(bounded)
 }
 
+async function waitForPlatformAudioIdle(maxWaitMs = PRE_MOTION_AUDIO_IDLE_TIMEOUT_MS): Promise<void> {
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${PLATFORM_URL}/audio/status`, {
+        signal: AbortSignal.timeout(1500),
+      })
+      if (res.ok) {
+        const data = await res.json() as { speaker?: { busy?: boolean } }
+        if (!data.speaker?.busy) return
+      }
+    } catch {
+      // 音频状态查询失败时不阻塞运动，直接放行。
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, PRE_MOTION_AUDIO_IDLE_POLL_MS))
+  }
+}
+
 /**
  * navigateTo — 机器车移动控制
  *
@@ -218,6 +243,7 @@ export const navigateTo = tool({
 
         // ── 转向：IMU 闭环 ────────────────────────────────────────
         if (motorCommand === 'turn_left' || motorCommand === 'turn_right') {
+          await waitForPlatformAudioIdle()
           const defaultAngle = TURNAROUND_DESTINATIONS.has(dest) ? 180 : 90
           const targetAngle = inferredAngle ?? defaultAngle
           // 左转为正角度，右转为负角度
@@ -248,6 +274,7 @@ export const navigateTo = tool({
 
         // ── 直行有距离：里程计闭环 ────────────────────────────────
         if (inferredDistance != null) {
+          await waitForPlatformAudioIdle()
           const signedDistance = motorCommand === 'backward' ? -inferredDistance : inferredDistance
           const result = await driveClosedLoop({
             distance_mm: signedDistance,
@@ -272,6 +299,7 @@ export const navigateTo = tool({
         }
 
         // ── 直行无距离：时间控制（持续运动）────────────────────────
+        await waitForPlatformAudioIdle()
         const explicitContinuous = /(持续|一直|不停|保持|连续)/.test(dest)
         const safeDuration = duration ?? OPEN_LOOP_DEFAULT_DURATION_S
         Spine.publish<ActionMotorPayload>({

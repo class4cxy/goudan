@@ -986,7 +986,8 @@ async def motor_drive(req: MotorDriveRequest):
                 dist_l = 0.0
                 dist_r = 0.0
                 slowdown_mm = min(_drive_approach_slowdown_mm, target_mm * 0.5)
-                approach_speed = max(20, min(speed, int(round(speed * _drive_approach_speed_scale))))
+                # 30% 已接近死区；收尾保持至少 35%，避免低速抖动/失速/误计数。
+                approach_speed = max(35, min(speed, int(round(speed * _drive_approach_speed_scale))))
                 slowed = False
                 while loop.time() < deadline:
                     await asyncio.sleep(0.02)
