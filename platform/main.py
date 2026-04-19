@@ -295,6 +295,149 @@ ultrasonic = Ultrasonic(
     on_too_close=_on_ultrasonic_too_close,
 )
 
+# ── Teleop（手动遥控会话）──────────────────────────────────────────
+_teleop_state: dict[str, Any] = {
+    "enabled": False,
+    "last_input_monotonic": 0.0,
+    "watchdog_timeout_s": 0.30,
+    "watchdog_braked": False,
+    "max_speed": 60,
+    "deadband": 0.08,
+    "min_safe_mm": 350,
+    "front_half_angle_deg": 25.0,
+    "scan_freshness_ms": 600,
+}
+_teleop_lock = asyncio.Lock()
+_teleop_watchdog_task: asyncio.Task | None = None
+
+
+def _teleop_angle_diff_deg(a: float, b: float) -> float:
+    """返回角度差（-180, 180]。"""
+    return ((a - b + 180.0) % 360.0) - 180.0
+
+
+def _teleop_front_min_distance_mm(*, front_half_angle_deg: float, scan_freshness_ms: int) -> float | None:
+    """读取当前前向扇区的最近障碍距离（mm）。无新鲜扫描时返回 None。"""
+    scan = lidar_sensor.device.latest_scan
+    if scan is None:
+        return None
+
+    now_ms = int(time.time() * 1000)
+    if now_ms - int(scan.timestamp_ms) > scan_freshness_ms:
+        return None
+
+    dists = [
+        float(p.distance)
+        for p in scan.valid_points
+        if abs(_teleop_angle_diff_deg(float(p.angle), 0.0)) <= front_half_angle_deg
+    ]
+    if not dists:
+        return None
+    return min(dists)
+
+
+def _teleop_apply_tank_mix(*, throttle: float, steer: float, max_speed: int) -> tuple[float, float]:
+    """
+    归一化差速混控：
+      left  = throttle + steer
+      right = throttle - steer
+    输出范围：[-1.0, 1.0]
+    """
+    left = throttle + steer
+    right = throttle - steer
+    scale = max(1.0, abs(left), abs(right))
+    left /= scale
+    right /= scale
+
+    # 沿用底盘当前左右补偿参数，减少手动控制时跑偏。
+    left *= _calib_left_scale
+    right *= _calib_right_scale
+    left = max(-1.0, min(1.0, left))
+    right = max(-1.0, min(1.0, right))
+    return left, right
+
+
+def _teleop_set_side(side: str, value: float, max_speed: int) -> None:
+    """按侧设置前后轮（left/right），value∈[-1,1]。"""
+    positions = ("front_left", "rear_left") if side == "left" else ("front_right", "rear_right")
+    if abs(value) < 1e-6:
+        direction = "stop"
+        speed = None
+    else:
+        direction = "forward" if value > 0 else "backward"
+        speed = int(round(min(1.0, abs(value)) * max_speed))
+
+    for pos in positions:
+        chassis.set_motor(pos, direction, speed)
+
+
+def _teleop_apply_drive(*, throttle: float, steer: float, max_speed: int, deadband: float) -> dict[str, float | int]:
+    """执行一次遥杆差速控制。"""
+    t = 0.0 if abs(throttle) < deadband else throttle
+    s = 0.0 if abs(steer) < deadband else steer
+    left, right = _teleop_apply_tank_mix(throttle=t, steer=s, max_speed=max_speed)
+    _teleop_set_side("left", left, max_speed)
+    _teleop_set_side("right", right, max_speed)
+    return {
+        "throttle": round(t, 3),
+        "steer": round(s, 3),
+        "left": round(left, 3),
+        "right": round(right, 3),
+        "max_speed": max_speed,
+    }
+
+
+async def _teleop_watchdog_loop() -> None:
+    """仅在 teleop 开启时运行：超时未收到控制则自动刹停。"""
+    global _teleop_watchdog_task
+    try:
+        while True:
+            await asyncio.sleep(0.05)
+            should_brake = False
+            elapsed = 0.0
+            timeout_s = 0.0
+            async with _teleop_lock:
+                if not _teleop_state["enabled"]:
+                    return
+                elapsed = time.monotonic() - float(_teleop_state["last_input_monotonic"])
+                timeout_s = float(_teleop_state["watchdog_timeout_s"])
+                if elapsed > timeout_s and not bool(_teleop_state["watchdog_braked"]):
+                    _teleop_state["watchdog_braked"] = True
+                    should_brake = True
+            if should_brake:
+                chassis.stop()
+                logger.warning(
+                    "[Teleop] watchdog 自动刹停（elapsed=%.0fms timeout=%.0fms）",
+                    elapsed * 1000.0,
+                    timeout_s * 1000.0,
+                )
+    except asyncio.CancelledError:
+        return
+    finally:
+        _teleop_watchdog_task = None
+
+
+async def _ensure_teleop_watchdog() -> None:
+    global _teleop_watchdog_task
+    if _teleop_watchdog_task is None or _teleop_watchdog_task.done():
+        _teleop_watchdog_task = asyncio.create_task(_teleop_watchdog_loop(), name="teleop_watchdog")
+        _teleop_watchdog_task.add_done_callback(_task_done_callback)
+
+
+async def _disable_teleop(*, reason: str = "") -> None:
+    """关闭 teleop（不会抛异常），并确保底盘停车。"""
+    global _teleop_watchdog_task
+    async with _teleop_lock:
+        _teleop_state["enabled"] = False
+        _teleop_state["watchdog_braked"] = False
+    chassis.stop()
+    if reason:
+        logger.info("[Teleop] 已关闭：%s", reason)
+    task = _teleop_watchdog_task
+    _teleop_watchdog_task = None
+    if task and not task.done():
+        task.cancel()
+
 
 # ── 全局状态 ──────────────────────────────────────────────────────
 state: dict[str, Any] = {
@@ -534,6 +677,10 @@ async def _shutdown():
     if _motion_sensor_retry_task and not _motion_sensor_retry_task.done():
         _motion_sensor_retry_task.cancel()
     _motion_sensor_retry_task = None
+    try:
+        await _disable_teleop(reason="shutdown")
+    except Exception:
+        pass
 
     dm: DeviceManager | None = state.get("device_manager")
     if dm:
@@ -618,6 +765,19 @@ class MotorDriveRequest(BaseModel):
     angle_deg: float | None = None    # 正=左转，负=右转（IMU 闭环）
     speed: int = 40                   # 0–100；与 encoder_accuracy_test 校准速度保持一致
     timeout_s: float = 30.0          # 安全超时（防止里程计失效时卡死）
+
+class TeleopStartRequest(BaseModel):
+    timeout_ms: int | None = None           # watchdog 超时（毫秒）
+    max_speed: int | None = None            # 0–100
+    deadband: float | None = None           # 0.0–0.4
+    min_safe_mm: int | None = None          # 前向最小安全距离（毫米）
+    front_half_angle_deg: float | None = None   # 前向扇区半角（度）
+    scan_freshness_ms: int | None = None    # LiDAR 数据新鲜度阈值（毫秒）
+
+class TeleopCommandRequest(BaseModel):
+    throttle: float          # -1.0..1.0，正=前进，负=后退
+    steer: float             # -1.0..1.0，正=右转，负=左转
+    max_speed: int | None = None
 
 class CameraLookAtRequest(BaseModel):
     pan: float   # 水平角度 0–180（0=最左，97=正前，180=最右）
@@ -1384,6 +1544,177 @@ async def motor_status():
     return {
         "simulation": chassis.is_simulation,
         "motors": chassis.status,
+    }
+
+
+@app.post("/teleop/start")
+async def teleop_start(req: TeleopStartRequest):
+    """
+    进入手动遥控模式（仅此模式启用 watchdog）。
+
+    安全约束：
+      - 启动时会确保 LiDAR 在线（非 simulation）
+      - 前向运动时会执行最小安全距离检查（防碰撞）
+    """
+    if chassis.is_simulation:
+        raise HTTPException(status_code=503, detail="底盘处于模拟模式，无法进入遥控")
+
+    if not lidar_sensor.device.is_running:
+        await asyncio.to_thread(lidar_sensor.start, _main_loop)
+    if lidar_sensor.device.is_simulation:
+        raise HTTPException(status_code=503, detail="激光雷达不可用，拒绝进入遥控模式")
+
+    timeout_s = max(0.10, min(2.00, (req.timeout_ms if req.timeout_ms is not None else 300) / 1000.0))
+    max_speed = max(0, min(100, req.max_speed if req.max_speed is not None else 60))
+    deadband = max(0.0, min(0.4, req.deadband if req.deadband is not None else 0.08))
+    min_safe_mm = max(100, min(3000, req.min_safe_mm if req.min_safe_mm is not None else int(os.environ.get("TELEOP_LIDAR_MIN_SAFE_MM", "350"))))
+    front_half_angle_deg = max(5.0, min(90.0, req.front_half_angle_deg if req.front_half_angle_deg is not None else float(os.environ.get("TELEOP_LIDAR_FRONT_HALF_ANGLE_DEG", "25"))))
+    scan_freshness_ms = max(100, min(3000, req.scan_freshness_ms if req.scan_freshness_ms is not None else int(os.environ.get("TELEOP_LIDAR_SCAN_FRESHNESS_MS", "600"))))
+
+    async with _teleop_lock:
+        _teleop_state["enabled"] = True
+        _teleop_state["last_input_monotonic"] = time.monotonic()
+        _teleop_state["watchdog_timeout_s"] = timeout_s
+        _teleop_state["watchdog_braked"] = False
+        _teleop_state["max_speed"] = max_speed
+        _teleop_state["deadband"] = deadband
+        _teleop_state["min_safe_mm"] = min_safe_mm
+        _teleop_state["front_half_angle_deg"] = front_half_angle_deg
+        _teleop_state["scan_freshness_ms"] = scan_freshness_ms
+
+    chassis.stop()
+    await _ensure_teleop_watchdog()
+    logger.info(
+        "[Teleop] 已开启 watchdog=%.0fms max_speed=%d deadband=%.2f min_safe=%dmm front_half=%.1f°",
+        timeout_s * 1000.0, max_speed, deadband, min_safe_mm, front_half_angle_deg,
+    )
+    return {
+        "ok": True,
+        "enabled": True,
+        "watchdog_timeout_ms": int(round(timeout_s * 1000.0)),
+        "max_speed": max_speed,
+        "deadband": deadband,
+        "min_safe_mm": min_safe_mm,
+        "front_half_angle_deg": front_half_angle_deg,
+        "scan_freshness_ms": scan_freshness_ms,
+    }
+
+
+@app.post("/teleop/command")
+async def teleop_command(req: TeleopCommandRequest):
+    """
+    遥杆控制输入（-1..1 双轴）。
+
+    防撞规则：
+      - 仅当前向分量（throttle > deadband）时检查 LiDAR 前向最近距离
+      - 若小于 min_safe_mm 或无新鲜扫描，阻止前进并立即刹停
+    """
+    if chassis.is_simulation:
+        raise HTTPException(status_code=503, detail="底盘处于模拟模式，无法遥控")
+
+    async with _teleop_lock:
+        enabled = bool(_teleop_state["enabled"])
+        max_speed_default = int(_teleop_state["max_speed"])
+        deadband = float(_teleop_state["deadband"])
+        min_safe_mm = int(_teleop_state["min_safe_mm"])
+        front_half_angle_deg = float(_teleop_state["front_half_angle_deg"])
+        scan_freshness_ms = int(_teleop_state["scan_freshness_ms"])
+
+    if not enabled:
+        raise HTTPException(status_code=409, detail="遥控模式未开启，请先调用 /teleop/start")
+
+    throttle = max(-1.0, min(1.0, float(req.throttle)))
+    steer = max(-1.0, min(1.0, float(req.steer)))
+    max_speed = max(0, min(100, req.max_speed if req.max_speed is not None else max_speed_default))
+
+    # 前向运动防撞：前向扇区最近距离不足时，拒绝推进并刹停。
+    if throttle > deadband:
+        if lidar_sensor.device.is_simulation:
+            chassis.stop()
+            async with _teleop_lock:
+                _teleop_state["last_input_monotonic"] = time.monotonic()
+                _teleop_state["watchdog_braked"] = False
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "lidar_unavailable",
+                "message": "激光雷达不可用，已阻止前进",
+            }
+
+        front_min_mm = _teleop_front_min_distance_mm(
+            front_half_angle_deg=front_half_angle_deg,
+            scan_freshness_ms=scan_freshness_ms,
+        )
+        if front_min_mm is None or front_min_mm < min_safe_mm:
+            chassis.stop()
+            async with _teleop_lock:
+                _teleop_state["last_input_monotonic"] = time.monotonic()
+                _teleop_state["watchdog_braked"] = False
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "lidar_too_close" if front_min_mm is not None else "lidar_stale",
+                "front_min_mm": None if front_min_mm is None else round(front_min_mm, 1),
+                "min_safe_mm": min_safe_mm,
+                "message": "前方障碍过近，已阻止前进",
+            }
+
+    applied = _teleop_apply_drive(
+        throttle=throttle,
+        steer=steer,
+        max_speed=max_speed,
+        deadband=deadband,
+    )
+    async with _teleop_lock:
+        _teleop_state["last_input_monotonic"] = time.monotonic()
+        _teleop_state["watchdog_braked"] = False
+    return {
+        "ok": True,
+        "blocked": False,
+        **applied,
+    }
+
+
+@app.post("/teleop/stop")
+async def teleop_stop():
+    """退出手动遥控模式并停车。"""
+    await _disable_teleop(reason="api_stop")
+    return {"ok": True, "enabled": False}
+
+
+@app.get("/teleop/status")
+async def teleop_status():
+    async with _teleop_lock:
+        enabled = bool(_teleop_state["enabled"])
+        timeout_s = float(_teleop_state["watchdog_timeout_s"])
+        last_input_monotonic = float(_teleop_state["last_input_monotonic"])
+        watchdog_braked = bool(_teleop_state["watchdog_braked"])
+        max_speed = int(_teleop_state["max_speed"])
+        deadband = float(_teleop_state["deadband"])
+        min_safe_mm = int(_teleop_state["min_safe_mm"])
+        front_half_angle_deg = float(_teleop_state["front_half_angle_deg"])
+        scan_freshness_ms = int(_teleop_state["scan_freshness_ms"])
+
+    front_min_mm = _teleop_front_min_distance_mm(
+        front_half_angle_deg=front_half_angle_deg,
+        scan_freshness_ms=scan_freshness_ms,
+    )
+    elapsed_ms = int((time.monotonic() - last_input_monotonic) * 1000.0) if enabled else None
+    return {
+        "enabled": enabled,
+        "watchdog_timeout_ms": int(round(timeout_s * 1000.0)),
+        "watchdog_braked": watchdog_braked,
+        "elapsed_since_last_input_ms": elapsed_ms,
+        "max_speed": max_speed,
+        "deadband": deadband,
+        "safety": {
+            "lidar_running": lidar_sensor.device.is_running,
+            "lidar_simulation": lidar_sensor.device.is_simulation,
+            "min_safe_mm": min_safe_mm,
+            "front_half_angle_deg": front_half_angle_deg,
+            "scan_freshness_ms": scan_freshness_ms,
+            "front_min_mm": None if front_min_mm is None else round(front_min_mm, 1),
+        },
     }
 
 

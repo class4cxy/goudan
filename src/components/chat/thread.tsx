@@ -13,13 +13,15 @@ import {
   BotIcon, SendIcon, UserIcon,
   ChevronUpIcon, ChevronDownIcon,
   CopyIcon, RefreshCwIcon,
-  MicIcon, Volume2Icon, VolumeXIcon,
+  MicIcon, Volume2Icon, VolumeXIcon, Gamepad2Icon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAgentDisplayName } from "@/components/agent-display-context";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { voiceModeStore } from "@/components/chat/voice-mode-store";
+import { teleopModeStore } from "@/components/chat/teleop-mode-store";
 import { useDebugMode } from "@/components/debug-context";
+import { TeleopPanel } from "@/components/chat/teleop-panel";
 import {
   RobotStatusToolUI,
   CleanRoomsToolUI,
@@ -63,6 +65,69 @@ function VoiceModeToggle() {
       )}
     >
       {voiceMode ? <Volume2Icon className="h-4 w-4" /> : <VolumeXIcon className="h-4 w-4" />}
+    </button>
+  );
+}
+
+function TeleopModeToggle() {
+  const teleopEnabled = useSyncExternalStore(
+    teleopModeStore.subscribe,
+    teleopModeStore.getSnapshot,
+    teleopModeStore.getServerSnapshot,
+  );
+  const [pending, setPending] = useState(false);
+
+  const toggle = useCallback(async () => {
+    if (pending) return;
+    setPending(true);
+    try {
+      if (!teleopEnabled) {
+        const res = await fetch("/api/teleop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "start",
+            timeout_ms: 300,
+            max_speed: 60,
+            deadband: 0.08,
+            min_safe_mm: 350,
+            front_half_angle_deg: 25,
+            scan_freshness_ms: 600,
+          }),
+        });
+        if (!res.ok) {
+          const json = await res.json().catch(() => null);
+          const msg = json?.detail ?? json?.error ?? "开启遥控失败";
+          console.warn("[Teleop] start failed:", msg);
+          return;
+        }
+        teleopModeStore.enable();
+      } else {
+        await fetch("/api/teleop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "stop" }),
+        });
+        teleopModeStore.disable();
+      }
+    } finally {
+      setPending(false);
+    }
+  }, [teleopEnabled, pending]);
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={pending}
+      title={teleopEnabled ? "退出遥控模式" : "开启遥控模式"}
+      className={cn(
+        "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors disabled:opacity-50",
+        teleopEnabled
+          ? "bg-amber-500/20 text-amber-300 hover:bg-amber-500/30"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground",
+      )}
+    >
+      <Gamepad2Icon className="h-4 w-4" />
     </button>
   );
 }
@@ -317,6 +382,24 @@ function WelcomeScreen() {
 export function ChatThread() {
   const agentName = useAgentDisplayName();
   const isDebug = useDebugMode();
+  const teleopEnabled = useSyncExternalStore(
+    teleopModeStore.subscribe,
+    teleopModeStore.getSnapshot,
+    teleopModeStore.getServerSnapshot,
+  );
+
+  useEffect(() => {
+    return () => {
+      if (!teleopModeStore.getSnapshot()) return;
+      teleopModeStore.disable();
+      void fetch("/api/teleop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+      });
+    };
+  }, []);
+
   return (
     <>
       {/* Debug 模式下跳过所有自定义 Tool UI 注册，由 FallbackToolUI 统一接管 */}
@@ -365,6 +448,7 @@ export function ChatThread() {
 
         {/* Composer */}
         <div className="border-t border-border bg-zinc-950 p-4">
+          <TeleopPanel enabled={teleopEnabled} />
           <ComposerPrimitive.Root className="flex items-end gap-2 rounded-xl border border-border bg-zinc-900 px-3 py-2.5 focus-within:border-primary/50 transition-colors">
             <ComposerPrimitive.Input
               placeholder={`发消息给 ${agentName}…`}
@@ -373,6 +457,8 @@ export function ChatThread() {
             />
             {/* 语音输入（麦克风） */}
             <MicButton />
+            {/* 手动遥控模式 */}
+            <TeleopModeToggle />
             {/* 蓝牙外放模式开关 */}
             <VoiceModeToggle />
             <ComposerPrimitive.Send asChild>
