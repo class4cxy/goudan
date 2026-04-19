@@ -26,7 +26,10 @@ export function TeleopPanel({ enabled }: { enabled: boolean }) {
   const knobStyle = useMemo(() => {
     const x = steer * 36;
     const y = -throttle * 36;
-    return { transform: `translate(${x}px, ${y}px)` };
+    return {
+      left: `calc(50% + ${x}px)`,
+      top: `calc(50% + ${y}px)`,
+    };
   }, [steer, throttle]);
 
   const updateFromClientPoint = useCallback((clientX: number, clientY: number) => {
@@ -161,12 +164,10 @@ export function TeleopPanel({ enabled }: { enabled: boolean }) {
         >
           <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-zinc-800" />
           <div className="absolute left-0 top-1/2 h-px w-full -translate-y-1/2 bg-zinc-800" />
-          <div className="absolute left-1/2 top-1/2">
-            <div
-              style={knobStyle}
-              className="h-9 w-9 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/80 shadow"
-            />
-          </div>
+          <div
+            style={knobStyle}
+            className="absolute h-9 w-9 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/80 shadow"
+          />
         </div>
 
         <div className="space-y-1 text-[11px] text-muted-foreground">

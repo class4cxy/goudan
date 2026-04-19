@@ -47,13 +47,16 @@ import {
   CopyIcon,
   MicIcon,
   Volume2Icon,
+  Gamepad2Icon,
   ArrowLeftIcon,
   ChevronDownIcon as ScrollDownIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAgentDisplayName } from "@/components/agent-display-context";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
+import { teleopModeStore } from "@/components/chat/teleop-mode-store";
+import { TeleopPanel } from "@/components/chat/teleop-panel";
 
 // ── MediaRecorder helpers ─────────────────────────────────────────
 function getSupportedMimeType(): string {
@@ -388,6 +391,70 @@ function HoldMicButton() {
   );
 }
 
+function VoiceTeleopToggle() {
+  const teleopEnabled = useSyncExternalStore(
+    teleopModeStore.subscribe,
+    teleopModeStore.getSnapshot,
+    teleopModeStore.getServerSnapshot,
+  );
+  const [pending, setPending] = useState(false);
+
+  const toggle = useCallback(async () => {
+    if (pending) return;
+    setPending(true);
+    try {
+      if (!teleopEnabled) {
+        const res = await fetch("/api/teleop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "start",
+            timeout_ms: 300,
+            max_speed: 60,
+            deadband: 0.08,
+            min_safe_mm: 350,
+            front_half_angle_deg: 25,
+            scan_freshness_ms: 600,
+          }),
+        });
+        if (!res.ok) {
+          const json = await res.json().catch(() => null);
+          const msg = json?.detail ?? json?.error ?? "开启遥控失败";
+          console.warn("[VoiceTeleop] start failed:", msg);
+          return;
+        }
+        teleopModeStore.enable();
+      } else {
+        await fetch("/api/teleop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "stop" }),
+        });
+        teleopModeStore.disable();
+      }
+    } finally {
+      setPending(false);
+    }
+  }, [pending, teleopEnabled]);
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={pending}
+      className={cn(
+        "flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors disabled:opacity-50",
+        teleopEnabled
+          ? "border-amber-500/40 bg-amber-500/20 text-amber-200"
+          : "border-zinc-700 bg-zinc-900 text-muted-foreground hover:text-foreground",
+      )}
+      title={teleopEnabled ? "退出遥控模式" : "开启遥控模式"}
+    >
+      <Gamepad2Icon className="h-3.5 w-3.5" />
+      {teleopEnabled ? "遥控中" : "遥控"}
+    </button>
+  );
+}
+
 // ── Thinking indicator ────────────────────────────────────────────
 function ThinkingDots() {
   return (
@@ -409,6 +476,24 @@ function ThinkingDots() {
 // ── Main ──────────────────────────────────────────────────────────
 export function VoiceThread() {
   const agentName = useAgentDisplayName();
+  const teleopEnabled = useSyncExternalStore(
+    teleopModeStore.subscribe,
+    teleopModeStore.getSnapshot,
+    teleopModeStore.getServerSnapshot,
+  );
+
+  useEffect(() => {
+    return () => {
+      if (!teleopModeStore.getSnapshot()) return;
+      teleopModeStore.disable();
+      void fetch("/api/teleop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+      });
+    };
+  }, []);
+
   return (
     <>
       {/* 注册自定义工具 UI，与主聊天页一致，确保拍照、地图等结果能正确展示 */}
@@ -448,9 +533,12 @@ export function VoiceThread() {
           <BotIcon className="h-4 w-4 text-primary" />
           {agentName} 语音模式
         </div>
-        <div className="flex items-center gap-1 text-xs text-primary/80">
-          <Volume2Icon className="h-3.5 w-3.5" />
-          外放
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 text-xs text-primary/80">
+            <Volume2Icon className="h-3.5 w-3.5" />
+            外放
+          </div>
+          <VoiceTeleopToggle />
         </div>
       </header>
 
@@ -472,6 +560,11 @@ export function VoiceThread() {
 
       {/* 底部麦克风区 — 紧凑布局，为聊天区留出更多空间 */}
       <div className="shrink-0 border-t border-border bg-zinc-950 flex flex-col items-center py-3 pb-6">
+        {teleopEnabled && (
+          <div className="w-full px-3">
+            <TeleopPanel enabled={teleopEnabled} />
+          </div>
+        )}
         <HoldMicButton />
       </div>
 
