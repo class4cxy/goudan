@@ -35,11 +35,11 @@ const TURNAROUND_DESTINATIONS = new Set(['掉头', '调头'])
 /** 语音/手动点动默认速度（0–100） */
 const MANUAL_DEFAULT_SPEED = 55
 
-/** 闭环控制默认速度。校准条件：DEBOUNCE_US=3，该速度下编码器稳定，实测约 350mm/s */
-const CLOSED_LOOP_DEFAULT_SPEED = 5
+/** 闭环控制默认速度。与 platform /motor/drive 标定速度保持一致。 */
+const CLOSED_LOOP_DEFAULT_SPEED = 40
 
-/** 闭环速度上限，与校准速度对齐；超出会导致 EMF 噪声加剧，编码器漏脉冲增多 */
-const CLOSED_LOOP_MAX_SPEED = 5
+/** 闭环速度上限。当前标定基于固定 speed=40，超过会引入额外速度相关误差。 */
+const CLOSED_LOOP_MAX_SPEED = 40
 
 /** 无距离直行时的安全点动时长（秒），避免持续运动失控 */
 const OPEN_LOOP_DEFAULT_DURATION_S = 0.8
@@ -103,6 +103,15 @@ function extractAngleDegFromText(text: string): number | undefined {
   const n = Number(m[1])
   if (!Number.isFinite(n) || n <= 0) return undefined
   return n
+}
+
+function parseCoordinateDestination(dest: string): { x_mm: number; y_mm: number } | null {
+  const parts = dest.split(',')
+  if (parts.length !== 2) return null
+  const x = Number(parts[0].trim())
+  const y = Number(parts[1].trim())
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  return { x_mm: x, y_mm: y }
 }
 
 /**
@@ -329,12 +338,20 @@ export const navigateTo = tool({
         }
 
       } else {
-        // ── 房间导航 ──────────────────────────────────────────────
+        // ── 坐标导航（房间名语义导航暂未实现）───────────────────────
+        const coords = parseCoordinateDestination(dest)
+        if (!coords) {
+          return {
+            success: false,
+            error: `暂不支持按房间名「${destination}」导航。请改用坐标格式 "x_mm,y_mm"（例如 "1200,800"），或使用前进/后退/左转/右转指令。`,
+          }
+        }
+
         Spine.publish({
           type: 'action.navigate',
           priority: 'MEDIUM',
           source: 'brain',
-          payload: { destination, reason },
+          payload: { destination: `${coords.x_mm},${coords.y_mm}`, reason },
           summary: `导航意图：前往「${destination}」${reason ? `（${reason}）` : ''}`,
         })
         return {
