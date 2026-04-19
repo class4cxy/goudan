@@ -303,6 +303,9 @@ _teleop_state: dict[str, Any] = {
     "watchdog_braked": False,
     "max_speed": 30,
     "deadband": 0.08,
+    "min_move_pwm": 18,
+    "startup_boost_pwm": 45,
+    "startup_boost_ms": 180,
     "lidar_safety_enabled": False,
     "min_safe_mm": 350,
     "front_half_angle_deg": 25.0,
@@ -310,6 +313,7 @@ _teleop_state: dict[str, Any] = {
 }
 _teleop_lock = asyncio.Lock()
 _teleop_watchdog_task: asyncio.Task | None = None
+_teleop_side_motion_started_s: dict[str, float] = {"left": 0.0, "right": 0.0}
 
 
 def _teleop_angle_diff_deg(a: float, b: float) -> float:
@@ -375,32 +379,78 @@ def _teleop_apply_tank_mix(*, throttle: float, steer: float, max_speed: int) -> 
     return left, right
 
 
-def _teleop_set_side(side: str, value: float, max_speed: int) -> None:
+def _teleop_set_side(
+    side: str,
+    value: float,
+    max_speed: int,
+    min_move_pwm: int,
+    startup_boost_pwm: int,
+    startup_boost_ms: int,
+) -> int:
     """按侧设置前后轮（left/right），value∈[-1,1]。"""
     positions = ("front_left", "rear_left") if side == "left" else ("front_right", "rear_right")
+    applied_pwm = 0
     if abs(value) < 1e-6:
         direction = "stop"
         speed = None
+        _teleop_side_motion_started_s[side] = 0.0
     else:
         direction = "forward" if value > 0 else "backward"
-        speed = int(round(min(1.0, abs(value)) * max_speed))
+        target_pwm = int(round(min(1.0, abs(value)) * max_speed))
+        target_pwm = max(1, target_pwm)
+
+        # 低速抗静摩擦：给非零运动一个最低有效 PWM，避免单边“给了命令但起不来”。
+        speed = max(target_pwm, min_move_pwm)
+
+        # 起步短时扭矩增强：从静止切到运动的前 startup_boost_ms 毫秒，允许更高 PWM 克服静摩擦。
+        now_s = time.monotonic()
+        started = _teleop_side_motion_started_s[side]
+        if started <= 0.0:
+            _teleop_side_motion_started_s[side] = now_s
+            started = now_s
+        if now_s - started <= (startup_boost_ms / 1000.0):
+            speed = max(speed, startup_boost_pwm)
+        speed = min(100, speed)
+        applied_pwm = speed
 
     for pos in positions:
         chassis.set_motor(pos, direction, speed)
+    return applied_pwm
 
 
-def _teleop_apply_drive(*, throttle: float, steer: float, max_speed: int, deadband: float) -> dict[str, float | int]:
+def _teleop_apply_drive(
+    *,
+    throttle: float,
+    steer: float,
+    max_speed: int,
+    deadband: float,
+    min_move_pwm: int,
+    startup_boost_pwm: int,
+    startup_boost_ms: int,
+) -> dict[str, float | int]:
     """执行一次遥杆差速控制。"""
     t = 0.0 if abs(throttle) < deadband else throttle
     s = 0.0 if abs(steer) < deadband else steer
     left, right = _teleop_apply_tank_mix(throttle=t, steer=s, max_speed=max_speed)
-    _teleop_set_side("left", left, max_speed)
-    _teleop_set_side("right", right, max_speed)
+    left_pwm = _teleop_set_side(
+        "left", left, max_speed,
+        min_move_pwm=min_move_pwm,
+        startup_boost_pwm=startup_boost_pwm,
+        startup_boost_ms=startup_boost_ms,
+    )
+    right_pwm = _teleop_set_side(
+        "right", right, max_speed,
+        min_move_pwm=min_move_pwm,
+        startup_boost_pwm=startup_boost_pwm,
+        startup_boost_ms=startup_boost_ms,
+    )
     return {
         "throttle": round(t, 3),
         "steer": round(s, 3),
         "left": round(left, 3),
         "right": round(right, 3),
+        "left_pwm": left_pwm,
+        "right_pwm": right_pwm,
         "max_speed": max_speed,
     }
 
@@ -448,6 +498,8 @@ async def _disable_teleop(*, reason: str = "") -> None:
     async with _teleop_lock:
         _teleop_state["enabled"] = False
         _teleop_state["watchdog_braked"] = False
+    _teleop_side_motion_started_s["left"] = 0.0
+    _teleop_side_motion_started_s["right"] = 0.0
     chassis.stop()
     if reason:
         logger.info("[Teleop] 已关闭：%s", reason)
@@ -788,6 +840,9 @@ class TeleopStartRequest(BaseModel):
     timeout_ms: int | None = None           # watchdog 超时（毫秒）
     max_speed: int | None = None            # 0–100
     deadband: float | None = None           # 0.0–0.4
+    min_move_pwm: int | None = None         # 非零运动最小 PWM（抗静摩擦）
+    startup_boost_pwm: int | None = None    # 起步短时 boost PWM（克服静摩擦）
+    startup_boost_ms: int | None = None     # 起步 boost 持续时长（ms）
     lidar_safety_enabled: bool | None = None  # 是否启用 LiDAR 防撞（默认关闭）
     min_safe_mm: int | None = None          # 前向最小安全距离（毫米）
     front_half_angle_deg: float | None = None   # 前向扇区半角（度）
@@ -1590,6 +1645,9 @@ async def teleop_start(req: TeleopStartRequest):
     timeout_s = max(0.10, min(2.00, (req.timeout_ms if req.timeout_ms is not None else 300) / 1000.0))
     max_speed = max(0, min(100, req.max_speed if req.max_speed is not None else 30))
     deadband = max(0.0, min(0.4, req.deadband if req.deadband is not None else 0.08))
+    min_move_pwm = max(0, min(100, req.min_move_pwm if req.min_move_pwm is not None else 18))
+    startup_boost_pwm = max(0, min(100, req.startup_boost_pwm if req.startup_boost_pwm is not None else 45))
+    startup_boost_ms = max(0, min(2000, req.startup_boost_ms if req.startup_boost_ms is not None else 180))
     min_safe_mm = max(100, min(3000, req.min_safe_mm if req.min_safe_mm is not None else int(os.environ.get("TELEOP_LIDAR_MIN_SAFE_MM", "350"))))
     front_half_angle_deg = max(5.0, min(90.0, req.front_half_angle_deg if req.front_half_angle_deg is not None else float(os.environ.get("TELEOP_LIDAR_FRONT_HALF_ANGLE_DEG", "25"))))
     scan_freshness_ms = max(100, min(3000, req.scan_freshness_ms if req.scan_freshness_ms is not None else int(os.environ.get("TELEOP_LIDAR_SCAN_FRESHNESS_MS", "600"))))
@@ -1601,6 +1659,9 @@ async def teleop_start(req: TeleopStartRequest):
         _teleop_state["watchdog_braked"] = False
         _teleop_state["max_speed"] = max_speed
         _teleop_state["deadband"] = deadband
+        _teleop_state["min_move_pwm"] = min_move_pwm
+        _teleop_state["startup_boost_pwm"] = startup_boost_pwm
+        _teleop_state["startup_boost_ms"] = startup_boost_ms
         _teleop_state["lidar_safety_enabled"] = bool(lidar_safety_enabled)
         _teleop_state["min_safe_mm"] = min_safe_mm
         _teleop_state["front_half_angle_deg"] = front_half_angle_deg
@@ -1609,8 +1670,10 @@ async def teleop_start(req: TeleopStartRequest):
     chassis.stop()
     await _ensure_teleop_watchdog()
     logger.info(
-        "[Teleop] 已开启 watchdog=%.0fms max_speed=%d deadband=%.2f lidar_safety=%s min_safe=%dmm front_half=%.1f°",
-        timeout_s * 1000.0, max_speed, deadband, lidar_safety_enabled, min_safe_mm, front_half_angle_deg,
+        "[Teleop] 已开启 watchdog=%.0fms max_speed=%d deadband=%.2f min_move_pwm=%d boost=%d@%dms "
+        "lidar_safety=%s min_safe=%dmm front_half=%.1f°",
+        timeout_s * 1000.0, max_speed, deadband, min_move_pwm, startup_boost_pwm, startup_boost_ms,
+        lidar_safety_enabled, min_safe_mm, front_half_angle_deg,
     )
     return {
         "ok": True,
@@ -1618,6 +1681,9 @@ async def teleop_start(req: TeleopStartRequest):
         "watchdog_timeout_ms": int(round(timeout_s * 1000.0)),
         "max_speed": max_speed,
         "deadband": deadband,
+        "min_move_pwm": min_move_pwm,
+        "startup_boost_pwm": startup_boost_pwm,
+        "startup_boost_ms": startup_boost_ms,
         "lidar_safety_enabled": bool(lidar_safety_enabled),
         "min_safe_mm": min_safe_mm,
         "front_half_angle_deg": front_half_angle_deg,
@@ -1641,6 +1707,9 @@ async def teleop_command(req: TeleopCommandRequest):
         enabled = bool(_teleop_state["enabled"])
         max_speed_default = int(_teleop_state["max_speed"])
         deadband = float(_teleop_state["deadband"])
+        min_move_pwm = int(_teleop_state["min_move_pwm"])
+        startup_boost_pwm = int(_teleop_state["startup_boost_pwm"])
+        startup_boost_ms = int(_teleop_state["startup_boost_ms"])
         lidar_safety_enabled = bool(_teleop_state["lidar_safety_enabled"])
         min_safe_mm = int(_teleop_state["min_safe_mm"])
         front_half_angle_deg = float(_teleop_state["front_half_angle_deg"])
@@ -1724,6 +1793,9 @@ async def teleop_command(req: TeleopCommandRequest):
         steer=steer,
         max_speed=max_speed,
         deadband=deadband,
+        min_move_pwm=min_move_pwm,
+        startup_boost_pwm=startup_boost_pwm,
+        startup_boost_ms=startup_boost_ms,
     )
     async with _teleop_lock:
         _teleop_state["last_input_monotonic"] = time.monotonic()
@@ -1751,6 +1823,9 @@ async def teleop_status():
         watchdog_braked = bool(_teleop_state["watchdog_braked"])
         max_speed = int(_teleop_state["max_speed"])
         deadband = float(_teleop_state["deadband"])
+        min_move_pwm = int(_teleop_state["min_move_pwm"])
+        startup_boost_pwm = int(_teleop_state["startup_boost_pwm"])
+        startup_boost_ms = int(_teleop_state["startup_boost_ms"])
         lidar_safety_enabled = bool(_teleop_state["lidar_safety_enabled"])
         min_safe_mm = int(_teleop_state["min_safe_mm"])
         front_half_angle_deg = float(_teleop_state["front_half_angle_deg"])
@@ -1774,6 +1849,9 @@ async def teleop_status():
         "elapsed_since_last_input_ms": elapsed_ms,
         "max_speed": max_speed,
         "deadband": deadband,
+        "min_move_pwm": min_move_pwm,
+        "startup_boost_pwm": startup_boost_pwm,
+        "startup_boost_ms": startup_boost_ms,
         "lidar_safety_enabled": lidar_safety_enabled,
         "safety": {
             "lidar_running": lidar_sensor.device.is_running,
