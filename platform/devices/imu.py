@@ -132,6 +132,15 @@ class Imu:
             True  = 真实硬件已就绪
             False = 降级为模拟模式
         """
+        # 幂等：已在运行时直接返回当前状态，避免重复启动采样线程。
+        if self._running and self._thread and self._thread.is_alive():
+            return not self._is_simulation
+
+        # 允许“失败后重试”：每次 start 都先清理历史状态，重新探测。
+        self._running = False
+        self._is_simulation = False
+        self._close_serial()
+
         try:
             import serial as _serial
         except Exception as e:
@@ -146,6 +155,7 @@ class Imu:
                 self._open_and_init(_serial, port)
                 self._calibrate_gyro()
                 self._running = True
+                self._is_simulation = False
                 self._thread = threading.Thread(
                     target=self._sample_loop,
                     daemon=True,

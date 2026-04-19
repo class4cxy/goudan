@@ -204,6 +204,37 @@ navigator = Navigator(amcl, costmap, planner, dwa, odometry, chassis)
 # 电源传感器（INA219，低电量时 WebSocket 广播报警）
 # loop 在 _startup() 中赋值，回调在子线程里通过 run_coroutine_threadsafe 提交
 _main_loop: asyncio.AbstractEventLoop | None = None
+_motion_sensor_retry_task: asyncio.Task | None = None
+
+
+async def _retry_motion_sensors_until_ready() -> None:
+    """
+    启动后重试编码器/IMU 初始化，缓解 PM2 冷启动时 USB/GPIO 设备枚举竞态。
+
+    场景：
+      - 服务刚启动时 IMU/Encoder 可能短暂不可用，首次 start() 失败后进入 simulation。
+      - 设备几秒后恢复可用时自动重试，不需要人工重启整个 platform。
+    """
+    while True:
+        await asyncio.sleep(5.0)
+
+        if not encoder.is_simulation and not imu.is_simulation:
+            logger.info("[Startup] 编码器与 IMU 均已就绪，停止后台重试")
+            return
+
+        if encoder.is_simulation:
+            ok = await asyncio.to_thread(encoder.start)
+            if ok and not encoder.is_simulation:
+                logger.info("[Startup] 编码器重试初始化成功")
+            else:
+                logger.warning("[Startup] 编码器仍处于模拟模式，5s 后重试")
+
+        if imu.is_simulation:
+            ok = await asyncio.to_thread(imu.start)
+            if ok and not imu.is_simulation:
+                logger.info("[Startup] IMU 重试初始化成功")
+            else:
+                logger.warning("[Startup] IMU 仍处于模拟模式，5s 后重试")
 
 def _on_reading(reading: PowerReading) -> None:
     loop = _main_loop
@@ -372,7 +403,7 @@ async def _startup():
     #   - 手动控制：POST /lidar/start / POST /lidar/stop
     logger.info("⏸  激光雷达未自动启动，将在建图或导航时按需开启")
 
-    # 启动编码器（pigpio 中断驱动，非树莓派降级模拟）
+    # 启动编码器（lgpio 中断驱动，非树莓派降级模拟）
     await asyncio.to_thread(encoder.start)
     if encoder.is_simulation:
         logger.warning("⚠️  编码器运行在模拟模式（pigpiod 未运行或未接线）")
@@ -387,6 +418,16 @@ async def _startup():
         logger.warning("⚠️  IMU 运行在模拟模式（pyserial 未安装或 BNO055 未接线）")
     else:
         logger.info("📐 IMU 已启动（BNO055 @ %s）", imu.status["serial_port"])
+
+    # 若启动初期存在枚举竞态导致模拟模式，后台持续重试恢复。
+    global _motion_sensor_retry_task
+    if encoder.is_simulation or imu.is_simulation:
+        _motion_sensor_retry_task = asyncio.create_task(
+            _retry_motion_sensors_until_ready(),
+            name="motion_sensor_retry",
+        )
+        _motion_sensor_retry_task.add_done_callback(_task_done_callback)
+        logger.warning("⚠️  编码器/IMU 存在模拟模式，已启用后台重试初始化")
 
     # 启动里程计（后台 50Hz 更新线程）
     odometry.start()
@@ -489,6 +530,11 @@ async def _startup():
 
 
 async def _shutdown():
+    global _motion_sensor_retry_task
+    if _motion_sensor_retry_task and not _motion_sensor_retry_task.done():
+        _motion_sensor_retry_task.cancel()
+    _motion_sensor_retry_task = None
+
     dm: DeviceManager | None = state.get("device_manager")
     if dm:
         try:
@@ -911,6 +957,14 @@ async def motor_command(req: MotorCommandRequest):
             status_code=400,
             detail=f"未知指令 {req.command!r}，有效值：{sorted(VALID_COMMANDS)}",
         )
+    if chassis.is_simulation:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "底盘当前处于 GPIO 模拟模式，无法驱动真实电机。"
+                "请检查 rpi-lgpio/RPi.GPIO 依赖、运行权限和 PM2 启动用户。"
+            ),
+        )
     try:
         await chassis.execute_timed(req.command, req.speed, req.duration)
         return {
@@ -940,6 +994,21 @@ async def motor_drive(req: MotorDriveRequest):
     """
     if req.distance_mm is None and req.angle_deg is None:
         raise HTTPException(status_code=400, detail="distance_mm 和 angle_deg 至少提供一个")
+
+    if chassis.is_simulation:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "底盘当前处于 GPIO 模拟模式，无法执行闭环运动。"
+                "请检查 rpi-lgpio/RPi.GPIO 依赖、运行权限和 PM2 启动用户。"
+            ),
+        )
+
+    # 按需重试关键传感器，避免启动时序竞态导致整段会话都在模拟模式。
+    if encoder.is_simulation:
+        await asyncio.to_thread(encoder.start)
+    if req.angle_deg is not None and imu.is_simulation:
+        await asyncio.to_thread(imu.start)
 
     speed = max(0, min(100, req.speed))
     loop = asyncio.get_running_loop()

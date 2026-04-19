@@ -233,6 +233,19 @@ class Encoder:
             True  = 真实硬件已就绪
             False = 降级为模拟模式
         """
+        # 幂等：已在运行时直接返回当前状态。
+        if (
+            not self._is_simulation
+            and self._left is not None
+            and self._right is not None
+            and self._h is not None
+        ):
+            return True
+
+        # 允许失败后重试：每次 start 前先清理历史资源并重置模拟标志。
+        self.stop()
+        self._is_simulation = False
+
         try:
             import lgpio
             self._h = lgpio.gpiochip_open(_CHIP_NUM)
@@ -250,6 +263,7 @@ class Encoder:
             )
             self._left.start()
             self._right.start()
+            self._is_simulation = False
             logger.info(
                 f"[Encoder] 已启动（lgpio chip={_CHIP_NUM}）| "
                 f"左轮 A/B={self._cfg.left_a}/{self._cfg.left_b} inv={self._cfg.left_invert} "
