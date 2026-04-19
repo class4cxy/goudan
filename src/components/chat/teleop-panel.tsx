@@ -161,10 +161,12 @@ export function TeleopPanel({ enabled }: { enabled: boolean }) {
         >
           <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-zinc-800" />
           <div className="absolute left-0 top-1/2 h-px w-full -translate-y-1/2 bg-zinc-800" />
-          <div
-            style={knobStyle}
-            className="absolute left-1/2 top-1/2 h-9 w-9 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/80 shadow"
-          />
+          <div className="absolute left-1/2 top-1/2">
+            <div
+              style={knobStyle}
+              className="h-9 w-9 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/80 shadow"
+            />
+          </div>
         </div>
 
         <div className="space-y-1 text-[11px] text-muted-foreground">
