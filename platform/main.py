@@ -302,10 +302,10 @@ _teleop_state: dict[str, Any] = {
     "watchdog_timeout_s": 0.30,
     "watchdog_braked": False,
     "max_speed": 30,
-    "deadband": 0.08,
-    "min_move_pwm": 18,
-    "startup_boost_pwm": 45,
-    "startup_boost_ms": 180,
+    "deadband": 0.06,
+    "min_move_pwm": 20,
+    "startup_boost_pwm": 50,
+    "startup_boost_ms": 220,
     "lidar_safety_enabled": False,
     "min_safe_mm": 350,
     "front_half_angle_deg": 25.0,
@@ -1644,10 +1644,10 @@ async def teleop_start(req: TeleopStartRequest):
 
     timeout_s = max(0.10, min(2.00, (req.timeout_ms if req.timeout_ms is not None else 300) / 1000.0))
     max_speed = max(0, min(100, req.max_speed if req.max_speed is not None else 30))
-    deadband = max(0.0, min(0.4, req.deadband if req.deadband is not None else 0.08))
-    min_move_pwm = max(0, min(100, req.min_move_pwm if req.min_move_pwm is not None else 18))
-    startup_boost_pwm = max(0, min(100, req.startup_boost_pwm if req.startup_boost_pwm is not None else 45))
-    startup_boost_ms = max(0, min(2000, req.startup_boost_ms if req.startup_boost_ms is not None else 180))
+    deadband = max(0.0, min(0.4, req.deadband if req.deadband is not None else 0.06))
+    min_move_pwm = max(0, min(100, req.min_move_pwm if req.min_move_pwm is not None else 20))
+    startup_boost_pwm = max(0, min(100, req.startup_boost_pwm if req.startup_boost_pwm is not None else 50))
+    startup_boost_ms = max(0, min(2000, req.startup_boost_ms if req.startup_boost_ms is not None else 220))
     min_safe_mm = max(100, min(3000, req.min_safe_mm if req.min_safe_mm is not None else int(os.environ.get("TELEOP_LIDAR_MIN_SAFE_MM", "350"))))
     front_half_angle_deg = max(5.0, min(90.0, req.front_half_angle_deg if req.front_half_angle_deg is not None else float(os.environ.get("TELEOP_LIDAR_FRONT_HALF_ANGLE_DEG", "25"))))
     scan_freshness_ms = max(100, min(3000, req.scan_freshness_ms if req.scan_freshness_ms is not None else int(os.environ.get("TELEOP_LIDAR_SCAN_FRESHNESS_MS", "600"))))
