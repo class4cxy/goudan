@@ -90,6 +90,7 @@ function TeleopModeToggle() {
             timeout_ms: 300,
             max_speed: 30,
             deadband: 0.08,
+            lidar_safety_enabled: false,
             min_safe_mm: 350,
             front_half_angle_deg: 25,
             scan_freshness_ms: 2000,

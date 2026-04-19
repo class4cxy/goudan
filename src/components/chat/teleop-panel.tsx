@@ -142,7 +142,7 @@ export function TeleopPanel({ enabled }: { enabled: boolean }) {
         <div>
           <p className="text-xs font-medium text-foreground">遥控模式</p>
           <p className="text-[11px] text-muted-foreground">
-            摇杆控制底盘；前向运动自动受 LiDAR 最小安全距离约束
+            摇杆控制底盘；当前已关闭 LiDAR 防撞（按你的要求优先保证手动可控）
           </p>
         </div>
         <button
