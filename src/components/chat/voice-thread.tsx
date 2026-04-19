@@ -410,11 +410,11 @@ function VoiceTeleopToggle() {
           body: JSON.stringify({
             action: "start",
             timeout_ms: 300,
-            max_speed: 60,
+            max_speed: 30,
             deadband: 0.08,
             min_safe_mm: 350,
             front_half_angle_deg: 25,
-            scan_freshness_ms: 600,
+            scan_freshness_ms: 2000,
           }),
         });
         if (!res.ok) {

@@ -301,11 +301,11 @@ _teleop_state: dict[str, Any] = {
     "last_input_monotonic": 0.0,
     "watchdog_timeout_s": 0.30,
     "watchdog_braked": False,
-    "max_speed": 60,
+    "max_speed": 30,
     "deadband": 0.08,
     "min_safe_mm": 350,
     "front_half_angle_deg": 25.0,
-    "scan_freshness_ms": 600,
+    "scan_freshness_ms": 2000,
 }
 _teleop_lock = asyncio.Lock()
 _teleop_watchdog_task: asyncio.Task | None = None
@@ -316,24 +316,41 @@ def _teleop_angle_diff_deg(a: float, b: float) -> float:
     return ((a - b + 180.0) % 360.0) - 180.0
 
 
-def _teleop_front_min_distance_mm(*, front_half_angle_deg: float, scan_freshness_ms: int) -> float | None:
-    """读取当前前向扇区的最近障碍距离（mm）。无新鲜扫描时返回 None。"""
+def _teleop_sector_min_distance(
+    *,
+    center_deg: float,
+    half_angle_deg: float,
+    scan_freshness_ms: int,
+) -> dict[str, Any]:
+    """
+    读取指定扇区最近障碍距离（mm），并返回状态元信息：
+      - status: ok / no_scan / stale / no_points
+      - min_mm: 最近距离（仅 ok 有值）
+      - point_count: 扇区点数
+      - scan_age_ms: 扫描年龄
+    """
     scan = lidar_sensor.device.latest_scan
     if scan is None:
-        return None
+        return {"status": "no_scan", "min_mm": None, "point_count": 0, "scan_age_ms": None}
 
     now_ms = int(time.time() * 1000)
-    if now_ms - int(scan.timestamp_ms) > scan_freshness_ms:
-        return None
+    age_ms = now_ms - int(scan.timestamp_ms)
+    if age_ms > scan_freshness_ms:
+        return {"status": "stale", "min_mm": None, "point_count": 0, "scan_age_ms": age_ms}
 
     dists = [
         float(p.distance)
         for p in scan.valid_points
-        if abs(_teleop_angle_diff_deg(float(p.angle), 0.0)) <= front_half_angle_deg
+        if abs(_teleop_angle_diff_deg(float(p.angle), center_deg)) <= half_angle_deg
     ]
     if not dists:
-        return None
-    return min(dists)
+        return {"status": "no_points", "min_mm": None, "point_count": 0, "scan_age_ms": age_ms}
+    return {
+        "status": "ok",
+        "min_mm": min(dists),
+        "point_count": len(dists),
+        "scan_age_ms": age_ms,
+    }
 
 
 def _teleop_apply_tank_mix(*, throttle: float, steer: float, max_speed: int) -> tuple[float, float]:
@@ -1565,7 +1582,7 @@ async def teleop_start(req: TeleopStartRequest):
         raise HTTPException(status_code=503, detail="激光雷达不可用，拒绝进入遥控模式")
 
     timeout_s = max(0.10, min(2.00, (req.timeout_ms if req.timeout_ms is not None else 300) / 1000.0))
-    max_speed = max(0, min(100, req.max_speed if req.max_speed is not None else 60))
+    max_speed = max(0, min(100, req.max_speed if req.max_speed is not None else 30))
     deadband = max(0.0, min(0.4, req.deadband if req.deadband is not None else 0.08))
     min_safe_mm = max(100, min(3000, req.min_safe_mm if req.min_safe_mm is not None else int(os.environ.get("TELEOP_LIDAR_MIN_SAFE_MM", "350"))))
     front_half_angle_deg = max(5.0, min(90.0, req.front_half_angle_deg if req.front_half_angle_deg is not None else float(os.environ.get("TELEOP_LIDAR_FRONT_HALF_ANGLE_DEG", "25"))))
@@ -1627,8 +1644,10 @@ async def teleop_command(req: TeleopCommandRequest):
     steer = max(-1.0, min(1.0, float(req.steer)))
     max_speed = max(0, min(100, req.max_speed if req.max_speed is not None else max_speed_default))
 
-    # 前向运动防撞：前向扇区最近距离不足时，拒绝推进并刹停。
-    if throttle > deadband:
+    # 按运动方向避障：
+    #  - 前进：检查前向扇区（0°）
+    #  - 后退：检查后向扇区（180°）
+    if abs(throttle) > deadband:
         if lidar_sensor.device.is_simulation:
             chassis.stop()
             async with _teleop_lock:
@@ -1638,14 +1657,30 @@ async def teleop_command(req: TeleopCommandRequest):
                 "ok": False,
                 "blocked": True,
                 "reason": "lidar_unavailable",
-                "message": "激光雷达不可用，已阻止前进",
+                "message": "激光雷达不可用，已阻止运动",
             }
 
-        front_min_mm = _teleop_front_min_distance_mm(
-            front_half_angle_deg=front_half_angle_deg,
+        moving_backward = throttle < -deadband
+        primary_center = 180.0 if moving_backward else 0.0
+        fallback_center = 0.0 if moving_backward else 180.0
+        sector = _teleop_sector_min_distance(
+            center_deg=primary_center,
+            half_angle_deg=front_half_angle_deg,
             scan_freshness_ms=scan_freshness_ms,
         )
-        if front_min_mm is None or front_min_mm < min_safe_mm:
+        used_center = primary_center
+        # 兼容安装方向不一致：主扇区无点时，尝试反向扇区
+        if sector["status"] == "no_points":
+            alt = _teleop_sector_min_distance(
+                center_deg=fallback_center,
+                half_angle_deg=front_half_angle_deg,
+                scan_freshness_ms=scan_freshness_ms,
+            )
+            if alt["status"] == "ok":
+                sector = alt
+                used_center = fallback_center
+
+        if sector["status"] == "ok" and float(sector["min_mm"]) < min_safe_mm:
             chassis.stop()
             async with _teleop_lock:
                 _teleop_state["last_input_monotonic"] = time.monotonic()
@@ -1653,10 +1688,26 @@ async def teleop_command(req: TeleopCommandRequest):
             return {
                 "ok": False,
                 "blocked": True,
-                "reason": "lidar_too_close" if front_min_mm is not None else "lidar_stale",
-                "front_min_mm": None if front_min_mm is None else round(front_min_mm, 1),
+                "reason": "lidar_too_close",
+                "direction": "backward" if moving_backward else "forward",
+                "sector_center_deg": used_center,
+                "front_min_mm": round(float(sector["min_mm"]), 1),
                 "min_safe_mm": min_safe_mm,
-                "message": "前方障碍过近，已阻止前进",
+                "message": "运动方向存在近障，已阻止",
+            }
+        # 仅 stale/no_scan 时阻断；no_points 不再误报 stale
+        if sector["status"] in ("stale", "no_scan"):
+            chassis.stop()
+            async with _teleop_lock:
+                _teleop_state["last_input_monotonic"] = time.monotonic()
+                _teleop_state["watchdog_braked"] = False
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "lidar_stale" if sector["status"] == "stale" else "lidar_no_scan",
+                "direction": "backward" if moving_backward else "forward",
+                "scan_age_ms": sector.get("scan_age_ms"),
+                "message": "LiDAR 数据不可用，已阻止运动",
             }
 
     applied = _teleop_apply_drive(
@@ -1695,8 +1746,14 @@ async def teleop_status():
         front_half_angle_deg = float(_teleop_state["front_half_angle_deg"])
         scan_freshness_ms = int(_teleop_state["scan_freshness_ms"])
 
-    front_min_mm = _teleop_front_min_distance_mm(
-        front_half_angle_deg=front_half_angle_deg,
+    front_sector = _teleop_sector_min_distance(
+        center_deg=0.0,
+        half_angle_deg=front_half_angle_deg,
+        scan_freshness_ms=scan_freshness_ms,
+    )
+    rear_sector = _teleop_sector_min_distance(
+        center_deg=180.0,
+        half_angle_deg=front_half_angle_deg,
         scan_freshness_ms=scan_freshness_ms,
     )
     elapsed_ms = int((time.monotonic() - last_input_monotonic) * 1000.0) if enabled else None
@@ -1713,7 +1770,10 @@ async def teleop_status():
             "min_safe_mm": min_safe_mm,
             "front_half_angle_deg": front_half_angle_deg,
             "scan_freshness_ms": scan_freshness_ms,
-            "front_min_mm": None if front_min_mm is None else round(front_min_mm, 1),
+            "front_min_mm": None if front_sector["min_mm"] is None else round(float(front_sector["min_mm"]), 1),
+            "rear_min_mm": None if rear_sector["min_mm"] is None else round(float(rear_sector["min_mm"]), 1),
+            "front_status": front_sector["status"],
+            "rear_status": rear_sector["status"],
         },
     }
 
