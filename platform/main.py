@@ -1153,6 +1153,7 @@ async def motor_drive(req: MotorDriveRequest):
                 deadline = loop.time() + req.timeout_s
                 accumulated = 0.0
                 opposite_deg = 0.0
+                effective_sensor = "raw_imu" if use_raw_imu else "odometry_theta"
 
                 if use_raw_imu:
                     # imu.py 约定：gyro_z > 0 表示顺时针（CW）
@@ -1160,12 +1161,20 @@ async def motor_drive(req: MotorDriveRequest):
                     expected_sign = -1.0 if direction == "turn_left" else 1.0
                     sign_locked = False
                     prev_sample_ts: float | None = None
-                    while loop.time() < deadline:
+                    imu_samples = 0
+                    imu_missing = 0
+                    imu_abs_deg = 0.0
+                    imu_start_t = loop.time()
+                    # raw_imu 先跑第一阶段，若贡献异常低则尽早切换兜底，避免耗尽整个 timeout。
+                    raw_phase_deadline = min(deadline, imu_start_t + min(2.5, max(1.2, req.timeout_s * 0.5)))
+                    while loop.time() < raw_phase_deadline:
                         await asyncio.sleep(0.01)
                         reading = imu.get_latest()
                         if reading is None:
+                            imu_missing += 1
                             continue
 
+                        imu_samples += 1
                         # 使用传感器时间戳积分，避免读取同一帧被重复积分
                         if prev_sample_ts is None:
                             prev_sample_ts = reading.timestamp
@@ -1190,16 +1199,40 @@ async def motor_drive(req: MotorDriveRequest):
                             sign_locked = True
 
                         signed_rate = reading.gyro_z * expected_sign
+                        imu_abs_deg += abs(reading.gyro_z) * dt
                         if signed_rate > 0:
                             accumulated += signed_rate * dt
                         else:
                             opposite_deg += abs(signed_rate) * dt
+
+                        # 兜底：若 IMU 通道在转向初期几乎无角速度贡献，切换到 odometry_theta，
+                        # 避免整段动作在 raw_imu 上超时。
+                        if (
+                            loop.time() - imu_start_t > 1.2
+                            and accumulated < 2.0
+                            and opposite_deg < 2.0
+                            and imu_abs_deg < 4.0
+                        ):
+                            effective_sensor = "odometry_theta_fallback"
+                            logger.warning(
+                                "[Drive] IMU 角速度贡献过低（samples=%d missing=%d abs=%.2f° acc=%.2f° opp=%.2f°），"
+                                "切换 odometry theta 闭环",
+                                imu_samples, imu_missing, imu_abs_deg, accumulated, opposite_deg,
+                            )
+                            break
+
                         if accumulated >= target_deg:
                             break
-                else:
-                    logger.warning("[Drive] IMU 不可用，降级为 odometry theta 闭环")
+
+                if not use_raw_imu or effective_sensor == "odometry_theta_fallback":
+                    if not use_raw_imu:
+                        logger.warning("[Drive] IMU 不可用，降级为 odometry theta 闭环")
+                    else:
+                        logger.warning("[Drive] IMU 贡献不足，切换 odometry theta 闭环继续转向")
                     prev_theta = odometry.get_pose().theta_deg
-                    while loop.time() < deadline:
+                    # 二段兜底：若 raw_imu 阶段已耗尽 timeout，追加短暂补偿窗口，避免返回明显欠转。
+                    odom_deadline = max(deadline, loop.time() + min(2.0, max(0.8, req.timeout_s * 0.25)))
+                    while loop.time() < odom_deadline:
                         await asyncio.sleep(0.02)
                         curr_theta = odometry.get_pose().theta_deg
                         delta = curr_theta - prev_theta
@@ -1211,13 +1244,17 @@ async def motor_drive(req: MotorDriveRequest):
                         prev_theta = curr_theta
                         if accumulated >= target_deg:
                             break
+                    if not use_raw_imu:
+                        effective_sensor = "odometry_theta"
+                    else:
+                        effective_sensor = "odometry_theta_fallback"
 
                 chassis.stop()
-                timed_out = loop.time() >= deadline
+                timed_out = accumulated < target_deg
                 logger.info(
                     "[Drive] 转向完成：目标=%.0f° speed=%d 实际=%.1f° 反向=%.1f° timeout=%s sensor=%s",
                     req.angle_deg, speed, accumulated, opposite_deg, timed_out,
-                    "raw_imu" if use_raw_imu else "odometry_theta",
+                    effective_sensor,
                 )
                 return {
                     "ok": True,
@@ -1226,7 +1263,7 @@ async def motor_drive(req: MotorDriveRequest):
                     "rotated_deg": round(accumulated, 1),
                     "opposite_deg": round(opposite_deg, 1),
                     "timeout": timed_out,
-                    "sensor": "raw_imu" if use_raw_imu else "odometry_theta",
+                    "sensor": effective_sensor,
                 }
 
     except Exception as e:
