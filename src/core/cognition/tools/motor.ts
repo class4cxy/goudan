@@ -62,6 +62,19 @@ const PRE_MOTION_AUDIO_IDLE_TIMEOUT_MS = 8_000
 /** 轮询音频 busy 的间隔（ms）。 */
 const PRE_MOTION_AUDIO_IDLE_POLL_MS = 120
 
+async function isTeleopEnabled(): Promise<boolean> {
+  try {
+    const res = await fetch(`${PLATFORM_URL}/teleop/status`, {
+      signal: AbortSignal.timeout(1200),
+    })
+    if (!res.ok) return false
+    const data = (await res.json()) as { enabled?: boolean }
+    return Boolean(data.enabled)
+  } catch {
+    return false
+  }
+}
+
 function clampSpeed(v: number): number {
   if (Number.isNaN(v)) return 25
   return Math.max(0, Math.min(100, Math.round(v)))
@@ -236,6 +249,7 @@ export const navigateTo = tool({
       // 容错：当模型未显式填 distance_mm/angle_deg，但用户在 destination 里说了“1米/90度”时自动提取
       const inferredDistance = distance_mm ?? extractDistanceMmFromText(dest)
       const inferredAngle = angle_deg ?? extractAngleDegFromText(dest)
+      const teleopEnabled = await isTeleopEnabled()
 
       if (motorCommand) {
         // ── 停止：直接发指令 ──────────────────────────────────────
@@ -248,6 +262,13 @@ export const navigateTo = tool({
             summary: '电机指令：stop',
           })
           return { success: true, mode: 'motor', command: 'stop', message: '已停止' }
+        }
+
+        if (teleopEnabled) {
+          return {
+            success: false,
+            error: '当前处于手动遥控模式，已禁止 AI 自动运动。请先退出遥控模式，或使用“停止”指令。',
+          }
         }
 
         // ── 转向：IMU 闭环 ────────────────────────────────────────
@@ -338,6 +359,12 @@ export const navigateTo = tool({
         }
 
       } else {
+        if (teleopEnabled) {
+          return {
+            success: false,
+            error: '当前处于手动遥控模式，已禁止 AI 自动导航。请先退出遥控模式再执行导航。',
+          }
+        }
         // ── 坐标导航（房间名语义导航暂未实现）───────────────────────
         const coords = parseCoordinateDestination(dest)
         if (!coords) {

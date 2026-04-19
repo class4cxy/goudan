@@ -3,6 +3,19 @@ import { z } from 'zod'
 
 const PLATFORM_URL = process.env.PLATFORM_URL ?? 'http://localhost:8001'
 
+async function isTeleopEnabled(): Promise<boolean> {
+  try {
+    const res = await fetch(`${PLATFORM_URL}/teleop/status`, {
+      signal: AbortSignal.timeout(1200),
+    })
+    if (!res.ok) return false
+    const data = (await res.json()) as { enabled?: boolean }
+    return Boolean(data.enabled)
+  } catch {
+    return false
+  }
+}
+
 /**
  * startLocalize — 启动 AMCL 室内定位
  *
@@ -110,6 +123,12 @@ export const navigateToCoordinates = tool({
   }),
   execute: async ({ x_mm, y_mm, label }) => {
     try {
+      if (await isTeleopEnabled()) {
+        return {
+          success: false,
+          error: '当前处于手动遥控模式，已禁止 AI 自动导航。请先退出遥控模式。',
+        }
+      }
       const res = await fetch(`${PLATFORM_URL}/navigate/to`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
